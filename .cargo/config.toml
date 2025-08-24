@@ -1,0 +1,12 @@
+[build]
+target-dir = "C:/Users/jimsi/source/repos/raystanza/OxideMiner/ox-build/target"
+
+[env]
+CMAKE_GENERATOR = "Ninja"
+#CMAKE_GENERATOR = "Visual Studio 17 2022"
+CMAKE_BUILD_PARALLEL_LEVEL = "10"
+CMAKE_MAKE_PROGRAM = "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe"
+RUST_BACKTRACE = "full"
+
+[patch.crates-io]
+randomx-bindings-sys = { git = "https://github.com/McFranko/randomx-bindings-sys" }

@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{
@@ -15,69 +15,138 @@ pub struct PoolJob {
     pub job_id: String,
     pub blob: String,
     pub target: String,
-    // TODO: add nonce size, height, seed hash, etc.
+    pub seed_hash: Option<String>,
+    pub height: Option<u64>,
+    pub algo: Option<String>, // e.g. "rx/0"
 }
 
 pub struct StratumClient {
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
+    session_id: Option<String>,
+    next_req_id: u64,
 }
 
 impl StratumClient {
-    pub async fn connect_and_login(hostport: &str, wallet: &str, pass: &str, agent: &str) -> Result<Self> {
-        let stream = TcpStream::connect(hostport).await?;
+    /// Connect + login; returns (client, initial_job_if_any)
+    pub async fn connect_and_login(
+        hostport: &str,
+        wallet: &str,
+        pass: &str,
+        agent: &str,
+    ) -> Result<(Self, Option<PoolJob>)> {
+        let stream = TcpStream::connect(hostport)
+            .await
+            .with_context(|| format!("connect to {}", hostport))?;
         let (r, w) = stream.into_split();
 
         let mut client = StratumClient {
             reader: BufReader::new(r),
             writer: w,
+            session_id: None,
+            next_req_id: 1,
         };
 
-        // JSON-RPC login (skeleton)
+        // JSON-RPC login
+        let req_id = client.take_req_id();
         let login = json!({
-            "id": 1_u32,
+            "id": req_id,
             "jsonrpc": "2.0",
             "method": "login",
             "params": { "login": wallet, "pass": pass, "agent": agent }
         });
-
         client.send_line(login.to_string()).await?;
 
-        // Read one line back just to confirm connectivity (we'll parse properly soon)
-        let mut line = String::new();
-        let n = client.reader.read_line(&mut line).await?;
-        if n == 0 {
-            return Err(anyhow!("disconnected during login"));
-        }
-        info!("pool: {}", line.trim());
+        // Read until we see login result and/or first job
+        let initial_job: Option<PoolJob> = loop {
+            let line = client.read_line().await?;
+            if line.is_empty() {
+                return Err(anyhow!("disconnected during login"));
+            }
 
-        Ok(client)
+            match serde_json::from_str::<Value>(&line) {
+                Ok(v) => {
+                    if let Some(obj) = v.get("result") {
+                        if let Some(id) = obj.get("id").and_then(Value::as_str) {
+                            client.session_id = Some(id.to_string());
+                        }
+                        if let Some(job_val) = obj.get("job") {
+                            if let Ok(job) = serde_json::from_value::<PoolJob>(job_val.clone()) {
+                                info!("initial job (in login result)");
+                                break Some(job);
+                            }
+                        }
+                    }
+                    if v.get("method").and_then(Value::as_str) == Some("job") {
+                        if let Some(params) = v.get("params") {
+                            if let Ok(job) = serde_json::from_value::<PoolJob>(params.clone()) {
+                                info!("initial job (job notify)");
+                                break Some(job);
+                            }
+                        }
+                    }
+                }
+                Err(_) => warn!("pool says: {}", line.trim()),
+            }
+        };
+
+        Ok((client, initial_job))
     }
 
+    /// Read the next JSON message from the pool (jobs, submit responses, etc.)
+    pub async fn read_json(&mut self) -> Result<Value> {
+        let line = self.read_line().await?;
+        if line.is_empty() {
+            return Err(anyhow!("pool closed"));
+        }
+        let v: Value = serde_json::from_str(&line)
+            .with_context(|| format!("invalid json from pool: {}", line.trim()))?;
+        Ok(v)
+    }
+
+    /// Convenience: block until a "job" notify (unused in the new main loop, kept for completeness).
     pub async fn next_job(&mut self) -> Result<PoolJob> {
-        let mut line = String::new();
         loop {
-            line.clear();
-            if self.reader.read_line(&mut line).await? == 0 {
-                return Err(anyhow!("pool closed"));
-            }
-
-            // TODO: replace this with proper JSON parsing of job notifications
-            if line.contains("\"job\"") {
-                return Ok(PoolJob {
-                    job_id: "job-1".into(),
-                    blob: "00".into(),
-                    target: "ffff".into(),
-                });
-            } else {
-                warn!("pool says: {}", line.trim());
+            let v = self.read_json().await?;
+            if v.get("method").and_then(Value::as_str) == Some("job") {
+                if let Some(params) = v.get("params") {
+                    let job: PoolJob = serde_json::from_value(params.clone())
+                        .context("parse job params")?;
+                    return Ok(job);
+                }
             }
         }
     }
 
-    pub async fn submit_share(&mut self, _job_id: &str, _nonce: u32, _result_hex: &str) -> Result<()> {
-        // TODO: implement submit JSON-RPC
+    /// Submit a share: **write only**. The response will be handled by the main loop via `read_json()`.
+    /// `nonce_hex` = 8 hex chars (LE bytes), `result_hex` = 64 hex chars.
+    pub async fn submit_share(&mut self, job_id: &str, nonce_hex: &str, result_hex: &str) -> Result<()> {
+        let sid = self
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("no session id; login not completed"))?;
+
+        let req_id = self.take_req_id();
+        let submit = json!({
+            "id": req_id,
+            "jsonrpc": "2.0",
+            "method": "submit",
+            "params": {
+                "id": sid,
+                "job_id": job_id,
+                "nonce": nonce_hex,
+                "result": result_hex
+            }
+        });
+
+        self.send_line(submit.to_string()).await?;
         Ok(())
+    }
+
+    fn take_req_id(&mut self) -> u64 {
+        let id = self.next_req_id;
+        self.next_req_id += 1;
+        id
     }
 
     async fn send_line(&mut self, s: String) -> Result<()> {
@@ -85,5 +154,11 @@ impl StratumClient {
         self.writer.write_all(b"\n").await?;
         self.writer.flush().await?;
         Ok(())
+    }
+
+    async fn read_line(&mut self) -> Result<String> {
+        let mut buf = String::new();
+        let n = self.reader.read_line(&mut buf).await?;
+        if n == 0 { Ok(String::new()) } else { Ok(buf) }
     }
 }

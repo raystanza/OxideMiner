@@ -26,3 +26,7 @@ Thumbs.db
 
 # Environment variables
 .env
+
+# Build directories
+ox-build/
+ox-build/target/

@@ -3,6 +3,10 @@ name = "oxide-core"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+randomx = ["dep:randomx-bindings-sys"]
+
 [dependencies]
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -10,3 +14,7 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+hex = { workspace = true }
+num_cpus = { workspace = true }
+once_cell = { workspace = true }
+randomx-bindings-sys = { version = "0.1", optional = true }
