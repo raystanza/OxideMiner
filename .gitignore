@@ -1,0 +1,28 @@
+# Rust build artifacts and cache
+/target/
+Cargo.lock
+
+# VS Code editor settings and workspace files
+.vscode/
+
+# IDE-specific files
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Operating System generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Log files
+*.log
+
+# Environment variables
+.env
