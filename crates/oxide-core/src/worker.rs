@@ -34,7 +34,9 @@ pub fn spawn_workers(
                 #[cfg(not(feature = "randomx"))]
                 {
                     warn!(worker = i, "built without RandomX; idle worker");
-                    loop { let _ = rx.recv().await; }
+                    loop {
+                        let _ = rx.recv().await;
+                    }
                 }
             })
         })
@@ -43,209 +45,137 @@ pub fn spawn_workers(
 
 #[cfg(feature = "randomx")]
 mod engine {
-    use anyhow::{self, Result};
-    use once_cell::sync::OnceCell;
-    use randomx_bindings_sys as rx;
-    use std::{
-        ffi::c_void,
-        ptr,
-        sync::{Arc, RwLock},
-        thread,
-    };
+    use anyhow::Result;
+    use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
+    use std::cell::RefCell;
 
-    // ---------- Minimal safe-ish wrappers over the C API ----------
-
-    pub struct Dataset {
-        ptr: *mut rx::randomx_dataset,
+    // Thin wrappers to mirror the old shape
+    #[derive(Clone)]
+    pub struct Cache {
+        pub(crate) inner: RandomXCache,
+        pub(crate) key: Vec<u8>,
+        pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
     }
-    struct Cache {
-        ptr: *mut rx::randomx_cache,
-    }
-    pub struct Vm {
-        ptr: *mut rx::randomx_vm,
-    }
-
-    impl Drop for Cache {
-        fn drop(&mut self) {
-            unsafe {
-                if !self.ptr.is_null() {
-                    rx::randomx_release_cache(self.ptr);
-                }
-            }
-        }
-    }
-    impl Drop for Dataset {
-        fn drop(&mut self) {
-            unsafe {
-                if !self.ptr.is_null() {
-                    rx::randomx_release_dataset(self.ptr);
-                }
-            }
-        }
-    }
-    impl Drop for Vm {
-        fn drop(&mut self) {
-            unsafe {
-                if !self.ptr.is_null() {
-                    rx::randomx_destroy_vm(self.ptr);
-                }
-            }
-        }
-    }
-
-    // Dataset is read-only after init; safe to share.
-    unsafe impl Send for Dataset {}
-    unsafe impl Sync for Dataset {}
-
-    #[inline]
-    fn flags_default() -> i32 {
-        // Detect CPU features; returns randomx_flags (i32)
-        unsafe { rx::randomx_get_flags() }
-    }
-
-    const FLAG_FULLMEM: i32 = rx::randomx_flags_RANDOMX_FLAG_FULL_MEM;
-    const FLAG_JIT: i32 = rx::randomx_flags_RANDOMX_FLAG_JIT;
-
-    fn new_cache(flags: i32, key: &[u8]) -> Result<Cache> {
-        unsafe {
-            let cache = rx::randomx_alloc_cache(flags);
-            if cache.is_null() {
-                anyhow::bail!("randomx_alloc_cache returned null");
-            }
-            // length cast to whatever the FFI expects
-            rx::randomx_init_cache(
-                cache,
-                key.as_ptr() as *const c_void,
-                key.len() as _,
-            );
-            Ok(Cache { ptr: cache })
-        }
-    }
-
-    fn new_dataset(flags: i32, key: &[u8], threads: u8) -> Result<Dataset> {
-        unsafe {
-            let cache = new_cache(flags, key)?;
-            let ds = rx::randomx_alloc_dataset(flags);
-            if ds.is_null() {
-                anyhow::bail!("randomx_alloc_dataset returned null");
-            }
-
-            // item counts are size_t in C; bindings may be u32/u64/usize — use `as _`.
-            let total = rx::randomx_dataset_item_count() as usize;
-
-            if threads <= 1 {
-                rx::randomx_init_dataset(ds, cache.ptr, 0 as _, total as _);
-            } else {
-                let per = total / threads as usize;
-                let last = total % threads as usize;
-                let mut handles = Vec::with_capacity(threads as usize);
-
-                // Capture raw addresses (Send) and cast back inside the worker
-                let ds_addr = ds as usize;
-                let cache_addr = cache.ptr as usize;
-
-                for t in 0..threads {
-                    let start = (t as usize) * per;
-                    let count = if t == threads - 1 { per + last } else { per };
-
-                    handles.push(thread::spawn(move || {
-                        let ds_ptr = ds_addr as *mut rx::randomx_dataset;
-                        let cache_ptr = cache_addr as *mut rx::randomx_cache;
-
-                        // This call is lexically inside the outer unsafe { ... } of new_dataset
-                        rx::randomx_init_dataset(
-                            ds_ptr,
-                            cache_ptr,
-                            start as _,
-                            count as _,
-                        )
-                    }));
-                }
-                for h in handles {
-                    let _ = h.join();
-                }
-            }
-            Ok(Dataset { ptr: ds })
-        }
-    }
-
-    fn new_vm_fast(flags: i32, ds: &Dataset) -> Result<Vm> {
-        unsafe {
-            let vm = rx::randomx_create_vm(flags, ptr::null_mut(), ds.ptr);
-            if vm.is_null() {
-                anyhow::bail!("randomx_create_vm returned null");
-            }
-            Ok(Vm { ptr: vm })
-        }
-    }
-
-    impl Vm {
-        pub fn hash(&self, input: &[u8]) -> [u8; 32] {
-            let mut out = [0u8; 32];
-            unsafe {
-                rx::randomx_calculate_hash(
-                    self.ptr,
-                    input.as_ptr() as *const c_void,
-                    input.len() as _, // cast to the FFI's size type
-                    out.as_mut_ptr() as *mut c_void,
-                );
-            }
-            out
-        }
-    }
-
-    // ---------- Shared FULLMEM dataset keyed by 32-byte seed ----------
 
     #[derive(Clone)]
-    pub struct SharedDataset {
-        pub seed: [u8; 32],
-        dataset: Arc<Dataset>, // keep type private; expose getter
+    pub struct Dataset {
+        pub(crate) inner: RandomXDataset,
+        pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
+        pub(crate) _key: Vec<u8>,       // intentionally unused (for future)
     }
 
-    impl SharedDataset {
-        pub fn dataset(&self) -> &Dataset {
-            &self.dataset
-        }
+    pub struct Vm {
+        pub(crate) inner: RandomXVM,
+        pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
     }
 
-    static ACTIVE: OnceCell<RwLock<Option<SharedDataset>>> = OnceCell::new();
-    fn state() -> &'static RwLock<Option<SharedDataset>> {
-        ACTIVE.get_or_init(|| RwLock::new(None))
+    // randomx-rs exposes FLAG_* constants.
+    fn default_flags() -> RandomXFlag {
+        RandomXFlag::FLAG_JIT | RandomXFlag::FLAG_FULL_MEM
+        // You can OR in HARD_AES / LARGE_PAGES when you’re ready:
+        // | RandomXFlag::FLAG_HARD_AES | RandomXFlag::FLAG_LARGE_PAGES
     }
 
-    pub fn parse_seed32(hex_str: &str) -> Result<[u8; 32]> {
-        let b = hex::decode(hex_str)?;
-        if b.len() != 32 {
-            anyhow::bail!("seed_hash must be 32 bytes");
-        }
+    pub fn new_cache(flags: Option<RandomXFlag>, key: &[u8]) -> Result<Cache> {
+        let flags = flags.unwrap_or_else(default_flags);
+        let cache = RandomXCache::new(flags, key)?;
+        Ok(Cache {
+            inner: cache,
+            key: key.to_vec(),
+            _flags: flags,
+        })
+    }
+
+    pub fn new_dataset(flags: Option<RandomXFlag>, cache: &Cache, threads: u32) -> Result<Dataset> {
+        let flags = flags.unwrap_or_else(default_flags);
+        // Dataset::new takes OWNED cache and a u32 thread count.
+        let ds = RandomXDataset::new(flags, cache.inner.clone(), threads)?;
+        Ok(Dataset {
+            inner: ds,
+            _flags: flags,
+            _key: cache.key.clone(),
+        })
+    }
+
+    pub fn new_vm(
+        flags: Option<RandomXFlag>,
+        cache: Option<&Cache>,
+        dataset: Option<&Dataset>,
+    ) -> Result<Vm> {
+        let flags = flags.unwrap_or_else(default_flags);
+        // VM::new takes OWNED Option<RandomXCache>/<RandomXDataset>.
+        let vm = RandomXVM::new(
+            flags,
+            cache.map(|c| c.inner.clone()),
+            dataset.map(|d| d.inner.clone()),
+        )?;
+        Ok(Vm { inner: vm, _flags: flags })
+    }
+
+    /// Calculate hash as fixed [u8;32].
+    pub fn hash(vm: &Vm, input: &[u8]) -> [u8; 32] {
+        let v = vm
+            .inner
+            .calculate_hash(input)
+            .expect("randomx hash failed");
         let mut out = [0u8; 32];
-        out.copy_from_slice(&b);
-        Ok(out)
+        out.copy_from_slice(&v); // randomx is always 32 bytes
+        out
     }
 
-    /// Build (or reuse) the FULLMEM dataset for this seed.
-    pub fn ensure_fullmem_dataset(seed_hex: &str) -> Result<SharedDataset> {
-        let seed = parse_seed32(seed_hex)?;
-        if let Some(cur) = state().read().unwrap().as_ref().cloned() {
-            if cur.seed == seed {
-                return Ok(cur);
-            }
-        }
+    // ------------------------ Thread-local dataset cache ------------------------
 
-        let flags = flags_default() | FLAG_FULLMEM | FLAG_JIT;
-        let init_threads = u8::max(1, num_cpus::get_physical() as u8);
-        let ds = new_dataset(flags, &seed, init_threads)?;
-        let shared = SharedDataset { seed, dataset: Arc::new(ds) };
-        *state().write().unwrap() = Some(shared.clone());
-        Ok(shared)
+    #[derive(Clone)]
+    pub struct Global {
+        pub _flags: RandomXFlag, // intentionally unused (for future)
+        pub key: Vec<u8>,
+        pub cache: Cache,
+        pub dataset: Dataset,
     }
 
-    /// Helper that returns a closure constructing a fast VM for a dataset.
-    pub fn create_vm_for_dataset() -> impl Fn(&Dataset) -> Result<Vm> {
-        move |ds: &Dataset| {
-            let flags = flags_default() | FLAG_FULLMEM | FLAG_JIT;
-            new_vm_fast(flags, ds)
+    thread_local! {
+        static TLS: RefCell<Option<Global>> = RefCell::new(None);
+    }
+
+    /// Ensure a FULL_MEM dataset exists for this thread + seed key.
+    pub fn ensure_fullmem_dataset(seed_key: &[u8], threads: u32) -> Result<(Cache, Dataset)> {
+        let flags = default_flags();
+
+        // Fast path: same key already built on this thread
+        if let Some(pair) = TLS.with(|cell| {
+            cell.borrow().as_ref().and_then(|g| {
+                if g.key == seed_key {
+                    Some((g.cache.clone(), g.dataset.clone()))
+                } else {
+                    None
+                }
+            })
+        }) {
+            return Ok(pair);
         }
+
+        // Miss or key changed: rebuild
+        let cache = new_cache(Some(flags), seed_key)?;
+        let dataset = new_dataset(Some(flags), &cache, threads)?;
+        TLS.with(|cell| {
+            *cell.borrow_mut() = Some(Global {
+                _flags: flags,
+                key: seed_key.to_vec(),
+                cache: cache.clone(),
+                dataset: dataset.clone(),
+            });
+        });
+
+        Ok((cache, dataset))
+    }
+
+    /// Convenience: create a VM bound to an existing cache+dataset.
+    pub fn create_vm_for_dataset(
+        cache: &Cache,
+        dataset: &Dataset,
+        flags: Option<RandomXFlag>,
+    ) -> Result<Vm> {
+        new_vm(flags, Some(cache), Some(dataset))
     }
 }
 
@@ -260,25 +190,39 @@ async fn randomx_worker_loop(
 
     let mut job: Option<PoolJob> = None;
 
+    // Precompute once (Send + Copy)
+    let threads_u32: u32 = num_cpus::get() as u32;
+
     loop {
         if job.is_none() {
-            job = Some(rx.recv().await.map_err(|_| anyhow::anyhow!("job channel closed"))?.job);
+            job = Some(
+                rx.recv()
+                    .await
+                    .map_err(|_| anyhow::anyhow!("job channel closed"))?
+                    .job,
+            );
             continue;
         }
 
         let j = job.as_ref().unwrap().clone();
 
-        // Ensure dataset for this seed (FULLMEM)
-        let seed_hex = j.seed_hash.as_deref()
-            .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000");
-        let shared = ensure_fullmem_dataset(seed_hex)?;
-        let mk_vm = create_vm_for_dataset();
+        // Decode/normalize the seed key (Send)
+        let seed_hex = j.seed_hash.as_deref().unwrap_or(
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        );
+        let mut seed_bytes = match hex::decode(seed_hex) {
+            Ok(b) => b,
+            Err(_) => Vec::new(),
+        };
+        if seed_bytes.len() != 32 {
+            seed_bytes.resize(32, 0u8);
+        }
 
-        // Hash buffer
+        // Hash buffer (Send)
         let mut blob = hex::decode(&j.blob)
             .map_err(|e| anyhow::anyhow!("invalid job blob hex: {e}"))?;
 
-        // Safety: make sure the blob is long enough to write a 32-bit nonce at offset 39
+        // Ensure nonce room
         if blob.len() < 39 + 4 {
             warn!(
                 worker = worker_id,
@@ -293,32 +237,43 @@ async fn randomx_worker_loop(
         let mut nonce: u32 = worker_id as u32;
 
         'mine: loop {
+            // Swap job if a newer one arrives (no await)
             if let Ok(next) = rx.try_recv() {
                 job = Some(next.job);
                 break 'mine;
             }
 
+            // ---- IMPORTANT: keep all RandomX handles inside this block ----
             {
-                // VM is strictly scoped to this block and cannot live across the await
-                let vm = mk_vm(shared.dataset())?;
+                // Reacquire/cache FULLMEM dataset for this thread/key.
+                // These types are !Send/!Sync, but they will be dropped
+                // before the next `.await`, keeping the future Send.
+                let (cache, dataset) = ensure_fullmem_dataset(&seed_bytes, threads_u32)?;
+                let vm = create_vm_for_dataset(&cache, &dataset, None)?;
 
                 // Hash a batch
                 for _ in 0..1_000 {
                     put_u32_le(&mut blob, 39, nonce); // Monero 32-bit nonce at offset 39
-                    let hash = vm.hash(&blob);
+                    let digest = hash(&vm, &blob);
 
-                    if meets_target(&hash, &j.target) {
+                    if meets_target(&digest, &j.target) {
                         let _ = shares_tx.send(Share {
                             job_id: j.job_id.clone(),
                             nonce,
-                            result: hash,
+                            result: digest,
                         });
-                        info!(worker = worker_id, nonce, job_id = %j.job_id, "share candidate");
+                        info!(
+                            worker = worker_id,
+                            nonce,
+                            job_id = %j.job_id,
+                            "share candidate"
+                        );
                     }
 
                     nonce = nonce.wrapping_add(worker_count as u32);
                 }
-            } // vm dropped here
+            }
+            // ---- All RandomX handles dropped here, BEFORE await ----
 
             tokio::task::yield_now().await;
         }
@@ -342,7 +297,9 @@ fn meets_target(hash: &[u8; 32], target_hex: &str) -> bool {
     }
     // Wider target: parse as big-endian 256-bit
     if let Ok(mut t) = hex::decode(target_hex) {
-        if t.len() > 32 { return false; }
+        if t.len() > 32 {
+            return false;
+        }
         if t.len() < 32 {
             let mut pad = vec![0u8; 32 - t.len()];
             pad.append(&mut t);

@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = []
-randomx = ["dep:randomx-bindings-sys"]
+randomx = ["dep:randomx-rs"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -17,4 +17,4 @@ tracing = { workspace = true }
 hex = { workspace = true }
 num_cpus = { workspace = true }
 once_cell = { workspace = true }
-randomx-bindings-sys = { version = "0.1", optional = true }
+randomx-rs = { version = "1.4", optional = true }

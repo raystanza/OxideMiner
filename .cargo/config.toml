@@ -7,6 +7,3 @@ CMAKE_GENERATOR = "Ninja"
 CMAKE_BUILD_PARALLEL_LEVEL = "10"
 CMAKE_MAKE_PROGRAM = "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe"
 RUST_BACKTRACE = "full"
-
-[patch.crates-io]
-randomx-bindings-sys = { git = "https://github.com/McFranko/randomx-bindings-sys" }
