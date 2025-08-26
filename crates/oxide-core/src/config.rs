@@ -12,8 +12,14 @@ pub struct Config {
     pub threads: Option<usize>,
     /// fixed 1% dev fee (can allow --no-devfee for testing builds only)
     pub enable_devfee: bool,
-    /// (future) enable TLS, http api, affinity, huge pages, etc.
+    /// enable TLS when connecting to the stratum pool
     pub tls: bool,
+    /// optional HTTP API port for metrics (None disables)
+    pub api_port: Option<u16>,
+    /// pin worker threads to specific CPU cores
+    pub affinity: bool,
+    /// request huge/large pages for RandomX dataset
+    pub huge_pages: bool,
     pub agent: String,
 }
 
@@ -26,6 +32,9 @@ impl Default for Config {
             threads: None,
             enable_devfee: true,
             tls: false,
+            api_port: None,
+            affinity: false,
+            huge_pages: false,
             agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
         }
     }

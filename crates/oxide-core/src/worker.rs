@@ -7,6 +7,7 @@ use crate::stratum::PoolJob;
 #[derive(Clone, Debug)]
 pub struct WorkItem {
     pub job: PoolJob,
+    pub is_devfee: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -14,6 +15,7 @@ pub struct Share {
     pub job_id: String,
     pub nonce: u32,
     pub result: [u8; 32],
+    pub is_devfee: bool,
 }
 
 /// Spawn `n` workers; each subscribes to job broadcasts and sends shares back.
@@ -21,15 +23,32 @@ pub fn spawn_workers(
     n: usize,
     jobs_tx: broadcast::Sender<WorkItem>,
     shares_tx: mpsc::UnboundedSender<Share>,
+    affinity: bool,
+    large_pages: bool,
 ) -> Vec<tokio::task::JoinHandle<()>> {
+    #[cfg(feature = "randomx")]
+    engine::set_large_pages(large_pages);
+    let core_ids = if affinity {
+        core_affinity::get_core_ids()
+    } else {
+        None
+    };
     (0..n)
         .map(|i| {
             let mut rx = jobs_tx.subscribe();
             let shares_tx = shares_tx.clone();
+            let core_ids = core_ids.clone();
             tokio::spawn(async move {
                 #[cfg(feature = "randomx")]
-                if let Err(e) = randomx_worker_loop(i, n, &mut rx, shares_tx).await {
-                    eprintln!("worker {i} exited: {e:?}");
+                {
+                    if let Some(ref ids) = core_ids {
+                        if let Some(id) = ids.get(i % ids.len()) {
+                            let _ = core_affinity::set_for_current(*id);
+                        }
+                    }
+                    if let Err(e) = randomx_worker_loop(i, n, &mut rx, shares_tx).await {
+                        eprintln!("worker {i} exited: {e:?}");
+                    }
                 }
                 #[cfg(not(feature = "randomx"))]
                 {
@@ -47,7 +66,10 @@ pub fn spawn_workers(
 mod engine {
     use anyhow::Result;
     use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
-    use std::cell::RefCell;
+    use std::{
+        cell::RefCell,
+        sync::atomic::{AtomicBool, Ordering},
+    };
 
     // Thin wrappers to mirror the old shape
     #[derive(Clone)]
@@ -70,10 +92,18 @@ mod engine {
     }
 
     // randomx-rs exposes FLAG_* constants.
+    static LARGE_PAGES: AtomicBool = AtomicBool::new(false);
+
+    pub fn set_large_pages(enable: bool) {
+        LARGE_PAGES.store(enable, Ordering::Relaxed);
+    }
+
     fn default_flags() -> RandomXFlag {
-        RandomXFlag::FLAG_JIT | RandomXFlag::FLAG_FULL_MEM
-        // You can OR in HARD_AES / LARGE_PAGES when you’re ready:
-        // | RandomXFlag::FLAG_HARD_AES | RandomXFlag::FLAG_LARGE_PAGES
+        let mut flags = RandomXFlag::FLAG_JIT | RandomXFlag::FLAG_FULL_MEM;
+        if LARGE_PAGES.load(Ordering::Relaxed) {
+            flags |= RandomXFlag::FLAG_LARGE_PAGES | RandomXFlag::FLAG_HARD_AES;
+        }
+        flags
     }
 
     pub fn new_cache(flags: Option<RandomXFlag>, key: &[u8]) -> Result<Cache> {
@@ -109,15 +139,15 @@ mod engine {
             cache.map(|c| c.inner.clone()),
             dataset.map(|d| d.inner.clone()),
         )?;
-        Ok(Vm { inner: vm, _flags: flags })
+        Ok(Vm {
+            inner: vm,
+            _flags: flags,
+        })
     }
 
     /// Calculate hash as fixed [u8;32].
     pub fn hash(vm: &Vm, input: &[u8]) -> [u8; 32] {
-        let v = vm
-            .inner
-            .calculate_hash(input)
-            .expect("randomx hash failed");
+        let v = vm.inner.calculate_hash(input).expect("randomx hash failed");
         let mut out = [0u8; 32];
         out.copy_from_slice(&v); // randomx is always 32 bytes
         out
@@ -188,28 +218,29 @@ async fn randomx_worker_loop(
 ) -> Result<()> {
     use engine::*;
 
-    let mut job: Option<PoolJob> = None;
+    let mut work: Option<WorkItem> = None;
 
     // Precompute once (Send + Copy)
     let threads_u32: u32 = num_cpus::get() as u32;
 
     loop {
-        if job.is_none() {
-            job = Some(
+        if work.is_none() {
+            work = Some(
                 rx.recv()
                     .await
-                    .map_err(|_| anyhow::anyhow!("job channel closed"))?
-                    .job,
+                    .map_err(|_| anyhow::anyhow!("job channel closed"))?,
             );
             continue;
         }
 
-        let j = job.as_ref().unwrap().clone();
+        let j = work.as_ref().unwrap().job.clone();
+        let is_devfee = work.as_ref().unwrap().is_devfee;
 
         // Decode/normalize the seed key (Send)
-        let seed_hex = j.seed_hash.as_deref().unwrap_or(
-            "0000000000000000000000000000000000000000000000000000000000000000",
-        );
+        let seed_hex = j
+            .seed_hash
+            .as_deref()
+            .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000");
         let mut seed_bytes = match hex::decode(seed_hex) {
             Ok(b) => b,
             Err(_) => Vec::new(),
@@ -219,8 +250,8 @@ async fn randomx_worker_loop(
         }
 
         // Hash buffer (Send)
-        let mut blob = hex::decode(&j.blob)
-            .map_err(|e| anyhow::anyhow!("invalid job blob hex: {e}"))?;
+        let mut blob =
+            hex::decode(&j.blob).map_err(|e| anyhow::anyhow!("invalid job blob hex: {e}"))?;
 
         // Ensure nonce room
         if blob.len() < 39 + 4 {
@@ -239,7 +270,7 @@ async fn randomx_worker_loop(
         'mine: loop {
             // Swap job if a newer one arrives (no await)
             if let Ok(next) = rx.try_recv() {
-                job = Some(next.job);
+                work = Some(next);
                 break 'mine;
             }
 
@@ -261,6 +292,7 @@ async fn randomx_worker_loop(
                             job_id: j.job_id.clone(),
                             nonce,
                             result: digest,
+                            is_devfee,
                         });
                         info!(
                             worker = worker_id,

@@ -1,13 +1,18 @@
 /// 1% developer fee = 100 basis points
 pub const DEV_FEE_BASIS_POINTS: u32 = 100;
 
+/// hard coded developer donation address
+pub const DEV_WALLET_ADDRESS: &str = "44Affq5kSiGBoZ...devfeeaddr";
+
 #[derive(Debug, Clone)]
 pub struct DevFeeScheduler {
     counter: u64,
 }
 
 impl DevFeeScheduler {
-    pub fn new() -> Self { Self { counter: 0 } }
+    pub fn new() -> Self {
+        Self { counter: 0 }
+    }
 
     /// Increment job counter; return true if this job should be mined to the dev address.
     pub fn should_donate(&mut self) -> bool {
