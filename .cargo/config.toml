@@ -1,5 +1,5 @@
 [build]
-target-dir = "C:/Users/jimsi/source/repos/raystanza/OxideMiner/ox-build/target"
+target-dir = "./ox-build/target"
 
 [env]
 CMAKE_GENERATOR = "Ninja"
