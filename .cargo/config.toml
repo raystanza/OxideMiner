@@ -1,14 +1,19 @@
-[build]
-target-dir = "./ox-build/target"
-
-[env]
-CMAKE_GENERATOR = "Ninja"
-#CMAKE_GENERATOR = "Visual Studio 17 2022"
-CMAKE_BUILD_PARALLEL_LEVEL = "10"
-CMAKE_MAKE_PROGRAM = "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe"
-RUST_BACKTRACE = "full"
-
 [alias]
 br = "build --release"
 rr = "run --release"
 tr = "test --release"
+
+[env]
+RUST_BACKTRACE = "full"
+CMAKE_GENERATOR = "Ninja"
+CMAKE_BUILD_PARALLEL_LEVEL = "12" # "4" Adjust based on CPU cores
+
+# ---------- Windows-specific ----------
+[target.'cfg(windows)'.env]
+CARGO_TARGET_DIR = "./ox-build/target"
+CMAKE_MAKE_PROGRAM = "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe"
+
+# ---------- Linux/Unix-specific ----------
+[target.'cfg(unix)'.env]
+CARGO_TARGET_DIR = "./ox-build/target"
+CMAKE_MAKE_PROGRAM = "ninja"
