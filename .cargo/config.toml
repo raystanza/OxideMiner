@@ -1,19 +1,14 @@
+[env]
+RUST_BACKTRACE = "full"
+CMAKE_GENERATOR = "Ninja"
+CMAKE_EXPORT_COMPILE_COMMANDS = "1"
+CMAKE_BUILD_PARALLEL_LEVEL = "12" # num_cpus::get()
+CMAKE_MAKE_PROGRAM = "ninja"
+
 [alias]
 br = "build --release"
 rr = "run --release"
 tr = "test --release"
 
-[env]
-RUST_BACKTRACE = "full"
-CMAKE_GENERATOR = "Ninja"
-CMAKE_BUILD_PARALLEL_LEVEL = "12" # "4" Adjust based on CPU cores
-
-# ---------- Windows-specific ----------
-[target.'cfg(windows)'.env]
-CARGO_TARGET_DIR = "./ox-build/target"
-CMAKE_MAKE_PROGRAM = "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe"
-
-# ---------- Linux/Unix-specific ----------
-[target.'cfg(unix)'.env]
-CARGO_TARGET_DIR = "./ox-build/target"
-CMAKE_MAKE_PROGRAM = "ninja"
+[build]
+target-dir = "ox-build/target"

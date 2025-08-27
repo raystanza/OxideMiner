@@ -1,3 +1,5 @@
+# OxideMiner/crates/oxide-core/Cargo.toml
+
 [package]
 name = "oxide-core"
 version = "0.1.0"

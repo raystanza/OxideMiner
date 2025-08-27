@@ -260,7 +260,7 @@ async fn randomx_worker_loop(
                 blob_len = blob.len(),
                 "job blob too short to hold nonce at offset 39; skipping job"
             );
-            job = None;
+            work = None;
             continue;
         }
 

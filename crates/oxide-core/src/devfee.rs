@@ -2,7 +2,7 @@
 pub const DEV_FEE_BASIS_POINTS: u32 = 100;
 
 /// hard coded developer donation address
-pub const DEV_WALLET_ADDRESS: &str = "44Affq5kSiGBoZ...devfeeaddr";
+pub const DEV_WALLET_ADDRESS: &str = "48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaaVYMpBBd2QQUiTY84qaSXJYVPS";
 
 #[derive(Debug, Clone)]
 pub struct DevFeeScheduler {

@@ -1,7 +1,12 @@
 use anyhow::Result;
 use clap::Parser;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, Server};
+use hyper::service::service_fn;
+use hyper::server::conn::http1;
+use hyper::{Method, Request, Response};
+use hyper::body::{Incoming, Bytes};
+use http_body_util::Full;
+use std::convert::Infallible;
+use hyper_util::rt::TokioIo;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
     spawn_workers, Config, DevFeeScheduler, StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
@@ -11,8 +16,10 @@ use std::sync::{
     Arc,
 };
 use tokio::sync::{broadcast, mpsc};
+use tokio::net::TcpListener;
 use tracing::{info, warn, Level};
 use tracing_subscriber::{util::SubscriberInitExt, FmtSubscriber};
+use std::net::SocketAddr;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -226,14 +233,28 @@ async fn main() -> Result<()> {
 }
 
 async fn run_http_api(port: u16, accepted: Arc<AtomicU64>, rejected: Arc<AtomicU64>) {
-    let addr = ([0, 0, 0, 0], port).into();
-    let make_svc = make_service_fn(move |_| {
+    let addr: SocketAddr = ([0, 0, 0, 0], port).into();
+    let listener = TcpListener::bind(addr)
+        .await
+        .expect("failed to bind API port");
+    info!("HTTP API listening on {}", addr);
+
+    loop {
+        let (stream, _) = match listener.accept().await {
+            Ok(s) => s,
+            Err(e) => { eprintln!("accept error: {e}"); continue; }
+        };
+
         let a = accepted.clone();
         let r = rejected.clone();
-        async move {
-            Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
+
+        tokio::spawn(async move {
+            let io = TokioIo::new(stream);
+
+            let svc = service_fn(move |req: Request<Incoming>| {
                 let a = a.clone();
                 let r = r.clone();
+
                 async move {
                     if req.method() == Method::GET && req.uri().path() == "/metrics" {
                         let body = format!(
@@ -241,20 +262,21 @@ async fn run_http_api(port: u16, accepted: Arc<AtomicU64>, rejected: Arc<AtomicU
                             a.load(Ordering::Relaxed),
                             r.load(Ordering::Relaxed)
                         );
-                        Ok::<_, hyper::Error>(Response::new(Body::from(body)))
+                        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
                     } else {
-                        Ok::<_, hyper::Error>(
+                        Ok::<_, Infallible>(
                             Response::builder()
                                 .status(404)
-                                .body(Body::from("not found"))
+                                .body(Full::new(Bytes::from("not found")))
                                 .unwrap(),
                         )
                     }
                 }
-            }))
-        }
-    });
-    if let Err(e) = Server::bind(&addr).serve(make_svc).await {
-        eprintln!("http server error: {e}");
+            });
+
+            if let Err(err) = http1::Builder::new().serve_connection(io, svc).await {
+                eprintln!("http connection error: {err}");
+            }
+        });
     }
 }
