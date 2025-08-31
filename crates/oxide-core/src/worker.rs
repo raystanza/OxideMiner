@@ -317,27 +317,38 @@ fn put_u32_le(dst: &mut [u8], offset: usize, val: u32) {
     dst[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
 }
 
-/// Pool targets are usually 32-bit big-endian (e.g. "f3220000"),
-/// compared to the hash’s most-significant 32 bits.
+/// Monero Stratum "target" is usually a 32-bit LITTLE-endian hex (e.g. "f3220000" => 0x000022f3).
+/// Compare the hash’s most-significant 32 bits. Since the hash bytes are LE,
+/// those MSB bits live in the *last* 4 bytes of the 32-byte digest.
 fn meets_target(hash: &[u8; 32], target_hex: &str) -> bool {
     if target_hex.len() <= 8 {
-        if let Ok(t32) = u32::from_str_radix(target_hex, 16) {
-            let h_top = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]);
+        // decode 32-bit LE target
+        if let Ok(mut b) = hex::decode(target_hex) {
+            if b.len() > 4 { b.truncate(4); }
+            while b.len() < 4 { b.push(0); }
+            let t32 = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+
+            // take MSB 32 bits of the 256-bit LE hash => last 4 bytes as LE
+            let h_top = u32::from_le_bytes([hash[28], hash[29], hash[30], hash[31]]);
             return h_top <= t32;
         }
         return false;
     }
-    // Wider target: parse as big-endian 256-bit
+
+    // Wider target: interpret as full 256-bit big-endian integer
     if let Ok(mut t) = hex::decode(target_hex) {
-        if t.len() > 32 {
-            return false;
-        }
+        if t.is_empty() || t.len() > 32 { return false; }
         if t.len() < 32 {
-            let mut pad = vec![0u8; 32 - t.len()];
-            pad.append(&mut t);
+            let mut pad = vec![0u8; 32 - t.len()]; // left-pad for BE
+            pad.extend_from_slice(&t);
             t = pad;
         }
-        return &hash[..] <= &t[..];
+        // Compare as 256-bit BE: reverse LE hash into BE without allocation
+        for (hb, tb) in hash.iter().rev().zip(t.iter()) {
+            if hb != tb { return *hb < *tb; }
+        }
+        true
+    } else {
+        false
     }
-    false
 }

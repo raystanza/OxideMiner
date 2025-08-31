@@ -202,8 +202,12 @@ async fn main() -> Result<()> {
                     match maybe_share {
                         Some(share) => {
                             // We wrote nonce into the blob as LE; submit same LE bytes as hex.
-                            let nonce_hex = hex::encode(share.nonce.to_le_bytes());
-                            let result_hex = hex::encode(share.result);
+                            let nonce_hex  = hex::encode(share.nonce.to_le_bytes());
+                            let result_hex = {
+                                let mut r = share.result;
+                                r.reverse(); // BE->LE for submit
+                                hex::encode(r)
+                            };
                             if let Err(e) = client.submit_share(&share.job_id, &nonce_hex, &result_hex).await {
                                 eprintln!("submit error: {e}");
                             }
