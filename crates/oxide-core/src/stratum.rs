@@ -80,13 +80,13 @@ impl StratumClient {
             next_req_id: 1,
         };
 
-        // JSON-RPC login
+        // JSON-RPC login (declare algo for clarity)
         let req_id = client.take_req_id();
         let login = json!({
             "id": req_id,
             "jsonrpc": "2.0",
             "method": "login",
-            "params": { "login": wallet, "pass": pass, "agent": agent }
+            "params": { "login": wallet, "pass": pass, "agent": agent, "algo": "rx/0" }
         });
         client.send_line(login.to_string()).await?;
 
@@ -151,8 +151,8 @@ impl StratumClient {
         }
     }
 
-    /// Submit a share: **write only**. The response will be handled by the main loop via `read_json()`.
-    /// `nonce_hex` = 8 hex chars (LE bytes), `result_hex` = 64 hex chars.
+    /// Submit a share; response will be read by the main loop via `read_json()`.
+    /// `nonce_hex` = 8 hex chars (LE), `result_hex` = 64 hex chars (LE).
     pub async fn submit_share(
         &mut self,
         job_id: &str,
@@ -165,6 +165,14 @@ impl StratumClient {
             .ok_or_else(|| anyhow!("no session id; login not completed"))?;
 
         let req_id = self.take_req_id();
+
+        tracing::debug!(
+            job_id = job_id,
+            nonce_hex = nonce_hex,
+            result_hex = result_hex,
+            "submit_share"
+        );
+
         let submit = json!({
             "id": req_id,
             "jsonrpc": "2.0",
@@ -197,10 +205,6 @@ impl StratumClient {
     async fn read_line(&mut self) -> Result<String> {
         let mut buf = String::new();
         let n = self.reader.read_line(&mut buf).await?;
-        if n == 0 {
-            Ok(String::new())
-        } else {
-            Ok(buf)
-        }
+        if n == 0 { Ok(String::new()) } else { Ok(buf) }
     }
 }

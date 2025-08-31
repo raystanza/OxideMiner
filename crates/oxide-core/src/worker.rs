@@ -249,7 +249,7 @@ async fn randomx_worker_loop(
             seed_bytes.resize(32, 0u8);
         }
 
-        // Hash buffer (Send)
+        // Header/blob
         let mut blob =
             hex::decode(&j.blob).map_err(|e| anyhow::anyhow!("invalid job blob hex: {e}"))?;
 
@@ -287,6 +287,26 @@ async fn randomx_worker_loop(
                     put_u32_le(&mut blob, 39, nonce); // Monero 32-bit nonce at offset 39
                     let digest = hash(&vm, &blob);
 
+                    // DEBUG: log the candidate details (enable with RUST_LOG=oxide_core=debug)
+                    {
+                        let le_hex = hex::encode(digest);
+                        let mut be_bytes = digest;
+                        be_bytes.reverse();
+                        let be_hex = hex::encode(be_bytes);
+                        let wrote_nonce = u32::from_le_bytes([blob[39], blob[40], blob[41], blob[42]]);
+
+                        tracing::debug!(
+                            job_id = %j.job_id,
+                            nonce = nonce,
+                            wrote_nonce = wrote_nonce,
+                            seed = %seed_hex,
+                            target = %j.target,
+                            hash_le = %le_hex,
+                            hash_be = %be_hex,
+                            "share_candidate_debug"
+                        );
+                    }
+
                     if meets_target(&digest, &j.target) {
                         let _ = shares_tx.send(Share {
                             job_id: j.job_id.clone(),
@@ -317,25 +337,36 @@ fn put_u32_le(dst: &mut [u8], offset: usize, val: u32) {
     dst[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
 }
 
-/// Monero Stratum "target" is usually a 32-bit LITTLE-endian hex (e.g. "f3220000" => 0x000022f3).
-/// Compare the hash’s most-significant 32 bits. Since the hash bytes are LE,
-/// those MSB bits live in the *last* 4 bytes of the 32-byte digest.
+/// Monero Stratum "target" is usually a 32-bit LITTLE-endian hex (e.g., "f3220000" => 0x000022f3).
+/// Compare against the hash’s MSB 32 bits for a LE digest: i.e., the **last** 4 bytes.
+/// If a wider target (>8 hex chars) is provided, treat as a full 256-bit BE integer.
 fn meets_target(hash: &[u8; 32], target_hex: &str) -> bool {
+    // Fast path: 32-bit LE share target
     if target_hex.len() <= 8 {
-        // decode 32-bit LE target
         if let Ok(mut b) = hex::decode(target_hex) {
             if b.len() > 4 { b.truncate(4); }
             while b.len() < 4 { b.push(0); }
             let t32 = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
 
-            // take MSB 32 bits of the 256-bit LE hash => last 4 bytes as LE
-            let h_top = u32::from_le_bytes([hash[28], hash[29], hash[30], hash[31]]);
-            return h_top <= t32;
+            // hash is LE; MSB 32 bits live in the last 4 bytes
+            let h_top_le32 = u32::from_le_bytes([hash[28], hash[29], hash[30], hash[31]]);
+            let ok = h_top_le32 <= t32;
+
+            tracing::debug!(
+                t_hex = %target_hex,
+                t32 = t32,
+                diff_est = (0x1_0000_0000u64 / (t32 as u64)),
+                h_top_le32 = h_top_le32,
+                ok_le = ok,
+                "share_check_32bit"
+            );
+
+            return ok;
         }
         return false;
     }
 
-    // Wider target: interpret as full 256-bit big-endian integer
+    // Wider target: treat as 256-bit BE and compare to the LE hash by reversing.
     if let Ok(mut t) = hex::decode(target_hex) {
         if t.is_empty() || t.len() > 32 { return false; }
         if t.len() < 32 {
