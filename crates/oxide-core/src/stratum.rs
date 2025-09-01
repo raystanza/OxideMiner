@@ -1,14 +1,14 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::{
-        tcp::{OwnedReadHalf, OwnedWriteHalf},
-        TcpStream,
-    },
+    io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::TcpStream,
 };
+use tokio_rustls::{rustls, TlsConnector};
 use tracing::{info, warn};
+use webpki_roots::TLS_SERVER_ROOTS;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolJob {
@@ -21,8 +21,8 @@ pub struct PoolJob {
 }
 
 pub struct StratumClient {
-    reader: BufReader<OwnedReadHalf>,
-    writer: OwnedWriteHalf,
+    reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>>,
+    writer: Box<dyn io::AsyncWrite + Unpin + Send>,
     session_id: Option<String>,
     next_req_id: u64,
 }
@@ -34,26 +34,59 @@ impl StratumClient {
         wallet: &str,
         pass: &str,
         agent: &str,
+        use_tls: bool,
     ) -> Result<(Self, Option<PoolJob>)> {
-        let stream = TcpStream::connect(hostport)
-            .await
-            .with_context(|| format!("connect to {}", hostport))?;
-        let (r, w) = stream.into_split();
+        let (reader, writer): (
+            Box<dyn io::AsyncRead + Unpin + Send>,
+            Box<dyn io::AsyncWrite + Unpin + Send>,
+        ) = if use_tls {
+            let stream = TcpStream::connect(hostport)
+                .await
+                .with_context(|| format!("connect to {}", hostport))?;
+            let host = hostport
+                .split(':')
+                .next()
+                .ok_or_else(|| anyhow!("invalid host"))?;
+            let mut root_cert_store = rustls::RootCertStore::empty();
+            root_cert_store.add_trust_anchors(TLS_SERVER_ROOTS.iter().map(|ta| {
+                rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+                    ta.subject,
+                    ta.spki,
+                    ta.name_constraints,
+                )
+            }));
+            let config = rustls::ClientConfig::builder()
+                .with_safe_defaults()
+                .with_root_certificates(root_cert_store)
+                .with_no_client_auth();
+            let connector = TlsConnector::from(Arc::new(config));
+            let server_name =
+                rustls::ServerName::try_from(host).map_err(|_| anyhow!("invalid server name"))?;
+            let tls = connector.connect(server_name, stream).await?;
+            let (r, w) = io::split(tls);
+            (Box::new(r), Box::new(w))
+        } else {
+            let stream = TcpStream::connect(hostport)
+                .await
+                .with_context(|| format!("connect to {}", hostport))?;
+            let (r, w) = stream.into_split();
+            (Box::new(r), Box::new(w))
+        };
 
         let mut client = StratumClient {
-            reader: BufReader::new(r),
-            writer: w,
+            reader: BufReader::new(reader),
+            writer,
             session_id: None,
             next_req_id: 1,
         };
 
-        // JSON-RPC login
+        // JSON-RPC login (declare algo for clarity)
         let req_id = client.take_req_id();
         let login = json!({
             "id": req_id,
             "jsonrpc": "2.0",
             "method": "login",
-            "params": { "login": wallet, "pass": pass, "agent": agent }
+            "params": { "login": wallet, "pass": pass, "agent": agent, "algo": "rx/0" }
         });
         client.send_line(login.to_string()).await?;
 
@@ -110,23 +143,36 @@ impl StratumClient {
             let v = self.read_json().await?;
             if v.get("method").and_then(Value::as_str) == Some("job") {
                 if let Some(params) = v.get("params") {
-                    let job: PoolJob = serde_json::from_value(params.clone())
-                        .context("parse job params")?;
+                    let job: PoolJob =
+                        serde_json::from_value(params.clone()).context("parse job params")?;
                     return Ok(job);
                 }
             }
         }
     }
 
-    /// Submit a share: **write only**. The response will be handled by the main loop via `read_json()`.
-    /// `nonce_hex` = 8 hex chars (LE bytes), `result_hex` = 64 hex chars.
-    pub async fn submit_share(&mut self, job_id: &str, nonce_hex: &str, result_hex: &str) -> Result<()> {
+    /// Submit a share; response will be read by the main loop via `read_json()`.
+    /// `nonce_hex` = 8 hex chars (LE), `result_hex` = 64 hex chars (LE).
+    pub async fn submit_share(
+        &mut self,
+        job_id: &str,
+        nonce_hex: &str,
+        result_hex: &str,
+    ) -> Result<()> {
         let sid = self
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("no session id; login not completed"))?;
 
         let req_id = self.take_req_id();
+
+        tracing::debug!(
+            job_id = job_id,
+            nonce_hex = nonce_hex,
+            result_hex = result_hex,
+            "submit_share"
+        );
+
         let submit = json!({
             "id": req_id,
             "jsonrpc": "2.0",

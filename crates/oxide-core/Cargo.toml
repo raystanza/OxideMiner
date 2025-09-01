@@ -1,3 +1,5 @@
+# OxideMiner/crates/oxide-core/Cargo.toml
+
 [package]
 name = "oxide-core"
 version = "0.1.0"
@@ -18,3 +20,6 @@ hex = { workspace = true }
 num_cpus = { workspace = true }
 once_cell = { workspace = true }
 randomx-rs = { version = "1.4", optional = true }
+tokio-rustls = { workspace = true }
+webpki-roots = { workspace = true }
+core_affinity = { workspace = true }
