@@ -1,14 +1,15 @@
 use anyhow::Result;
 use clap::Parser;
+use http_body_util::Full;
+use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
-use hyper::body::{Incoming, Bytes};
-use http_body_util::Full;
 use hyper_util::rt::TokioIo;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
-    spawn_workers, Config, DevFeeScheduler, StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
+    huge_pages_enabled, recommended_thread_count, spawn_workers, Config, DevFeeScheduler,
+    StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -18,12 +19,7 @@ use std::sync::{
 };
 use tokio::net::TcpListener;
 use tracing::{info, warn};
-use tracing_subscriber::{
-    fmt,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-    EnvFilter,
-};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -141,7 +137,15 @@ async fn main() -> Result<()> {
     // MPSC: shares <- workers
     let (shares_tx, mut shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
 
-    let n_workers = cfg.threads.unwrap_or_else(|| num_cpus::get());
+    if !huge_pages_enabled() {
+        warn!("huge pages are not enabled; mining performance may be reduced");
+    }
+
+    let auto_threads = recommended_thread_count();
+    let n_workers = cfg.threads.unwrap_or(auto_threads);
+    if cfg.threads.is_none() {
+        info!("auto-selected {} worker threads", n_workers);
+    }
     let _workers = spawn_workers(
         n_workers,
         jobs_tx.clone(),
@@ -150,10 +154,10 @@ async fn main() -> Result<()> {
         cfg.huge_pages,
     );
 
-    let main_pool   = cfg.pool.clone();
+    let main_pool = cfg.pool.clone();
     let user_wallet = cfg.wallet.clone();
-    let pass        = cfg.pass.clone().unwrap_or_else(|| "x".into());
-    let agent       = cfg.agent.clone();
+    let pass = cfg.pass.clone().unwrap_or_else(|| "x".into());
+    let agent = cfg.agent.clone();
 
     info!(
         "dev fee fixed at {} bps (1%): {}",
@@ -167,7 +171,9 @@ async fn main() -> Result<()> {
     if let Some(port) = cfg.api_port {
         let a = accepted.clone();
         let r = rejected.clone();
-        tokio::spawn(async move { run_http_api(port, a, r).await; });
+        tokio::spawn(async move {
+            run_http_api(port, a, r).await;
+        });
     }
 
     // Snapshot flags for the async task
@@ -188,18 +194,28 @@ async fn main() -> Result<()> {
             use tokio::time::{sleep, Duration};
 
             loop {
-                let (mut client, initial_job) =
-                    match StratumClient::connect_and_login(&main_pool, &user_wallet, &pass, &agent, tls).await {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("connect/login failed: {e}");
-                            sleep(Duration::from_secs(5)).await;
-                            continue;
-                        }
-                    };
+                let (mut client, initial_job) = match StratumClient::connect_and_login(
+                    &main_pool,
+                    &user_wallet,
+                    &pass,
+                    &agent,
+                    tls,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("connect/login failed: {e}");
+                        sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                };
 
                 if let Some(job) = initial_job {
-                    let _ = jobs_tx.send(WorkItem { job, is_devfee: false });
+                    let _ = jobs_tx.send(WorkItem {
+                        job,
+                        is_devfee: false,
+                    });
                 }
 
                 let mut devfee = DevFeeScheduler::new();
