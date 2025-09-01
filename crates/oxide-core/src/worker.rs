@@ -221,7 +221,7 @@ async fn randomx_worker_loop(
     let mut work: Option<WorkItem> = None;
 
     // Precompute once (Send + Copy)
-    let threads_u32: u32 = num_cpus::get() as u32;
+    let threads_u32: u32 = worker_count as u32;
 
     loop {
         if work.is_none() {
@@ -293,7 +293,8 @@ async fn randomx_worker_loop(
                         let mut be_bytes = digest;
                         be_bytes.reverse();
                         let be_hex = hex::encode(be_bytes);
-                        let wrote_nonce = u32::from_le_bytes([blob[39], blob[40], blob[41], blob[42]]);
+                        let wrote_nonce =
+                            u32::from_le_bytes([blob[39], blob[40], blob[41], blob[42]]);
 
                         tracing::debug!(
                             job_id = %j.job_id,
@@ -344,8 +345,12 @@ fn meets_target(hash: &[u8; 32], target_hex: &str) -> bool {
     // Fast path: 32-bit LE share target
     if target_hex.len() <= 8 {
         if let Ok(mut b) = hex::decode(target_hex) {
-            if b.len() > 4 { b.truncate(4); }
-            while b.len() < 4 { b.push(0); }
+            if b.len() > 4 {
+                b.truncate(4);
+            }
+            while b.len() < 4 {
+                b.push(0);
+            }
             let t32 = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
 
             // hash is LE; MSB 32 bits live in the last 4 bytes
@@ -368,7 +373,9 @@ fn meets_target(hash: &[u8; 32], target_hex: &str) -> bool {
 
     // Wider target: treat as 256-bit BE and compare to the LE hash by reversing.
     if let Ok(mut t) = hex::decode(target_hex) {
-        if t.is_empty() || t.len() > 32 { return false; }
+        if t.is_empty() || t.len() > 32 {
+            return false;
+        }
         if t.len() < 32 {
             let mut pad = vec![0u8; 32 - t.len()]; // left-pad for BE
             pad.extend_from_slice(&t);
@@ -376,7 +383,9 @@ fn meets_target(hash: &[u8; 32], target_hex: &str) -> bool {
         }
         // Compare as 256-bit BE: reverse LE hash into BE without allocation
         for (hb, tb) in hash.iter().rev().zip(t.iter()) {
-            if hb != tb { return *hb < *tb; }
+            if hb != tb {
+                return *hb < *tb;
+            }
         }
         true
     } else {

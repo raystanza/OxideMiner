@@ -1,14 +1,16 @@
 use anyhow::Result;
 use clap::Parser;
+use http_body_util::Full;
+use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
-use hyper::body::{Incoming, Bytes};
-use http_body_util::Full;
 use hyper_util::rt::TokioIo;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
-    spawn_workers, Config, DevFeeScheduler, StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
+    available_memory_bytes, detect_cpu_features, huge_pages_available, memory_usage_for_threads,
+    recommended_thread_count, spawn_workers, Config, DevFeeScheduler, StratumClient,
+    DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -18,12 +20,7 @@ use std::sync::{
 };
 use tokio::net::TcpListener;
 use tracing::{info, warn};
-use tracing_subscriber::{
-    fmt,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-    EnvFilter,
-};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -136,24 +133,47 @@ async fn main() -> Result<()> {
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
     };
 
+    let features = detect_cpu_features();
+    info!(
+        "cpu features aes={} sse2={} sse4.1={} avx2={}",
+        features.aes, features.sse2, features.sse41, features.avx2
+    );
+
+    let huge_supported = huge_pages_available();
+    if !huge_supported {
+        warn!("huge pages not enabled; performance may suffer");
+    }
+
+    let n_workers = recommended_thread_count(cfg.threads);
+    info!("using {} worker threads", n_workers);
+    let needed_mem = memory_usage_for_threads(n_workers);
+    let avail_mem = available_memory_bytes();
+    if needed_mem > avail_mem {
+        warn!(
+            "{} threads require {} MiB but only {} MiB available",
+            n_workers,
+            needed_mem / 1024 / 1024,
+            avail_mem / 1024 / 1024
+        );
+    }
+
     // Broadcast: jobs -> workers
     let (jobs_tx, _jobs_rx0) = tokio::sync::broadcast::channel(64);
     // MPSC: shares <- workers
     let (shares_tx, mut shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
 
-    let n_workers = cfg.threads.unwrap_or_else(|| num_cpus::get());
     let _workers = spawn_workers(
         n_workers,
         jobs_tx.clone(),
         shares_tx,
         cfg.affinity,
-        cfg.huge_pages,
+        cfg.huge_pages && huge_supported,
     );
 
-    let main_pool   = cfg.pool.clone();
+    let main_pool = cfg.pool.clone();
     let user_wallet = cfg.wallet.clone();
-    let pass        = cfg.pass.clone().unwrap_or_else(|| "x".into());
-    let agent       = cfg.agent.clone();
+    let pass = cfg.pass.clone().unwrap_or_else(|| "x".into());
+    let agent = cfg.agent.clone();
 
     info!(
         "dev fee fixed at {} bps (1%): {}",
@@ -167,7 +187,9 @@ async fn main() -> Result<()> {
     if let Some(port) = cfg.api_port {
         let a = accepted.clone();
         let r = rejected.clone();
-        tokio::spawn(async move { run_http_api(port, a, r).await; });
+        tokio::spawn(async move {
+            run_http_api(port, a, r).await;
+        });
     }
 
     // Snapshot flags for the async task
@@ -188,18 +210,28 @@ async fn main() -> Result<()> {
             use tokio::time::{sleep, Duration};
 
             loop {
-                let (mut client, initial_job) =
-                    match StratumClient::connect_and_login(&main_pool, &user_wallet, &pass, &agent, tls).await {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("connect/login failed: {e}");
-                            sleep(Duration::from_secs(5)).await;
-                            continue;
-                        }
-                    };
+                let (mut client, initial_job) = match StratumClient::connect_and_login(
+                    &main_pool,
+                    &user_wallet,
+                    &pass,
+                    &agent,
+                    tls,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("connect/login failed: {e}");
+                        sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                };
 
                 if let Some(job) = initial_job {
-                    let _ = jobs_tx.send(WorkItem { job, is_devfee: false });
+                    let _ = jobs_tx.send(WorkItem {
+                        job,
+                        is_devfee: false,
+                    });
                 }
 
                 let mut devfee = DevFeeScheduler::new();
