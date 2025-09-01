@@ -27,3 +27,6 @@ webpki-roots = "0.25"
 core_affinity = "0.5"
 hyper-util = { version = "0.1", features = ["server", "tokio"] }
 http-body-util = "0.1"
+raw-cpuid = "10"
+sysinfo = { version = "0.30" }
+cfg-if = "1"

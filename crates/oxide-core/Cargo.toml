@@ -23,3 +23,9 @@ randomx-rs = { version = "1.4", optional = true }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
 core_affinity = { workspace = true }
+raw-cpuid = { workspace = true }
+sysinfo = { workspace = true }
+cfg-if = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.52", features = ["Win32_System_Memory"] }
