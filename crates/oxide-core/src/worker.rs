@@ -47,7 +47,7 @@ pub fn spawn_workers(
                         }
                     }
                     if let Err(e) = randomx_worker_loop(i, n, &mut rx, shares_tx).await {
-                        eprintln!("worker {i} exited: {e:?}");
+                        warn!(worker = i, error = ?e, "worker exited");
                     }
                 }
                 #[cfg(not(feature = "randomx"))]
@@ -64,8 +64,10 @@ pub fn spawn_workers(
 
 #[cfg(feature = "randomx")]
 mod engine {
+    use crate::system;
     use anyhow::Result;
     use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
+    use tracing::warn;
     use std::{
         cell::RefCell,
         sync::atomic::{AtomicBool, Ordering},
@@ -101,14 +103,31 @@ mod engine {
     fn default_flags() -> RandomXFlag {
         let mut flags = RandomXFlag::FLAG_JIT | RandomXFlag::FLAG_FULL_MEM;
         if LARGE_PAGES.load(Ordering::Relaxed) {
-            flags |= RandomXFlag::FLAG_LARGE_PAGES | RandomXFlag::FLAG_HARD_AES;
+            flags |= RandomXFlag::FLAG_LARGE_PAGES;
+        }
+        if system::cpu_has_aes() {
+            flags |= RandomXFlag::FLAG_HARD_AES;
         }
         flags
     }
 
     pub fn new_cache(flags: Option<RandomXFlag>, key: &[u8]) -> Result<Cache> {
-        let flags = flags.unwrap_or_else(default_flags);
-        let cache = RandomXCache::new(flags, key)?;
+        let mut flags = flags.unwrap_or_else(default_flags);
+
+        // First attempt with requested flags
+        let cache = match RandomXCache::new(flags, key) {
+            Ok(c) => c,
+            Err(e) => {
+                // If large pages were requested but allocation failed, retry without them.
+                if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
+                    warn!("RandomX large pages allocation failed for cache; retrying without large pages: {e}");
+                    flags &= !RandomXFlag::FLAG_LARGE_PAGES;
+                    RandomXCache::new(flags, key)?
+                } else {
+                    return Err(e.into());
+                }
+            }
+        };
         Ok(Cache {
             inner: cache,
             key: key.to_vec(),
@@ -117,9 +136,20 @@ mod engine {
     }
 
     pub fn new_dataset(flags: Option<RandomXFlag>, cache: &Cache, threads: u32) -> Result<Dataset> {
-        let flags = flags.unwrap_or_else(default_flags);
+        let mut flags = flags.unwrap_or_else(default_flags);
         // Dataset::new takes OWNED cache and a u32 thread count.
-        let ds = RandomXDataset::new(flags, cache.inner.clone(), threads)?;
+        let ds = match RandomXDataset::new(flags, cache.inner.clone(), threads) {
+            Ok(d) => d,
+            Err(e) => {
+                if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
+                    warn!("RandomX large pages allocation failed for dataset; retrying without large pages: {e}");
+                    flags &= !RandomXFlag::FLAG_LARGE_PAGES;
+                    RandomXDataset::new(flags, cache.inner.clone(), threads)?
+                } else {
+                    return Err(e.into());
+                }
+            }
+        };
         Ok(Dataset {
             inner: ds,
             _flags: flags,
@@ -221,7 +251,7 @@ async fn randomx_worker_loop(
     let mut work: Option<WorkItem> = None;
 
     // Precompute once (Send + Copy)
-    let threads_u32: u32 = num_cpus::get() as u32;
+    let threads_u32: u32 = worker_count as u32;
 
     loop {
         if work.is_none() {
@@ -293,7 +323,8 @@ async fn randomx_worker_loop(
                         let mut be_bytes = digest;
                         be_bytes.reverse();
                         let be_hex = hex::encode(be_bytes);
-                        let wrote_nonce = u32::from_le_bytes([blob[39], blob[40], blob[41], blob[42]]);
+                        let wrote_nonce =
+                            u32::from_le_bytes([blob[39], blob[40], blob[41], blob[42]]);
 
                         tracing::debug!(
                             job_id = %j.job_id,
@@ -344,8 +375,12 @@ fn meets_target(hash: &[u8; 32], target_hex: &str) -> bool {
     // Fast path: 32-bit LE share target
     if target_hex.len() <= 8 {
         if let Ok(mut b) = hex::decode(target_hex) {
-            if b.len() > 4 { b.truncate(4); }
-            while b.len() < 4 { b.push(0); }
+            if b.len() > 4 {
+                b.truncate(4);
+            }
+            while b.len() < 4 {
+                b.push(0);
+            }
             let t32 = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
 
             // hash is LE; MSB 32 bits live in the last 4 bytes
@@ -368,7 +403,9 @@ fn meets_target(hash: &[u8; 32], target_hex: &str) -> bool {
 
     // Wider target: treat as 256-bit BE and compare to the LE hash by reversing.
     if let Ok(mut t) = hex::decode(target_hex) {
-        if t.is_empty() || t.len() > 32 { return false; }
+        if t.is_empty() || t.len() > 32 {
+            return false;
+        }
         if t.len() < 32 {
             let mut pad = vec![0u8; 32 - t.len()]; // left-pad for BE
             pad.extend_from_slice(&t);
@@ -376,7 +413,9 @@ fn meets_target(hash: &[u8; 32], target_hex: &str) -> bool {
         }
         // Compare as 256-bit BE: reverse LE hash into BE without allocation
         for (hb, tb) in hash.iter().rev().zip(t.iter()) {
-            if hb != tb { return *hb < *tb; }
+            if hb != tb {
+                return *hb < *tb;
+            }
         }
         true
     } else {
