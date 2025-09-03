@@ -1,3 +1,5 @@
+# OxideMiner/.cargo/config.toml
+
 [env]
 RUST_BACKTRACE = "full"
 CMAKE_GENERATOR = "Ninja"
@@ -9,6 +11,7 @@ CMAKE_MAKE_PROGRAM = "ninja"
 br = "build --release"
 rr = "run --release"
 tr = "test --release"
+c = "check --all --all-targets --all-features"
 
 [build]
 target-dir = "ox-build/target"

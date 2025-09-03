@@ -128,13 +128,23 @@ impl StratumClient {
 
     /// Read the next JSON message from the pool (jobs, submit responses, etc.)
     pub async fn read_json(&mut self) -> Result<Value> {
-        let line = self.read_line().await?;
-        if line.is_empty() {
-            return Err(anyhow!("pool closed"));
+        loop {
+            let line = self.read_line().await?;
+            if line.is_empty() {
+                // true EOF
+                return Err(anyhow!("pool closed"));
+            }
+
+            match serde_json::from_str::<Value>(&line) {
+                Ok(v) => return Ok(v),
+                Err(_) => {
+                    // Some pools/proxies can emit banners/keepalives/garbage lines.
+                    // Ignore and keep reading instead of killing the connection.
+                    tracing::debug!(raw = %line.trim(), "ignoring non-JSON line from pool");
+                    continue;
+                }
+            }
         }
-        let v: Value = serde_json::from_str(&line)
-            .with_context(|| format!("invalid json from pool: {}", line.trim()))?;
-        Ok(v)
     }
 
     /// Convenience: block until a "job" notify (unused in the new main loop, kept for completeness).

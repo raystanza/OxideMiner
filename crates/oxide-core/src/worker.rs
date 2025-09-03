@@ -47,7 +47,7 @@ pub fn spawn_workers(
                         }
                     }
                     if let Err(e) = randomx_worker_loop(i, n, &mut rx, shares_tx).await {
-                        eprintln!("worker {i} exited: {e:?}");
+                        warn!(worker = i, error = ?e, "worker exited");
                     }
                 }
                 #[cfg(not(feature = "randomx"))]
@@ -67,6 +67,7 @@ mod engine {
     use crate::system;
     use anyhow::Result;
     use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
+    use tracing::warn;
     use std::{
         cell::RefCell,
         sync::atomic::{AtomicBool, Ordering},
@@ -111,8 +112,22 @@ mod engine {
     }
 
     pub fn new_cache(flags: Option<RandomXFlag>, key: &[u8]) -> Result<Cache> {
-        let flags = flags.unwrap_or_else(default_flags);
-        let cache = RandomXCache::new(flags, key)?;
+        let mut flags = flags.unwrap_or_else(default_flags);
+
+        // First attempt with requested flags
+        let cache = match RandomXCache::new(flags, key) {
+            Ok(c) => c,
+            Err(e) => {
+                // If large pages were requested but allocation failed, retry without them.
+                if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
+                    warn!("RandomX large pages allocation failed for cache; retrying without large pages: {e}");
+                    flags &= !RandomXFlag::FLAG_LARGE_PAGES;
+                    RandomXCache::new(flags, key)?
+                } else {
+                    return Err(e.into());
+                }
+            }
+        };
         Ok(Cache {
             inner: cache,
             key: key.to_vec(),
@@ -121,9 +136,20 @@ mod engine {
     }
 
     pub fn new_dataset(flags: Option<RandomXFlag>, cache: &Cache, threads: u32) -> Result<Dataset> {
-        let flags = flags.unwrap_or_else(default_flags);
+        let mut flags = flags.unwrap_or_else(default_flags);
         // Dataset::new takes OWNED cache and a u32 thread count.
-        let ds = RandomXDataset::new(flags, cache.inner.clone(), threads)?;
+        let ds = match RandomXDataset::new(flags, cache.inner.clone(), threads) {
+            Ok(d) => d,
+            Err(e) => {
+                if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
+                    warn!("RandomX large pages allocation failed for dataset; retrying without large pages: {e}");
+                    flags &= !RandomXFlag::FLAG_LARGE_PAGES;
+                    RandomXDataset::new(flags, cache.inner.clone(), threads)?
+                } else {
+                    return Err(e.into());
+                }
+            }
+        };
         Ok(Dataset {
             inner: ds,
             _flags: flags,

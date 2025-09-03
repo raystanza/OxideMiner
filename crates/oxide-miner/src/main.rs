@@ -8,7 +8,7 @@ use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
-    huge_pages_enabled, recommended_thread_count, spawn_workers, Config, DevFeeScheduler,
+    cpu_has_aes, huge_pages_enabled, autotune_snapshot, spawn_workers, Config, DevFeeScheduler,
     StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::convert::Infallible;
@@ -17,6 +17,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -67,6 +68,13 @@ struct Args {
     /// Enable verbose debug logs; when set, also writes to ./logs/ (daily rotation)
     #[arg(long = "debug")]
     debug: bool,
+}
+
+fn tiny_jitter_ms() -> u64 {
+    // Derive a tiny jitter from the current time.
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let nanos = now.subsec_nanos() as u64;
+    100 + (nanos % 500) // 100...600 ms
 }
 
 #[tokio::main]
@@ -132,6 +140,51 @@ async fn main() -> Result<()> {
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
     };
 
+    // Detect huge/large pages and warn once if not present
+    let hp_supported = huge_pages_enabled();
+    if !hp_supported {
+        warn!(
+            "Huge pages are NOT enabled; RandomX performance may be reduced. \
+            Linux: configure vm.nr_hugepages; Windows: enable 'Lock pages in memory' and Large Pages."
+        );
+    }
+
+    // Take snapshot to log how auto-tune decided thread count
+    let snap = autotune_snapshot();
+    let auto_threads = snap.suggested_threads;
+    let n_workers = cfg.threads.unwrap_or(auto_threads);
+
+    // One-line summary that's easy to read in logs
+    let l3_mib = snap.l3_bytes.map(|b| (b as u64) / (1024 * 1024));
+    let avail_mib = snap.available_bytes / (1024 * 1024);
+    let aes = cpu_has_aes();
+
+    // If spawn call passes a 'large_pages' boolean, prefer user opt-in AND OS support
+    let large_pages = cfg.huge_pages && hp_supported;
+
+    if let Some(user_t) = cfg.threads {
+        info!(
+            "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages={} -> threads={} (OVERRIDE; auto={})",
+            snap.physical_cores,
+            l3_mib.unwrap_or(0),
+            avail_mib,
+            aes,
+            large_pages,
+            user_t,
+            auto_threads
+        );
+    } else {
+        info!(
+            "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages={} -> threads={}",
+            snap.physical_cores,
+            l3_mib.unwrap_or(0),
+            avail_mib,
+            aes,
+            large_pages,
+            n_workers
+        );
+    }
+
     // Broadcast: jobs -> workers
     let (jobs_tx, _jobs_rx0) = tokio::sync::broadcast::channel(64);
     // MPSC: shares <- workers
@@ -141,8 +194,6 @@ async fn main() -> Result<()> {
         warn!("huge pages are not enabled; mining performance may be reduced");
     }
 
-    let auto_threads = recommended_thread_count();
-    let n_workers = cfg.threads.unwrap_or(auto_threads);
     if cfg.threads.is_none() {
         info!("auto-selected {} worker threads", n_workers);
     }
@@ -151,7 +202,7 @@ async fn main() -> Result<()> {
         jobs_tx.clone(),
         shares_tx,
         cfg.affinity,
-        cfg.huge_pages,
+        large_pages,
     );
 
     let main_pool = cfg.pool.clone();
@@ -206,7 +257,7 @@ async fn main() -> Result<()> {
                     Ok(v) => v,
                     Err(e) => {
                         eprintln!("connect/login failed: {e}");
-                        sleep(Duration::from_secs(5)).await;
+                        sleep(Duration::from_millis(5_000 + tiny_jitter_ms())).await;
                         continue;
                     }
                 };
@@ -275,6 +326,7 @@ async fn main() -> Result<()> {
                                 }
                                 Err(e) => {
                                     eprintln!("pool read error: {e}");
+                                    sleep(Duration::from_millis(tiny_jitter_ms())).await;
                                     break; // break inner loop -> reconnect
                                 }
                             }
@@ -311,13 +363,17 @@ async fn main() -> Result<()> {
                                                 }
                                             }
                                             Err(e) => {
-                                                eprintln!("reconnect failed: {e}");
+                                                warn!("reconnect failed (devfee -> user): {e}");
+                                                sleep(Duration::from_millis(tiny_jitter_ms())).await;
                                                 break; // break inner loop -> reconnect
                                             }
                                         }
                                     }
                                 }
-                                None => break, // workers dropped
+                                None => {
+                                    warn!("shares channel closed (no workers alive); stopping pool task to avoid reconnect storm");
+                                    return; // end the pool task instead of reconnecting
+                                }
                             }
                         }
                     }
