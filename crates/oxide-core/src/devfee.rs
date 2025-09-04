@@ -21,3 +21,21 @@ impl DevFeeScheduler {
         (self.counter % 100) == 0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn donate_every_hundred() {
+        let mut sched = DevFeeScheduler::new();
+        for i in 1..200 {
+            let donate = sched.should_donate();
+            if i % DEV_FEE_BASIS_POINTS as usize == 0 {
+                assert!(donate, "expected donation on job {}", i);
+            } else {
+                assert!(!donate, "unexpected donation on job {}", i);
+            }
+        }
+    }
+}

@@ -14,15 +14,7 @@ pub fn huge_pages_enabled() -> bool {
     #[cfg(target_os = "linux")]
     {
         if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
-            for line in meminfo.lines() {
-                if let Some(rest) = line.strip_prefix("HugePages_Total:") {
-                    if let Some(total) = rest.trim().split_whitespace().next() {
-                        if let Ok(v) = total.parse::<u64>() {
-                            return v > 0;
-                        }
-                    }
-                }
-            }
+            return parse_hugepages_total(&meminfo);
         }
         false
     }
@@ -36,6 +28,20 @@ pub fn huge_pages_enabled() -> bool {
     {
         false
     }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_hugepages_total(meminfo: &str) -> bool {
+    for line in meminfo.lines() {
+        if let Some(rest) = line.strip_prefix("HugePages_Total:") {
+            if let Some(total) = rest.trim().split_whitespace().next() {
+                if let Ok(v) = total.parse::<u64>() {
+                    return v > 0;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Determine whether the current CPU supports AES instructions (x86/x86_64).
@@ -133,4 +139,32 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
 /// Legacy helper used elsewhere; delegates to the snapshot.
 pub fn recommended_thread_count() -> usize {
     autotune_snapshot().suggested_threads
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_hugepages_total() {
+        let enabled = "HugePages_Total:       5\nOther: 0";
+        assert!(parse_hugepages_total(enabled));
+        let disabled = "HugePages_Total:       0\nOther: 0";
+        assert!(!parse_hugepages_total(disabled));
+        let missing = "SomethingElse: 1";
+        assert!(!parse_hugepages_total(missing));
+    }
+
+    #[test]
+    fn recommended_matches_snapshot() {
+        let snap = autotune_snapshot();
+        assert_eq!(recommended_thread_count(), snap.suggested_threads);
+    }
+
+    #[test]
+    fn feature_checks_do_not_panic() {
+        let _ = cpu_has_aes();
+        let _ = huge_pages_enabled();
+    }
 }

@@ -422,3 +422,46 @@ fn meets_target(hash: &[u8; 32], target_hex: &str) -> bool {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::{broadcast, mpsc};
+
+    #[tokio::test]
+    async fn spawns_correct_number_of_workers() {
+        let (jobs_tx, _jobs_rx) = broadcast::channel(1);
+        let (shares_tx, _shares_rx) = mpsc::unbounded_channel();
+        let handles = spawn_workers(3, jobs_tx, shares_tx, false, false);
+        assert_eq!(handles.len(), 3);
+        for h in handles {
+            h.abort();
+        }
+    }
+
+    #[test]
+    fn put_u32_le_writes_bytes() {
+        let mut buf = [0u8; 8];
+        put_u32_le(&mut buf, 2, 0x0A0B0C0D);
+        assert_eq!(&buf[2..6], &[0x0D, 0x0C, 0x0B, 0x0A]);
+    }
+
+    #[test]
+    fn meets_target_32bit() {
+        let mut hash = [0u8; 32];
+        assert!(meets_target(&hash, "00000000"));
+        hash[28] = 2; // h_top_le32 = 2
+        assert!(!meets_target(&hash, "01000000")); // target 1 (LE hex)
+    }
+
+    #[test]
+    fn meets_target_wide() {
+        let hash_zero = [0u8; 32];
+        assert!(meets_target(&hash_zero, "01"));
+        let hash_high = [0xFFu8; 32];
+        assert!(!meets_target(&hash_high, "01"));
+        assert!(
+            meets_target(&hash_high, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+        );
+    }
+}

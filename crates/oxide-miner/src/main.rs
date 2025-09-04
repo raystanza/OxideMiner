@@ -397,6 +397,17 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jitter_in_range() {
+        let j = tiny_jitter_ms();
+        assert!(j >= 100 && j <= 600);
+    }
+}
+
 // Tiny /metrics endpoint (optional)
 async fn run_http_api(port: u16, accepted: Arc<AtomicU64>, rejected: Arc<AtomicU64>) {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
