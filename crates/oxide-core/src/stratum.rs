@@ -218,3 +218,64 @@ impl StratumClient {
         if n == 0 { Ok(String::new()) } else { Ok(buf) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn request_ids_increment() {
+        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> =
+            BufReader::new(Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>);
+        let writer: Box<dyn io::AsyncWrite + Unpin + Send> =
+            Box::new(io::sink());
+        let mut client = StratumClient { reader, writer, session_id: None, next_req_id: 1 };
+        assert_eq!(client.take_req_id(), 1);
+        assert_eq!(client.take_req_id(), 2);
+    }
+
+    #[tokio::test]
+    async fn send_line_appends_newline() {
+        let (write_half, mut read_half) = io::duplex(64);
+        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> =
+            BufReader::new(Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>);
+        let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(write_half);
+        let mut client = StratumClient { reader, writer, session_id: None, next_req_id: 1 };
+        client.send_line("ping".into()).await.unwrap();
+        let mut buf = [0u8; 5];
+        read_half.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping\n");
+    }
+
+    #[tokio::test]
+    async fn read_json_skips_noise() {
+        let (read_side, mut write_side) = io::duplex(128);
+        tokio::spawn(async move {
+            write_side.write_all(b"garbage\n{\"a\":1}\n").await.unwrap();
+        });
+        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> =
+            BufReader::new(Box::new(read_side) as Box<dyn io::AsyncRead + Unpin + Send>);
+        let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(io::sink());
+        let mut client = StratumClient { reader, writer, session_id: None, next_req_id: 1 };
+        let v = client.read_json().await.unwrap();
+        assert_eq!(v.get("a").and_then(|x| x.as_u64()), Some(1));
+    }
+
+    #[test]
+    fn pooljob_roundtrip() {
+        let job = PoolJob {
+            job_id: "1".into(),
+            blob: "deadbeef".into(),
+            target: "abcd".into(),
+            seed_hash: Some("seed".into()),
+            height: Some(42),
+            algo: Some("rx/0".into()),
+        };
+        let json = serde_json::to_string(&job).unwrap();
+        let de: PoolJob = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.job_id, "1");
+        assert_eq!(de.seed_hash.as_deref(), Some("seed"));
+        assert_eq!(de.height, Some(42));
+    }
+}

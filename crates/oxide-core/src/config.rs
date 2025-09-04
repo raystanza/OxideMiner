@@ -39,3 +39,22 @@ impl Default for Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_values() {
+        let cfg = Config::default();
+        assert_eq!(cfg.pool, "pool.example.com:3333");
+        assert_eq!(cfg.wallet, "<YOUR_XMR_ADDRESS>");
+        assert_eq!(cfg.pass.as_deref(), Some("x"));
+        assert!(cfg.enable_devfee);
+        assert!(!cfg.tls);
+        assert_eq!(cfg.api_port, None);
+        assert!(!cfg.affinity);
+        assert!(!cfg.huge_pages);
+        assert!(cfg.agent.starts_with("OxideMiner/"));
+    }
+}
