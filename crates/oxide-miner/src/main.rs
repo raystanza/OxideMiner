@@ -8,7 +8,7 @@ use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
-    cpu_has_aes, huge_pages_enabled, autotune_snapshot, spawn_workers, Config, DevFeeScheduler,
+    autotune_snapshot, cpu_has_aes, huge_pages_enabled, spawn_workers, Config, DevFeeScheduler,
     StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::convert::Infallible;
@@ -65,6 +65,14 @@ struct Args {
     #[arg(long = "huge-pages")]
     huge_pages: bool,
 
+    /// Hashes processed per batch before yielding
+    #[arg(long = "batch-size", default_value_t = 10_000)]
+    batch_size: usize,
+
+    /// Do not yield to the scheduler between batches
+    #[arg(long = "no-yield")]
+    no_yield: bool,
+
     /// Enable verbose debug logs; when set, also writes to ./logs/ (daily rotation)
     #[arg(long = "debug")]
     debug: bool,
@@ -72,7 +80,9 @@ struct Args {
 
 fn tiny_jitter_ms() -> u64 {
     // Derive a tiny jitter from the current time.
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let nanos = now.subsec_nanos() as u64;
     100 + (nanos % 500) // 100...600 ms
 }
@@ -138,6 +148,8 @@ async fn main() -> Result<()> {
         affinity: args.affinity,
         huge_pages: args.huge_pages,
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
+        batch_size: args.batch_size,
+        yield_between_batches: !args.no_yield,
     };
 
     // Detect huge/large pages and warn once if not present
@@ -203,6 +215,8 @@ async fn main() -> Result<()> {
         shares_tx,
         cfg.affinity,
         large_pages,
+        cfg.batch_size,
+        cfg.yield_between_batches,
     );
 
     let main_pool = cfg.pool.clone();
@@ -292,7 +306,8 @@ async fn main() -> Result<()> {
                                                 Err(e) => warn!("devfee connect failed: {e}"),
                                             }
                                         } else if let Some(params) = v.get("params") {
-                                            if let Ok(job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
+                                            if let Ok(mut job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
+                                                job.parse_target();
                                                 let _ = jobs_tx.send(WorkItem { job, is_devfee: using_dev });
                                             }
                                         }
