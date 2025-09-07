@@ -8,11 +8,11 @@ use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
-    cpu_has_aes, huge_pages_enabled, autotune_snapshot, spawn_workers, Config, DevFeeScheduler,
+    autotune_snapshot, cpu_has_aes, huge_pages_enabled, spawn_workers, Config, DevFeeScheduler,
     StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
-use std::convert::Infallible;
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -31,12 +31,12 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 )]
 struct Args {
     /// pool like "pool.supportxmr.com:5555"
-    #[arg(short = 'o', long = "url")]
-    pool: String,
+    #[arg(short = 'o', long = "url", required_unless_present = "benchmark")]
+    pool: Option<String>,
 
     /// Your XMR wallet address
-    #[arg(short = 'u', long = "user")]
-    wallet: String,
+    #[arg(short = 'u', long = "user", required_unless_present = "benchmark")]
+    wallet: Option<String>,
 
     /// Pool password (often 'x')
     #[arg(short = 'p', long = "pass", default_value = "x")]
@@ -77,11 +77,17 @@ struct Args {
     /// Enable verbose debug logs; when set, also writes to ./logs/ (daily rotation)
     #[arg(long = "debug")]
     debug: bool,
+
+    /// Run a local RandomX benchmark and exit
+    #[arg(long = "benchmark")]
+    benchmark: bool,
 }
 
 fn tiny_jitter_ms() -> u64 {
     // Derive a tiny jitter from the current time.
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let nanos = now.subsec_nanos() as u64;
     100 + (nanos % 500) // 100...600 ms
 }
@@ -136,9 +142,28 @@ async fn main() -> Result<()> {
     }
     // ----------------------------------------------------------
 
+    if args.benchmark {
+        let hp_supported = huge_pages_enabled();
+        if args.huge_pages && !hp_supported {
+            warn!("Huge pages are NOT enabled; RandomX performance may be reduced.");
+        }
+        let snap = autotune_snapshot();
+        let n_workers = args.threads.unwrap_or(snap.suggested_threads);
+        let large_pages = args.huge_pages && hp_supported;
+        info!(
+            "benchmark: threads={} batch_size={} large_pages={} yield={}",
+            n_workers, args.batch_size, large_pages, !args.no_yield
+        );
+        let hps =
+            oxide_core::run_benchmark(n_workers, 10, large_pages, args.batch_size, !args.no_yield)
+                .await?;
+        println!("RandomX benchmark: {:.2} H/s", hps);
+        return Ok(());
+    }
+
     let cfg = Config {
-        pool: args.pool,
-        wallet: args.wallet,
+        pool: args.pool.expect("pool required unless --benchmark"),
+        wallet: args.wallet.expect("user required unless --benchmark"),
         pass: Some(args.pass),
         threads: args.threads,
         enable_devfee: !args.no_devfee,
@@ -271,7 +296,7 @@ async fn main() -> Result<()> {
                     Ok(v) => {
                         backoff_ms = 1_000;
                         v
-                    },
+                    }
                     Err(e) => {
                         eprintln!("connect/login failed: {e}");
                         sleep(Duration::from_millis(backoff_ms)).await;
@@ -288,7 +313,10 @@ async fn main() -> Result<()> {
 
                 if let Some(job) = initial_job {
                     let id = job.job_id.clone();
-                    let _ = jobs_tx.send(WorkItem { job, is_devfee: false });
+                    let _ = jobs_tx.send(WorkItem {
+                        job,
+                        is_devfee: false,
+                    });
                     // Seed valid job ids with the login job
                     valid_job_ids.insert(id);
                 }
