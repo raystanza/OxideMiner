@@ -1,0 +1,61 @@
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(
+    author,
+    version,
+    about = "OxideMiner - Rust Monero RandomX CPU miner (CLI MVP)"
+)]
+pub struct Args {
+    /// pool like "pool.supportxmr.com:5555"
+    #[arg(short = 'o', long = "url", required_unless_present = "benchmark")]
+    pub pool: Option<String>,
+
+    /// Your XMR wallet address
+    #[arg(short = 'u', long = "user", required_unless_present = "benchmark")]
+    pub wallet: Option<String>,
+
+    /// Pool password (often 'x')
+    #[arg(short = 'p', long = "pass", default_value = "x")]
+    pub pass: String,
+
+    /// Number of threads (omit for auto)
+    #[arg(short = 't', long = "threads")]
+    pub threads: Option<usize>,
+
+    /// Disable dev fee (testing builds only)
+    #[arg(long = "no-devfee")]
+    pub no_devfee: bool,
+
+    /// Enable TLS for pool connection
+    #[arg(long = "tls")]
+    pub tls: bool,
+
+    /// Expose a simple HTTP API on this port
+    #[arg(long = "api-port")]
+    pub api_port: Option<u16>,
+
+    /// Pin worker threads to CPU cores
+    #[arg(long = "affinity")]
+    pub affinity: bool,
+
+    /// Request huge pages for RandomX dataset
+    #[arg(long = "huge-pages")]
+    pub huge_pages: bool,
+
+    /// Number of hashes per batch in mining loop
+    #[arg(long = "batch-size", default_value_t = 10_000)]
+    pub batch_size: usize,
+
+    /// Disable cooperative yields between hash batches
+    #[arg(long = "no-yield")]
+    pub no_yield: bool,
+
+    /// Enable verbose debug logs; when set, also writes to ./logs/ (daily rotation)
+    #[arg(long = "debug")]
+    pub debug: bool,
+
+    /// Run a local RandomX benchmark and exit
+    #[arg(long = "benchmark")]
+    pub benchmark: bool,
+}
