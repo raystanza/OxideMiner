@@ -20,6 +20,10 @@ pub struct Config {
     pub affinity: bool,
     /// request huge/large pages for RandomX dataset
     pub huge_pages: bool,
+    /// number of hashes computed per batch in the hot mining loop
+    pub batch_size: usize,
+    /// yield to Tokio scheduler between hash batches
+    pub yield_between_batches: bool,
     pub agent: String,
 }
 
@@ -35,6 +39,8 @@ impl Default for Config {
             api_port: None,
             affinity: false,
             huge_pages: false,
+            batch_size: 10_000,
+            yield_between_batches: true,
             agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
         }
     }
@@ -55,6 +61,8 @@ mod tests {
         assert_eq!(cfg.api_port, None);
         assert!(!cfg.affinity);
         assert!(!cfg.huge_pages);
+        assert_eq!(cfg.batch_size, 10_000);
+        assert!(cfg.yield_between_batches);
         assert!(cfg.agent.starts_with("OxideMiner/"));
     }
 }

@@ -65,6 +65,14 @@ struct Args {
     #[arg(long = "huge-pages")]
     huge_pages: bool,
 
+    /// Number of hashes per batch in mining loop
+    #[arg(long = "batch-size", default_value_t = 10_000)]
+    batch_size: usize,
+
+    /// Disable cooperative yields between hash batches
+    #[arg(long = "no-yield")]
+    no_yield: bool,
+
     /// Enable verbose debug logs; when set, also writes to ./logs/ (daily rotation)
     #[arg(long = "debug")]
     debug: bool,
@@ -137,6 +145,8 @@ async fn main() -> Result<()> {
         api_port: args.api_port,
         affinity: args.affinity,
         huge_pages: args.huge_pages,
+        batch_size: args.batch_size,
+        yield_between_batches: !args.no_yield,
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
     };
 
@@ -203,6 +213,8 @@ async fn main() -> Result<()> {
         shares_tx,
         cfg.affinity,
         large_pages,
+        cfg.batch_size,
+        cfg.yield_between_batches,
     );
 
     let main_pool = cfg.pool.clone();
@@ -244,6 +256,7 @@ async fn main() -> Result<()> {
         async move {
             use tokio::time::{sleep, Duration};
 
+            let mut backoff_ms = 1_000u64;
             loop {
                 let (mut client, initial_job) = match StratumClient::connect_and_login(
                     &main_pool,
@@ -254,10 +267,14 @@ async fn main() -> Result<()> {
                 )
                 .await
                 {
-                    Ok(v) => v,
+                    Ok(v) => {
+                        backoff_ms = 1_000;
+                        v
+                    },
                     Err(e) => {
                         eprintln!("connect/login failed: {e}");
-                        sleep(Duration::from_millis(5_000 + tiny_jitter_ms())).await;
+                        sleep(Duration::from_millis(backoff_ms)).await;
+                        backoff_ms = (backoff_ms * 2).min(60_000);
                         continue;
                     }
                 };
@@ -292,7 +309,8 @@ async fn main() -> Result<()> {
                                                 Err(e) => warn!("devfee connect failed: {e}"),
                                             }
                                         } else if let Some(params) = v.get("params") {
-                                            if let Ok(job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
+                                            if let Ok(mut job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
+                                                job.cache_target();
                                                 let _ = jobs_tx.send(WorkItem { job, is_devfee: using_dev });
                                             }
                                         }
@@ -353,7 +371,7 @@ async fn main() -> Result<()> {
                                     }
 
                                     // After dev fee share, reconnect with user wallet
-                                    if share.is_devfee {
+                                    if share.is_devfee && using_dev {
                                         match StratumClient::connect_and_login(&main_pool, &user_wallet, &pass, &agent, tls).await {
                                             Ok((nc, job_opt)) => {
                                                 client = nc;
