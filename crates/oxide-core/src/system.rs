@@ -96,7 +96,7 @@ pub struct AutoTuneSnapshot {
 /// Heuristics:
 /// - Start with physical cores.
 /// - Clamp by L3 cache (~2 MiB per thread).
-/// - Clamp by available memory: ~2 GiB RandomX dataset + ~16 MiB per thread.
+/// - Clamp by available memory: ~2 GiB RandomX dataset + ~2 MiB per thread.
 pub fn autotune_snapshot() -> AutoTuneSnapshot {
     // sysinfo >= 0.30 reports BYTES
     let mut sys = System::new_all();

@@ -324,9 +324,10 @@ async fn randomx_worker_loop(
                 break 'mine;
             }
             let vm_ref = vm.as_ref().expect("vm initialized");
+            let mut need_yield = false;
             {
                 let vm = vm_ref;
-                for _ in 0..batch_size {
+                for i in 0..batch_size {
                     put_u32_le(&mut blob, 39, nonce);
                     let digest = hash(vm, &blob);
                     if meets_target(&digest, &j) {
@@ -349,11 +350,22 @@ async fn randomx_worker_loop(
                             result: digest,
                             is_devfee,
                         });
+                        // Advance nonce so we don't re-emit the same share on the next loop.
+                        nonce = nonce.wrapping_add(worker_count as u32);
+                        // After finding a share, request a cooperative yield
+                        // (performed after this borrow scope to keep the future Send).
+                        need_yield = true;
+                        break; // exit early to yield outside borrow scope
                     }
                     nonce = nonce.wrapping_add(worker_count as u32);
+                    // Request a cooperative yield roughly every 1024 hashes when enabled.
+                    if yield_between_batches && (i % 1024 == 1023) {
+                        need_yield = true;
+                        break; // exit early to yield outside borrow scope
+                    }
                 }
             }
-            if yield_between_batches {
+            if need_yield || yield_between_batches {
                 tokio::task::yield_now().await;
             }
         }
