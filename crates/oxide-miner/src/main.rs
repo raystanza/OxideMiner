@@ -8,7 +8,7 @@ use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
-    cpu_has_aes, huge_pages_enabled, autotune_snapshot, spawn_workers, Config, DevFeeScheduler,
+    autotune_snapshot, cpu_has_aes, huge_pages_enabled, spawn_workers, Config, DevFeeScheduler,
     StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::convert::Infallible;
@@ -68,11 +68,21 @@ struct Args {
     /// Enable verbose debug logs; when set, also writes to ./logs/ (daily rotation)
     #[arg(long = "debug")]
     debug: bool,
+
+    /// Hashes to compute per batch before yielding to scheduler
+    #[arg(long = "batch-size", default_value_t = 10_000)]
+    batch_size: usize,
+
+    /// Do not yield to Tokio between batches
+    #[arg(long = "no-yield")]
+    no_yield: bool,
 }
 
 fn tiny_jitter_ms() -> u64 {
     // Derive a tiny jitter from the current time.
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let nanos = now.subsec_nanos() as u64;
     100 + (nanos % 500) // 100...600 ms
 }
@@ -138,6 +148,8 @@ async fn main() -> Result<()> {
         affinity: args.affinity,
         huge_pages: args.huge_pages,
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
+        batch_size: args.batch_size,
+        yield_between_batches: !args.no_yield,
     };
 
     // Detect huge/large pages and warn once if not present
@@ -203,6 +215,8 @@ async fn main() -> Result<()> {
         shares_tx,
         cfg.affinity,
         large_pages,
+        cfg.batch_size,
+        cfg.yield_between_batches,
     );
 
     let main_pool = cfg.pool.clone();
@@ -264,7 +278,7 @@ async fn main() -> Result<()> {
 
                 if let Some(job) = initial_job {
                     let _ = jobs_tx.send(WorkItem {
-                        job,
+                        job: job.with_parsed_target(),
                         is_devfee: false,
                     });
                 }
@@ -286,14 +300,20 @@ async fn main() -> Result<()> {
                                                     client = dc;
                                                     using_dev = true;
                                                     if let Some(job) = job_opt {
-                                                        let _ = jobs_tx.send(WorkItem { job, is_devfee: true });
+                                                        let _ = jobs_tx.send(WorkItem {
+                                                            job: job.with_parsed_target(),
+                                                            is_devfee: true,
+                                                        });
                                                     }
                                                 }
                                                 Err(e) => warn!("devfee connect failed: {e}"),
                                             }
                                         } else if let Some(params) = v.get("params") {
                                             if let Ok(job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
-                                                let _ = jobs_tx.send(WorkItem { job, is_devfee: using_dev });
+                                                let _ = jobs_tx.send(WorkItem {
+                                                    job: job.with_parsed_target(),
+                                                    is_devfee: using_dev,
+                                                });
                                             }
                                         }
                                         continue;
@@ -353,13 +373,16 @@ async fn main() -> Result<()> {
                                     }
 
                                     // After dev fee share, reconnect with user wallet
-                                    if share.is_devfee {
+                                    if share.is_devfee && using_dev {
                                         match StratumClient::connect_and_login(&main_pool, &user_wallet, &pass, &agent, tls).await {
                                             Ok((nc, job_opt)) => {
                                                 client = nc;
                                                 using_dev = false;
                                                 if let Some(job) = job_opt {
-                                                    let _ = jobs_tx.send(WorkItem { job, is_devfee: false });
+                                                    let _ = jobs_tx.send(WorkItem {
+                                                        job: job.with_parsed_target(),
+                                                        is_devfee: false,
+                                                    });
                                                 }
                                             }
                                             Err(e) => {

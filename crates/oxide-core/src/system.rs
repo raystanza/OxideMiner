@@ -57,6 +57,18 @@ pub fn cpu_has_aes() -> bool {
     }
 }
 
+/// Determine whether the current CPU supports POPCNT instructions (x86/x86_64).
+pub fn cpu_has_popcnt() -> bool {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        std::is_x86_feature_detected!("popcnt")
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        false
+    }
+}
+
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 /// Return the size of the L3 cache in bytes if detectable via CPUID(0x4).
 fn l3_cache_bytes() -> Option<usize> {
@@ -66,10 +78,10 @@ fn l3_cache_bytes() -> Option<usize> {
             if cache.level() == 3 && matches!(cache.cache_type(), raw_cpuid::CacheType::Unified) {
                 // CPUID leaf 0x4 size formula:
                 // size = associativity * partitions * line_size * sets
-                let ways  = cache.associativity() as usize;
+                let ways = cache.associativity() as usize;
                 let parts = cache.physical_line_partitions() as usize;
-                let line  = cache.coherency_line_size() as usize;
-                let sets  = cache.sets() as usize;
+                let line = cache.coherency_line_size() as usize;
+                let sets = cache.sets() as usize;
                 return Some(ways * parts * line * sets);
             }
         }
@@ -108,13 +120,18 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
 
     // RandomX "fast" dataset and per-thread scratchpad estimates
     let dataset = 2_u64 * 1024 * 1024 * 1024; // ~2 GiB
-    let scratch = 16_u64 * 1024 * 1024;       // ~16 MiB per thread
+    let scratch = 2_u64 * 1024 * 1024; // ~2 MiB per thread
 
     let mut threads = physical;
 
     // L3 clamp (~2 MiB per thread)
     if let Some(l3b) = l3 {
-        let cache_threads = (l3b / (2 * 1024 * 1024)).max(1);
+        let l3_per_thread = if l3b > 64 * 1024 * 1024 {
+            4 * 1024 * 1024
+        } else {
+            2 * 1024 * 1024
+        };
+        let cache_threads = (l3b / l3_per_thread).max(1);
         threads = threads.min(cache_threads);
     }
 
@@ -165,6 +182,7 @@ mod tests {
     #[test]
     fn feature_checks_do_not_panic() {
         let _ = cpu_has_aes();
+        let _ = cpu_has_popcnt();
         let _ = huge_pages_enabled();
     }
 }
