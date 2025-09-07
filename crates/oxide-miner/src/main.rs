@@ -12,6 +12,7 @@ use oxide_core::{
     StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::convert::Infallible;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -64,6 +65,14 @@ struct Args {
     /// Request huge pages for RandomX dataset
     #[arg(long = "huge-pages")]
     huge_pages: bool,
+
+    /// Number of hashes per batch in mining loop
+    #[arg(long = "batch-size", default_value_t = 10_000)]
+    batch_size: usize,
+
+    /// Disable cooperative yields between hash batches
+    #[arg(long = "no-yield")]
+    no_yield: bool,
 
     /// Enable verbose debug logs; when set, also writes to ./logs/ (daily rotation)
     #[arg(long = "debug")]
@@ -137,6 +146,8 @@ async fn main() -> Result<()> {
         api_port: args.api_port,
         affinity: args.affinity,
         huge_pages: args.huge_pages,
+        batch_size: args.batch_size,
+        yield_between_batches: !args.no_yield,
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
     };
 
@@ -203,6 +214,8 @@ async fn main() -> Result<()> {
         shares_tx,
         cfg.affinity,
         large_pages,
+        cfg.batch_size,
+        cfg.yield_between_batches,
     );
 
     let main_pool = cfg.pool.clone();
@@ -244,6 +257,7 @@ async fn main() -> Result<()> {
         async move {
             use tokio::time::{sleep, Duration};
 
+            let mut backoff_ms = 1_000u64;
             loop {
                 let (mut client, initial_job) = match StratumClient::connect_and_login(
                     &main_pool,
@@ -254,19 +268,29 @@ async fn main() -> Result<()> {
                 )
                 .await
                 {
-                    Ok(v) => v,
+                    Ok(v) => {
+                        backoff_ms = 1_000;
+                        v
+                    },
                     Err(e) => {
                         eprintln!("connect/login failed: {e}");
-                        sleep(Duration::from_millis(5_000 + tiny_jitter_ms())).await;
+                        sleep(Duration::from_millis(backoff_ms)).await;
+                        backoff_ms = (backoff_ms * 2).min(60_000);
                         continue;
                     }
                 };
 
+                // Track valid job_ids for the current session to avoid submitting
+                // stale shares after job clean or reconnect.
+                let mut valid_job_ids: HashSet<String> = HashSet::new();
+                // Track seen nonces per job to prevent duplicates.
+                let mut seen_nonces: HashMap<String, HashSet<u32>> = HashMap::new();
+
                 if let Some(job) = initial_job {
-                    let _ = jobs_tx.send(WorkItem {
-                        job,
-                        is_devfee: false,
-                    });
+                    let id = job.job_id.clone();
+                    let _ = jobs_tx.send(WorkItem { job, is_devfee: false });
+                    // Seed valid job ids with the login job
+                    valid_job_ids.insert(id);
                 }
 
                 let mut devfee = DevFeeScheduler::new();
@@ -274,7 +298,69 @@ async fn main() -> Result<()> {
 
                 loop {
                     tokio::select! {
-                        // 1) Incoming pool messages
+                        biased;
+                        // 1) Outgoing share submissions
+                        maybe_share = shares_rx.recv() => {
+                            match maybe_share {
+                                Some(share) => {
+                                    // Drop stale shares whose job_id is no longer valid for this session.
+                                    if !valid_job_ids.contains(&share.job_id) {
+                                        tracing::debug!(job_id = %share.job_id, "dropping stale share (invalid job_id for current session)");
+                                        continue;
+                                    }
+                                    // Drop duplicates for the same (job_id, nonce)
+                                    let entry = seen_nonces.entry(share.job_id.clone()).or_default();
+                                    if !entry.insert(share.nonce) {
+                                        tracing::debug!(job_id = %share.job_id, nonce = share.nonce, "dropping duplicate share (already submitted)");
+                                        continue;
+                                    }
+                                    // Submit LE nonce (8 hex) and LE result (64 hex)
+                                    let nonce_hex  = hex::encode(share.nonce.to_le_bytes());
+                                    let result_hex = hex::encode(share.result);
+
+                                    tracing::debug!(
+                                        job_id = %share.job_id,
+                                        nonce_hex = %nonce_hex,
+                                        result_hex = %result_hex,
+                                        is_devfee = share.is_devfee,
+                                        "submit_share"
+                                    );
+
+                                    if let Err(e) = client.submit_share(&share.job_id, &nonce_hex, &result_hex).await {
+                                        eprintln!("submit error: {e}");
+                                    }
+
+                                    // After dev fee share, reconnect with user wallet
+                                    if share.is_devfee && using_dev {
+                                        match StratumClient::connect_and_login(&main_pool, &user_wallet, &pass, &agent, tls).await {
+                                            Ok((nc, job_opt)) => {
+                                                client = nc;
+                                                using_dev = false;
+                                                // New session: reset valid job ids and dedupe state
+                                                valid_job_ids.clear();
+                                                seen_nonces.clear();
+                                                if let Some(job) = job_opt {
+                                                    let id = job.job_id.clone();
+                                                    let _ = jobs_tx.send(WorkItem { job, is_devfee: false });
+                                                    valid_job_ids.insert(id);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!("reconnect failed (devfee -> user): {e}");
+                                                sleep(Duration::from_millis(tiny_jitter_ms())).await;
+                                                break; // break inner loop -> reconnect
+                                            }
+                                        }
+                                    }
+                                }
+                                None => {
+                                    warn!("shares channel closed (no workers alive); stopping pool task to avoid reconnect storm");
+                                    return; // end the pool task instead of reconnecting
+                                }
+                            }
+                        }
+
+                        // 2) Incoming pool messages
                         msg = client.read_json() => {
                             match msg {
                                 Ok(v) => {
@@ -285,14 +371,27 @@ async fn main() -> Result<()> {
                                                 Ok((dc, job_opt)) => {
                                                     client = dc;
                                                     using_dev = true;
+                                                    // New session: reset valid job ids and dedupe state
+                                                    valid_job_ids.clear();
+                                                    seen_nonces.clear();
                                                     if let Some(job) = job_opt {
+                                                        let id = job.job_id.clone();
                                                         let _ = jobs_tx.send(WorkItem { job, is_devfee: true });
+                                                        valid_job_ids.insert(id);
                                                     }
                                                 }
                                                 Err(e) => warn!("devfee connect failed: {e}"),
                                             }
                                         } else if let Some(params) = v.get("params") {
-                                            if let Ok(job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
+                                            if let Ok(mut job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
+                                                job.cache_target();
+                                                // Update valid job ids set: when clean_jobs=true, replace; else, add.
+                                                let clean = params.get("clean_jobs").and_then(|x| x.as_bool()).unwrap_or(true);
+                                                if clean {
+                                                    valid_job_ids.clear();
+                                                    seen_nonces.clear();
+                                                }
+                                                valid_job_ids.insert(job.job_id.clone());
                                                 let _ = jobs_tx.send(WorkItem { job, is_devfee: using_dev });
                                             }
                                         }
@@ -332,50 +431,6 @@ async fn main() -> Result<()> {
                             }
                         }
 
-                        // 2) Outgoing share submissions
-                        maybe_share = shares_rx.recv() => {
-                            match maybe_share {
-                                Some(share) => {
-                                    // Submit LE nonce (8 hex) and LE result (64 hex)
-                                    let nonce_hex  = hex::encode(share.nonce.to_le_bytes());
-                                    let result_hex = hex::encode(share.result);
-
-                                    tracing::debug!(
-                                        job_id = %share.job_id,
-                                        nonce_hex = %nonce_hex,
-                                        result_hex = %result_hex,
-                                        is_devfee = share.is_devfee,
-                                        "submit_share"
-                                    );
-
-                                    if let Err(e) = client.submit_share(&share.job_id, &nonce_hex, &result_hex).await {
-                                        eprintln!("submit error: {e}");
-                                    }
-
-                                    // After dev fee share, reconnect with user wallet
-                                    if share.is_devfee {
-                                        match StratumClient::connect_and_login(&main_pool, &user_wallet, &pass, &agent, tls).await {
-                                            Ok((nc, job_opt)) => {
-                                                client = nc;
-                                                using_dev = false;
-                                                if let Some(job) = job_opt {
-                                                    let _ = jobs_tx.send(WorkItem { job, is_devfee: false });
-                                                }
-                                            }
-                                            Err(e) => {
-                                                warn!("reconnect failed (devfee -> user): {e}");
-                                                sleep(Duration::from_millis(tiny_jitter_ms())).await;
-                                                break; // break inner loop -> reconnect
-                                            }
-                                        }
-                                    }
-                                }
-                                None => {
-                                    warn!("shares channel closed (no workers alive); stopping pool task to avoid reconnect storm");
-                                    return; // end the pool task instead of reconnecting
-                                }
-                            }
-                        }
                     }
                 } // inner loop
             } // outer reconnect loop

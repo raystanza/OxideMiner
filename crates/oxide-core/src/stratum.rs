@@ -18,6 +18,29 @@ pub struct PoolJob {
     pub seed_hash: Option<String>,
     pub height: Option<u64>,
     pub algo: Option<String>, // e.g. "rx/0"
+    #[serde(skip)]
+    pub target_u32: Option<u32>,
+}
+
+impl PoolJob {
+    /// Cache a parsed little-endian u32 target if provided by the pool.
+    pub fn cache_target(&mut self) {
+        self.target_u32 = if self.target.len() <= 8 {
+            if let Ok(mut b) = hex::decode(&self.target) {
+                if b.len() > 4 {
+                    b.truncate(4);
+                }
+                while b.len() < 4 {
+                    b.push(0);
+                }
+                Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+    }
 }
 
 pub struct StratumClient {
@@ -74,7 +97,7 @@ impl StratumClient {
         };
 
         let mut client = StratumClient {
-            reader: BufReader::new(reader),
+            reader: BufReader::with_capacity(4096, reader),
             writer,
             session_id: None,
             next_req_id: 1,
@@ -104,7 +127,8 @@ impl StratumClient {
                             client.session_id = Some(id.to_string());
                         }
                         if let Some(job_val) = obj.get("job") {
-                            if let Ok(job) = serde_json::from_value::<PoolJob>(job_val.clone()) {
+                            if let Ok(mut job) = serde_json::from_value::<PoolJob>(job_val.clone()) {
+                                job.cache_target();
                                 info!("initial job (in login result)");
                                 break Some(job);
                             }
@@ -112,7 +136,8 @@ impl StratumClient {
                     }
                     if v.get("method").and_then(Value::as_str) == Some("job") {
                         if let Some(params) = v.get("params") {
-                            if let Ok(job) = serde_json::from_value::<PoolJob>(params.clone()) {
+                            if let Ok(mut job) = serde_json::from_value::<PoolJob>(params.clone()) {
+                                job.cache_target();
                                 info!("initial job (job notify)");
                                 break Some(job);
                             }
@@ -153,8 +178,9 @@ impl StratumClient {
             let v = self.read_json().await?;
             if v.get("method").and_then(Value::as_str) == Some("job") {
                 if let Some(params) = v.get("params") {
-                    let job: PoolJob =
+                    let mut job: PoolJob =
                         serde_json::from_value(params.clone()).context("parse job params")?;
+                    job.cache_target();
                     return Ok(job);
                 }
             }
@@ -227,7 +253,7 @@ mod tests {
     #[test]
     fn request_ids_increment() {
         let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> =
-            BufReader::new(Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>);
+            BufReader::with_capacity(4096, Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>);
         let writer: Box<dyn io::AsyncWrite + Unpin + Send> =
             Box::new(io::sink());
         let mut client = StratumClient { reader, writer, session_id: None, next_req_id: 1 };
@@ -239,7 +265,7 @@ mod tests {
     async fn send_line_appends_newline() {
         let (write_half, mut read_half) = io::duplex(64);
         let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> =
-            BufReader::new(Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>);
+            BufReader::with_capacity(4096, Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>);
         let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(write_half);
         let mut client = StratumClient { reader, writer, session_id: None, next_req_id: 1 };
         client.send_line("ping".into()).await.unwrap();
@@ -255,7 +281,7 @@ mod tests {
             write_side.write_all(b"garbage\n{\"a\":1}\n").await.unwrap();
         });
         let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> =
-            BufReader::new(Box::new(read_side) as Box<dyn io::AsyncRead + Unpin + Send>);
+            BufReader::with_capacity(4096, Box::new(read_side) as Box<dyn io::AsyncRead + Unpin + Send>);
         let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(io::sink());
         let mut client = StratumClient { reader, writer, session_id: None, next_req_id: 1 };
         let v = client.read_json().await.unwrap();
@@ -271,6 +297,7 @@ mod tests {
             seed_hash: Some("seed".into()),
             height: Some(42),
             algo: Some("rx/0".into()),
+            target_u32: None,
         };
         let json = serde_json::to_string(&job).unwrap();
         let de: PoolJob = serde_json::from_str(&json).unwrap();

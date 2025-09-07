@@ -31,3 +31,5 @@ sysinfo = "0.30"
 raw-cpuid = "11"
 windows-sys = { version = "0.52", features = ["Win32_System_Memory"] }
 
+[profile.release]
+lto = true
