@@ -17,7 +17,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Instant};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -68,6 +68,14 @@ struct Args {
     /// Enable verbose debug logs; when set, also writes to ./logs/ (daily rotation)
     #[arg(long = "debug")]
     debug: bool,
+
+    /// Number of hashes per batch loop
+    #[arg(long = "batch-size", default_value_t = 10_000)]
+    batch_size: usize,
+
+    /// Disable yielding between hash batches
+    #[arg(long = "no-yield")]
+    no_yield: bool,
 }
 
 fn tiny_jitter_ms() -> u64 {
@@ -138,6 +146,8 @@ async fn main() -> Result<()> {
         affinity: args.affinity,
         huge_pages: args.huge_pages,
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
+        batch_size: args.batch_size,
+        no_yield: args.no_yield,
     };
 
     // Detect huge/large pages and warn once if not present
@@ -197,12 +207,20 @@ async fn main() -> Result<()> {
     if cfg.threads.is_none() {
         info!("auto-selected {} worker threads", n_workers);
     }
+    let accepted = Arc::new(AtomicU64::new(0));
+    let rejected = Arc::new(AtomicU64::new(0));
+    let hashes = Arc::new(AtomicU64::new(0));
+    let start = Instant::now();
+
     let _workers = spawn_workers(
         n_workers,
         jobs_tx.clone(),
         shares_tx,
         cfg.affinity,
         large_pages,
+        cfg.batch_size,
+        !cfg.no_yield,
+        hashes.clone(),
     );
 
     let main_pool = cfg.pool.clone();
@@ -215,15 +233,14 @@ async fn main() -> Result<()> {
         DEV_FEE_BASIS_POINTS, cfg.enable_devfee
     );
 
-    let accepted = Arc::new(AtomicU64::new(0));
-    let rejected = Arc::new(AtomicU64::new(0));
-
     // Optional tiny /metrics API
     if let Some(port) = cfg.api_port {
         let a = accepted.clone();
         let r = rejected.clone();
+        let h = hashes.clone();
+        let st = start.clone();
         tokio::spawn(async move {
-            run_http_api(port, a, r).await;
+            run_http_api(port, a, r, h, st).await;
         });
     }
 
@@ -244,6 +261,7 @@ async fn main() -> Result<()> {
         async move {
             use tokio::time::{sleep, Duration};
 
+            let mut backoff_ms: u64 = 1_000;
             loop {
                 let (mut client, initial_job) = match StratumClient::connect_and_login(
                     &main_pool,
@@ -254,10 +272,14 @@ async fn main() -> Result<()> {
                 )
                 .await
                 {
-                    Ok(v) => v,
+                    Ok(v) => {
+                        backoff_ms = 1_000;
+                        v
+                    }
                     Err(e) => {
                         eprintln!("connect/login failed: {e}");
-                        sleep(Duration::from_millis(5_000 + tiny_jitter_ms())).await;
+                        sleep(Duration::from_millis(backoff_ms + tiny_jitter_ms())).await;
+                        backoff_ms = (backoff_ms * 2).min(60_000);
                         continue;
                     }
                 };
@@ -292,7 +314,8 @@ async fn main() -> Result<()> {
                                                 Err(e) => warn!("devfee connect failed: {e}"),
                                             }
                                         } else if let Some(params) = v.get("params") {
-                                            if let Ok(job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
+                                            if let Ok(mut job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
+                                                job.compute_target();
                                                 let _ = jobs_tx.send(WorkItem { job, is_devfee: using_dev });
                                             }
                                         }
@@ -353,7 +376,7 @@ async fn main() -> Result<()> {
                                     }
 
                                     // After dev fee share, reconnect with user wallet
-                                    if share.is_devfee {
+                                    if share.is_devfee && using_dev {
                                         match StratumClient::connect_and_login(&main_pool, &user_wallet, &pass, &agent, tls).await {
                                             Ok((nc, job_opt)) => {
                                                 client = nc;
@@ -364,7 +387,8 @@ async fn main() -> Result<()> {
                                             }
                                             Err(e) => {
                                                 warn!("reconnect failed (devfee -> user): {e}");
-                                                sleep(Duration::from_millis(tiny_jitter_ms())).await;
+                                                sleep(Duration::from_millis(backoff_ms + tiny_jitter_ms())).await;
+                                                backoff_ms = (backoff_ms * 2).min(60_000);
                                                 break; // break inner loop -> reconnect
                                             }
                                         }
@@ -378,6 +402,9 @@ async fn main() -> Result<()> {
                         }
                     }
                 } // inner loop
+
+                sleep(Duration::from_millis(backoff_ms + tiny_jitter_ms())).await;
+                backoff_ms = (backoff_ms * 2).min(60_000);
             } // outer reconnect loop
         }
     });
@@ -409,7 +436,7 @@ mod tests {
 }
 
 // Tiny /metrics endpoint (optional)
-async fn run_http_api(port: u16, accepted: Arc<AtomicU64>, rejected: Arc<AtomicU64>) {
+async fn run_http_api(port: u16, accepted: Arc<AtomicU64>, rejected: Arc<AtomicU64>, hashes: Arc<AtomicU64>, start: Instant) {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = match TcpListener::bind(addr).await {
         Ok(v) => v,
@@ -431,18 +458,29 @@ async fn run_http_api(port: u16, accepted: Arc<AtomicU64>, rejected: Arc<AtomicU
         let io = TokioIo::new(stream);
         let a = accepted.clone();
         let r = rejected.clone();
+        let h = hashes.clone();
+        let st = start;
 
         tokio::spawn(async move {
             let svc = service_fn(move |req: Request<Incoming>| {
                 let a = a.clone();
                 let r = r.clone();
+                let h = h.clone();
+                let st = st;
 
                 async move {
                     if req.method() == Method::GET && req.uri().path() == "/metrics" {
+                        let uptime = st.elapsed().as_secs_f64();
+                        let hrate = if uptime > 0.0 {
+                            h.load(Ordering::Relaxed) as f64 / uptime
+                        } else {
+                            0.0
+                        };
                         let body = format!(
-                            "{{\"accepted\":{},\"rejected\":{}}}",
+                            "{{\"accepted\":{},\"rejected\":{},\"hashrate\":{}}}",
                             a.load(Ordering::Relaxed),
-                            r.load(Ordering::Relaxed)
+                            r.load(Ordering::Relaxed),
+                            hrate
                         );
                         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
                     } else {

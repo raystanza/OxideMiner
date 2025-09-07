@@ -21,6 +21,10 @@ pub struct Config {
     /// request huge/large pages for RandomX dataset
     pub huge_pages: bool,
     pub agent: String,
+    /// hashes per batch per worker
+    pub batch_size: usize,
+    /// disable cooperative yielding between batches
+    pub no_yield: bool,
 }
 
 impl Default for Config {
@@ -36,6 +40,8 @@ impl Default for Config {
             affinity: false,
             huge_pages: false,
             agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
+            batch_size: 10_000,
+            no_yield: false,
         }
     }
 }
@@ -56,5 +62,7 @@ mod tests {
         assert!(!cfg.affinity);
         assert!(!cfg.huge_pages);
         assert!(cfg.agent.starts_with("OxideMiner/"));
+        assert_eq!(cfg.batch_size, 10_000);
+        assert!(!cfg.no_yield);
     }
 }

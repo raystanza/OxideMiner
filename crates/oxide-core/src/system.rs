@@ -108,13 +108,18 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
 
     // RandomX "fast" dataset and per-thread scratchpad estimates
     let dataset = 2_u64 * 1024 * 1024 * 1024; // ~2 GiB
-    let scratch = 16_u64 * 1024 * 1024;       // ~16 MiB per thread
+    let scratch = 2_u64 * 1024 * 1024;        // ~2 MiB per thread
 
     let mut threads = physical;
 
     // L3 clamp (~2 MiB per thread)
     if let Some(l3b) = l3 {
-        let cache_threads = (l3b / (2 * 1024 * 1024)).max(1);
+        let l3_per_thread = if l3b > 64 * 1024 * 1024 {
+            4 * 1024 * 1024
+        } else {
+            2 * 1024 * 1024
+        };
+        let cache_threads = (l3b / l3_per_thread).max(1);
         threads = threads.min(cache_threads);
     }
 

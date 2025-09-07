@@ -26,5 +26,8 @@ core_affinity = { workspace = true }
 sysinfo = { workspace = true }
 raw-cpuid = { workspace = true }
 
+[dev-dependencies]
+criterion = "0.5"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Memory"] }

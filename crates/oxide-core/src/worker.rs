@@ -1,6 +1,7 @@
 use anyhow::Result;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
 use crate::stratum::PoolJob;
 
@@ -25,6 +26,9 @@ pub fn spawn_workers(
     shares_tx: mpsc::UnboundedSender<Share>,
     affinity: bool,
     large_pages: bool,
+    batch_size: usize,
+    yield_batch: bool,
+    hashes: Arc<AtomicU64>,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     #[cfg(feature = "randomx")]
     engine::set_large_pages(large_pages);
@@ -37,6 +41,7 @@ pub fn spawn_workers(
         .map(|i| {
             let mut rx = jobs_tx.subscribe();
             let shares_tx = shares_tx.clone();
+            let hashes = hashes.clone();
             let core_ids = core_ids.clone();
             tokio::spawn(async move {
                 #[cfg(feature = "randomx")]
@@ -46,7 +51,7 @@ pub fn spawn_workers(
                             let _ = core_affinity::set_for_current(*id);
                         }
                     }
-                    if let Err(e) = randomx_worker_loop(i, n, &mut rx, shares_tx).await {
+                    if let Err(e) = randomx_worker_loop(i, n, batch_size, yield_batch, hashes, &mut rx, shares_tx).await {
                         warn!(worker = i, error = ?e, "worker exited");
                     }
                 }
@@ -92,6 +97,8 @@ mod engine {
         pub(crate) inner: RandomXVM,
         pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
     }
+
+    unsafe impl Send for Vm {}
 
     // randomx-rs exposes FLAG_* constants.
     static LARGE_PAGES: AtomicBool = AtomicBool::new(false);
@@ -243,12 +250,17 @@ mod engine {
 async fn randomx_worker_loop(
     worker_id: usize,
     worker_count: usize,
+    batch_size: usize,
+    yield_batch: bool,
+    hashes: Arc<AtomicU64>,
     rx: &mut broadcast::Receiver<WorkItem>,
     shares_tx: mpsc::UnboundedSender<Share>,
 ) -> Result<()> {
     use engine::*;
 
     let mut work: Option<WorkItem> = None;
+    let mut current_seed: Option<Vec<u8>> = None;
+    let mut vm: Option<Vm> = None;
 
     // Precompute once (Send + Copy)
     let threads_u32: u32 = worker_count as u32;
@@ -283,6 +295,12 @@ async fn randomx_worker_loop(
         let mut blob =
             hex::decode(&j.blob).map_err(|e| anyhow::anyhow!("invalid job blob hex: {e}"))?;
 
+        if current_seed.as_ref() != Some(&seed_bytes) {
+            let (cache, dataset) = ensure_fullmem_dataset(&seed_bytes, threads_u32)?;
+            vm = Some(create_vm_for_dataset(&cache, &dataset, None)?);
+            current_seed = Some(seed_bytes.clone());
+        }
+
         // Ensure nonce room
         if blob.len() < 39 + 4 {
             warn!(
@@ -294,8 +312,16 @@ async fn randomx_worker_loop(
             continue;
         }
 
-        // Per-worker nonce stride to avoid collisions
-        let mut nonce: u32 = worker_id as u32;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Per-worker nonce stride to avoid collisions and staggered start
+        let mut nonce: u32 =
+            ((worker_id as u32) * (worker_count as u32))
+                + (SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .subsec_nanos() as u32
+                    % 0xFFFF_0000);
 
         'mine: loop {
             // Swap job if a newer one arrives (no await)
@@ -304,61 +330,43 @@ async fn randomx_worker_loop(
                 break 'mine;
             }
 
-            // ---- IMPORTANT: keep all RandomX handles inside this block ----
-            {
-                // Reacquire/cache FULLMEM dataset for this thread/key.
-                // These types are !Send/!Sync, but they will be dropped
-                // before the next `.await`, keeping the future Send.
-                let (cache, dataset) = ensure_fullmem_dataset(&seed_bytes, threads_u32)?;
-                let vm = create_vm_for_dataset(&cache, &dataset, None)?;
-
-                // Hash a batch
-                for _ in 0..1_000 {
+            if let Some(ref vm_inst) = vm {
+                for _ in 0..batch_size {
                     put_u32_le(&mut blob, 39, nonce); // Monero 32-bit nonce at offset 39
-                    let digest = hash(&vm, &blob);
+                    let digest = hash(vm_inst, &blob);
 
-                    // DEBUG: log the candidate details (enable with RUST_LOG=oxide_core=debug)
-                    {
+                    if meets_target(&digest, &j) {
                         let le_hex = hex::encode(digest);
                         let mut be_bytes = digest;
                         be_bytes.reverse();
                         let be_hex = hex::encode(be_bytes);
-                        let wrote_nonce =
-                            u32::from_le_bytes([blob[39], blob[40], blob[41], blob[42]]);
 
-                        tracing::debug!(
+                        info!(
+                            worker = worker_id,
                             job_id = %j.job_id,
-                            nonce = nonce,
-                            wrote_nonce = wrote_nonce,
-                            seed = %seed_hex,
-                            target = %j.target,
+                            nonce,
                             hash_le = %le_hex,
                             hash_be = %be_hex,
-                            "share_candidate_debug"
+                            target = %j.target,
+                            "share found",
                         );
-                    }
 
-                    if meets_target(&digest, &j.target) {
                         let _ = shares_tx.send(Share {
                             job_id: j.job_id.clone(),
                             nonce,
                             result: digest,
                             is_devfee,
                         });
-                        info!(
-                            worker = worker_id,
-                            nonce,
-                            job_id = %j.job_id,
-                            "share candidate"
-                        );
                     }
 
                     nonce = nonce.wrapping_add(worker_count as u32);
                 }
+                hashes.fetch_add(batch_size as u64, Ordering::Relaxed);
             }
-            // ---- All RandomX handles dropped here, BEFORE await ----
 
-            tokio::task::yield_now().await;
+            if yield_batch {
+                tokio::task::yield_now().await;
+            }
         }
     }
 }
@@ -370,48 +378,21 @@ fn put_u32_le(dst: &mut [u8], offset: usize, val: u32) {
 
 /// Monero Stratum "target" is usually a 32-bit LITTLE-endian hex (e.g., "f3220000" => 0x000022f3).
 /// Compare against the hash’s MSB 32 bits for a LE digest: i.e., the **last** 4 bytes.
-/// If a wider target (>8 hex chars) is provided, treat as a full 256-bit BE integer.
-fn meets_target(hash: &[u8; 32], target_hex: &str) -> bool {
-    // Fast path: 32-bit LE share target
-    if target_hex.len() <= 8 {
-        if let Ok(mut b) = hex::decode(target_hex) {
-            if b.len() > 4 {
-                b.truncate(4);
-            }
-            while b.len() < 4 {
-                b.push(0);
-            }
-            let t32 = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-
-            // hash is LE; MSB 32 bits live in the last 4 bytes
-            let h_top_le32 = u32::from_le_bytes([hash[28], hash[29], hash[30], hash[31]]);
-            let ok = h_top_le32 <= t32;
-
-            tracing::debug!(
-                t_hex = %target_hex,
-                t32 = t32,
-                diff_est = (0x1_0000_0000u64 / (t32 as u64)),
-                h_top_le32 = h_top_le32,
-                ok_le = ok,
-                "share_check_32bit"
-            );
-
-            return ok;
-        }
-        return false;
+fn meets_target(hash: &[u8; 32], job: &PoolJob) -> bool {
+    if let Some(t32) = job.target_u32 {
+        let h_top_le32 = u32::from_le_bytes([hash[28], hash[29], hash[30], hash[31]]);
+        return h_top_le32 <= t32;
     }
-
-    // Wider target: treat as 256-bit BE and compare to the LE hash by reversing.
+    let target_hex = &job.target;
     if let Ok(mut t) = hex::decode(target_hex) {
         if t.is_empty() || t.len() > 32 {
             return false;
         }
         if t.len() < 32 {
-            let mut pad = vec![0u8; 32 - t.len()]; // left-pad for BE
+            let mut pad = vec![0u8; 32 - t.len()];
             pad.extend_from_slice(&t);
             t = pad;
         }
-        // Compare as 256-bit BE: reverse LE hash into BE without allocation
         for (hb, tb) in hash.iter().rev().zip(t.iter()) {
             if hb != tb {
                 return *hb < *tb;
@@ -427,12 +408,15 @@ fn meets_target(hash: &[u8; 32], target_hex: &str) -> bool {
 mod tests {
     use super::*;
     use tokio::sync::{broadcast, mpsc};
+    use crate::stratum::PoolJob;
+    use std::sync::{Arc, atomic::AtomicU64};
 
     #[tokio::test]
     async fn spawns_correct_number_of_workers() {
         let (jobs_tx, _jobs_rx) = broadcast::channel(1);
         let (shares_tx, _shares_rx) = mpsc::unbounded_channel();
-        let handles = spawn_workers(3, jobs_tx, shares_tx, false, false);
+        let hashes = Arc::new(AtomicU64::new(0));
+        let handles = spawn_workers(3, jobs_tx, shares_tx, false, false, 10, true, hashes);
         assert_eq!(handles.len(), 3);
         for h in handles {
             h.abort();
@@ -449,19 +433,27 @@ mod tests {
     #[test]
     fn meets_target_32bit() {
         let mut hash = [0u8; 32];
-        assert!(meets_target(&hash, "00000000"));
+        let mut job = PoolJob { job_id: String::new(), blob: String::new(), target: "00000000".into(), seed_hash: None, height: None, algo: None, target_u32: None };
+        job.compute_target();
+        assert!(meets_target(&hash, &job));
         hash[28] = 2; // h_top_le32 = 2
-        assert!(!meets_target(&hash, "01000000")); // target 1 (LE hex)
+        job.target = "01000000".into();
+        job.compute_target();
+        assert!(!meets_target(&hash, &job)); // target 1 (LE hex)
     }
 
     #[test]
     fn meets_target_wide() {
         let hash_zero = [0u8; 32];
-        assert!(meets_target(&hash_zero, "01"));
+        let mut job = PoolJob { job_id: String::new(), blob: String::new(), target: "01".into(), seed_hash: None, height: None, algo: None, target_u32: None };
+        job.compute_target();
+        assert!(meets_target(&hash_zero, &job));
         let hash_high = [0xFFu8; 32];
-        assert!(!meets_target(&hash_high, "01"));
-        assert!(
-            meets_target(&hash_high, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
-        );
+        job.target = "01".into();
+        job.compute_target();
+        assert!(!meets_target(&hash_high, &job));
+        job.target = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".into();
+        job.target_u32 = None;
+        assert!(meets_target(&hash_high, &job));
     }
 }
