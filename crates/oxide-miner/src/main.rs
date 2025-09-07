@@ -68,6 +68,10 @@ struct Args {
     /// Enable verbose debug logs; when set, also writes to ./logs/ (daily rotation)
     #[arg(long = "debug")]
     debug: bool,
+
+    /// Hashes per batch before yielding to the scheduler
+    #[arg(long = "batch-size", default_value_t = 10_000)]
+    batch_size: usize,
 }
 
 fn tiny_jitter_ms() -> u64 {
@@ -138,6 +142,7 @@ async fn main() -> Result<()> {
         affinity: args.affinity,
         huge_pages: args.huge_pages,
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
+        batch_size: args.batch_size,
     };
 
     // Detect huge/large pages and warn once if not present
@@ -203,6 +208,7 @@ async fn main() -> Result<()> {
         shares_tx,
         cfg.affinity,
         large_pages,
+        cfg.batch_size,
     );
 
     let main_pool = cfg.pool.clone();
@@ -293,6 +299,7 @@ async fn main() -> Result<()> {
                                             }
                                         } else if let Some(params) = v.get("params") {
                                             if let Ok(job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
+                                                let job = job.parse_target();
                                                 let _ = jobs_tx.send(WorkItem { job, is_devfee: using_dev });
                                             }
                                         }

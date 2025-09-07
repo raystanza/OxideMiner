@@ -18,6 +18,29 @@ pub struct PoolJob {
     pub seed_hash: Option<String>,
     pub height: Option<u64>,
     pub algo: Option<String>, // e.g. "rx/0"
+    #[serde(skip)]
+    pub target_num: Option<u32>,
+}
+
+impl PoolJob {
+    pub fn parse_target(mut self) -> Self {
+        self.target_num = if self.target.len() <= 8 {
+            if let Ok(mut b) = hex::decode(&self.target) {
+                if b.len() > 4 {
+                    b.truncate(4);
+                }
+                while b.len() < 4 {
+                    b.push(0);
+                }
+                Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        self
+    }
 }
 
 pub struct StratumClient {
@@ -105,6 +128,7 @@ impl StratumClient {
                         }
                         if let Some(job_val) = obj.get("job") {
                             if let Ok(job) = serde_json::from_value::<PoolJob>(job_val.clone()) {
+                                let job = job.parse_target();
                                 info!("initial job (in login result)");
                                 break Some(job);
                             }
@@ -113,6 +137,7 @@ impl StratumClient {
                     if v.get("method").and_then(Value::as_str) == Some("job") {
                         if let Some(params) = v.get("params") {
                             if let Ok(job) = serde_json::from_value::<PoolJob>(params.clone()) {
+                                let job = job.parse_target();
                                 info!("initial job (job notify)");
                                 break Some(job);
                             }
@@ -155,7 +180,7 @@ impl StratumClient {
                 if let Some(params) = v.get("params") {
                     let job: PoolJob =
                         serde_json::from_value(params.clone()).context("parse job params")?;
-                    return Ok(job);
+                    return Ok(job.parse_target());
                 }
             }
         }
@@ -271,6 +296,7 @@ mod tests {
             seed_hash: Some("seed".into()),
             height: Some(42),
             algo: Some("rx/0".into()),
+            target_num: None,
         };
         let json = serde_json::to_string(&job).unwrap();
         let de: PoolJob = serde_json::from_str(&json).unwrap();
