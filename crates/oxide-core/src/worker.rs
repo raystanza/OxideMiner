@@ -1,7 +1,7 @@
 use anyhow::Result;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::stratum::PoolJob;
 
@@ -49,7 +49,16 @@ pub fn spawn_workers(
                             let _ = core_affinity::set_for_current(*id);
                         }
                     }
-                    if let Err(e) = randomx_worker_loop(i, n, batch_size, yield_between_batches, &mut rx, shares_tx).await {
+                    if let Err(e) = randomx_worker_loop(
+                        i,
+                        n,
+                        batch_size,
+                        yield_between_batches,
+                        &mut rx,
+                        shares_tx,
+                    )
+                    .await
+                    {
                         warn!(worker = i, error = ?e, "worker exited");
                     }
                 }
@@ -70,11 +79,11 @@ mod engine {
     use crate::system;
     use anyhow::Result;
     use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
-    use tracing::warn;
     use std::{
         cell::RefCell,
         sync::atomic::{AtomicBool, Ordering},
     };
+    use tracing::warn;
 
     // Thin wrappers to mirror the old shape
     #[derive(Clone)]
@@ -246,6 +255,9 @@ mod engine {
 }
 
 #[cfg(feature = "randomx")]
+pub use engine::{create_vm_for_dataset, ensure_fullmem_dataset, hash, set_large_pages};
+
+#[cfg(feature = "randomx")]
 async fn randomx_worker_loop(
     worker_id: usize,
     worker_count: usize,
@@ -310,13 +322,12 @@ async fn randomx_worker_loop(
         }
 
         // Stagger initial nonce to reduce overlaps across workers
-        let mut nonce: u32 =
-            ((worker_id as u32) * (worker_count as u32))
-                + (SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .subsec_nanos() as u32
-                    % 0xFFFF_0000);
+        let mut nonce: u32 = ((worker_id as u32) * (worker_count as u32))
+            + (SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos() as u32
+                % 0xFFFF_0000);
 
         'mine: loop {
             if let Ok(next) = rx.try_recv() {
@@ -389,8 +400,12 @@ fn meets_target(hash: &[u8; 32], job: &PoolJob) -> bool {
     let target_hex = &job.target;
     if target_hex.len() <= 8 {
         if let Ok(mut b) = hex::decode(target_hex) {
-            if b.len() > 4 { b.truncate(4); }
-            while b.len() < 4 { b.push(0); }
+            if b.len() > 4 {
+                b.truncate(4);
+            }
+            while b.len() < 4 {
+                b.push(0);
+            }
             let t32 = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
             let h_top_le32 = u32::from_le_bytes([hash[28], hash[29], hash[30], hash[31]]);
             return h_top_le32 <= t32;
@@ -399,10 +414,18 @@ fn meets_target(hash: &[u8; 32], job: &PoolJob) -> bool {
     }
 
     if let Ok(mut t) = hex::decode(target_hex) {
-        if t.is_empty() || t.len() > 32 { return false; }
-        if t.len() < 32 { let mut pad = vec![0u8; 32 - t.len()]; pad.extend_from_slice(&t); t = pad; }
+        if t.is_empty() || t.len() > 32 {
+            return false;
+        }
+        if t.len() < 32 {
+            let mut pad = vec![0u8; 32 - t.len()];
+            pad.extend_from_slice(&t);
+            t = pad;
+        }
         for (hb, tb) in hash.iter().rev().zip(t.iter()) {
-            if hb != tb { return *hb < *tb; }
+            if hb != tb {
+                return *hb < *tb;
+            }
         }
         true
     } else {
@@ -436,7 +459,15 @@ mod tests {
     #[test]
     fn meets_target_32bit() {
         let mut hash = [0u8; 32];
-        let mut job = PoolJob { job_id: String::new(), blob: String::new(), target: "00000000".into(), seed_hash: None, height: None, algo: None, target_u32: None };
+        let mut job = PoolJob {
+            job_id: String::new(),
+            blob: String::new(),
+            target: "00000000".into(),
+            seed_hash: None,
+            height: None,
+            algo: None,
+            target_u32: None,
+        };
         job.cache_target();
         assert!(meets_target(&hash, &job));
         hash[28] = 2; // h_top_le32 = 2
@@ -448,7 +479,15 @@ mod tests {
     #[test]
     fn meets_target_wide() {
         let hash_zero = [0u8; 32];
-        let mut job = PoolJob { job_id: String::new(), blob: String::new(), target: "01".into(), seed_hash: None, height: None, algo: None, target_u32: None };
+        let mut job = PoolJob {
+            job_id: String::new(),
+            blob: String::new(),
+            target: "01".into(),
+            seed_hash: None,
+            height: None,
+            algo: None,
+            target_u32: None,
+        };
         job.cache_target();
         assert!(meets_target(&hash_zero, &job));
         let hash_high = [0xFFu8; 32];
