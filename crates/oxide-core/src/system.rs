@@ -66,10 +66,10 @@ fn l3_cache_bytes() -> Option<usize> {
             if cache.level() == 3 && matches!(cache.cache_type(), raw_cpuid::CacheType::Unified) {
                 // CPUID leaf 0x4 size formula:
                 // size = associativity * partitions * line_size * sets
-                let ways  = cache.associativity() as usize;
+                let ways = cache.associativity() as usize;
                 let parts = cache.physical_line_partitions() as usize;
-                let line  = cache.coherency_line_size() as usize;
-                let sets  = cache.sets() as usize;
+                let line = cache.coherency_line_size() as usize;
+                let sets = cache.sets() as usize;
                 return Some(ways * parts * line * sets);
             }
         }
@@ -95,8 +95,8 @@ pub struct AutoTuneSnapshot {
 /// Compute a snapshot of system resources and the suggested mining thread count.
 /// Heuristics:
 /// - Start with physical cores.
-/// - Clamp by L3 cache (~2 MiB per thread).
-/// - Clamp by available memory: ~2 GiB RandomX dataset + ~16 MiB per thread.
+/// - Clamp by L3 cache (~2–4 MiB per thread).
+/// - Clamp by available memory: ~2 GiB RandomX dataset + ~2 MiB per thread.
 pub fn autotune_snapshot() -> AutoTuneSnapshot {
     // sysinfo >= 0.30 reports BYTES
     let mut sys = System::new_all();
@@ -108,13 +108,18 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
 
     // RandomX "fast" dataset and per-thread scratchpad estimates
     let dataset = 2_u64 * 1024 * 1024 * 1024; // ~2 GiB
-    let scratch = 16_u64 * 1024 * 1024;       // ~16 MiB per thread
+    let scratch = 2_u64 * 1024 * 1024; // ~2 MiB per thread
 
     let mut threads = physical;
 
-    // L3 clamp (~2 MiB per thread)
+    // L3 clamp: use 2 MiB per thread, or 4 MiB on large caches (>64 MiB)
     if let Some(l3b) = l3 {
-        let cache_threads = (l3b / (2 * 1024 * 1024)).max(1);
+        let l3_per_thread = if l3b > 64 * 1024 * 1024 {
+            4 * 1024 * 1024
+        } else {
+            2 * 1024 * 1024
+        };
+        let cache_threads = (l3b / l3_per_thread).max(1);
         threads = threads.min(cache_threads);
     }
 

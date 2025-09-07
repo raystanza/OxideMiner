@@ -18,6 +18,42 @@ pub struct PoolJob {
     pub seed_hash: Option<String>,
     pub height: Option<u64>,
     pub algo: Option<String>, // e.g. "rx/0"
+    #[serde(skip)]
+    pub target_num: Option<u32>,
+    #[serde(skip)]
+    pub target_wide: Option<[u8; 32]>,
+}
+
+impl PoolJob {
+    /// Pre-parse target hex into numeric forms for fast comparisons.
+    pub fn compute_target(&mut self) {
+        if self.target.len() <= 8 {
+            if let Ok(mut b) = hex::decode(&self.target) {
+                if b.len() > 4 {
+                    b.truncate(4);
+                }
+                while b.len() < 4 {
+                    b.push(0);
+                }
+                self.target_num = Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            }
+            return;
+        }
+
+        if let Ok(mut t) = hex::decode(&self.target) {
+            if t.is_empty() || t.len() > 32 {
+                return;
+            }
+            if t.len() < 32 {
+                let mut pad = vec![0u8; 32 - t.len()];
+                pad.extend_from_slice(&t);
+                t = pad;
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&t[0..32]);
+            self.target_wide = Some(arr);
+        }
+    }
 }
 
 pub struct StratumClient {
@@ -74,7 +110,7 @@ impl StratumClient {
         };
 
         let mut client = StratumClient {
-            reader: BufReader::new(reader),
+            reader: BufReader::with_capacity(4096, reader),
             writer,
             session_id: None,
             next_req_id: 1,
@@ -104,7 +140,9 @@ impl StratumClient {
                             client.session_id = Some(id.to_string());
                         }
                         if let Some(job_val) = obj.get("job") {
-                            if let Ok(job) = serde_json::from_value::<PoolJob>(job_val.clone()) {
+                            if let Ok(mut job) = serde_json::from_value::<PoolJob>(job_val.clone())
+                            {
+                                job.compute_target();
                                 info!("initial job (in login result)");
                                 break Some(job);
                             }
@@ -112,7 +150,8 @@ impl StratumClient {
                     }
                     if v.get("method").and_then(Value::as_str) == Some("job") {
                         if let Some(params) = v.get("params") {
-                            if let Ok(job) = serde_json::from_value::<PoolJob>(params.clone()) {
+                            if let Ok(mut job) = serde_json::from_value::<PoolJob>(params.clone()) {
+                                job.compute_target();
                                 info!("initial job (job notify)");
                                 break Some(job);
                             }
@@ -153,8 +192,9 @@ impl StratumClient {
             let v = self.read_json().await?;
             if v.get("method").and_then(Value::as_str) == Some("job") {
                 if let Some(params) = v.get("params") {
-                    let job: PoolJob =
+                    let mut job: PoolJob =
                         serde_json::from_value(params.clone()).context("parse job params")?;
+                    job.compute_target();
                     return Ok(job);
                 }
             }
@@ -215,7 +255,11 @@ impl StratumClient {
     async fn read_line(&mut self) -> Result<String> {
         let mut buf = String::new();
         let n = self.reader.read_line(&mut buf).await?;
-        if n == 0 { Ok(String::new()) } else { Ok(buf) }
+        if n == 0 {
+            Ok(String::new())
+        } else {
+            Ok(buf)
+        }
     }
 }
 
@@ -228,9 +272,13 @@ mod tests {
     fn request_ids_increment() {
         let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> =
             BufReader::new(Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>);
-        let writer: Box<dyn io::AsyncWrite + Unpin + Send> =
-            Box::new(io::sink());
-        let mut client = StratumClient { reader, writer, session_id: None, next_req_id: 1 };
+        let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(io::sink());
+        let mut client = StratumClient {
+            reader,
+            writer,
+            session_id: None,
+            next_req_id: 1,
+        };
         assert_eq!(client.take_req_id(), 1);
         assert_eq!(client.take_req_id(), 2);
     }
@@ -241,7 +289,12 @@ mod tests {
         let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> =
             BufReader::new(Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>);
         let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(write_half);
-        let mut client = StratumClient { reader, writer, session_id: None, next_req_id: 1 };
+        let mut client = StratumClient {
+            reader,
+            writer,
+            session_id: None,
+            next_req_id: 1,
+        };
         client.send_line("ping".into()).await.unwrap();
         let mut buf = [0u8; 5];
         read_half.read_exact(&mut buf).await.unwrap();
@@ -257,7 +310,12 @@ mod tests {
         let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> =
             BufReader::new(Box::new(read_side) as Box<dyn io::AsyncRead + Unpin + Send>);
         let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(io::sink());
-        let mut client = StratumClient { reader, writer, session_id: None, next_req_id: 1 };
+        let mut client = StratumClient {
+            reader,
+            writer,
+            session_id: None,
+            next_req_id: 1,
+        };
         let v = client.read_json().await.unwrap();
         assert_eq!(v.get("a").and_then(|x| x.as_u64()), Some(1));
     }
@@ -271,6 +329,8 @@ mod tests {
             seed_hash: Some("seed".into()),
             height: Some(42),
             algo: Some("rx/0".into()),
+            target_num: None,
+            target_wide: None,
         };
         let json = serde_json::to_string(&job).unwrap();
         let de: PoolJob = serde_json::from_str(&json).unwrap();
