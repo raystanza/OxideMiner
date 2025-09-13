@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>OxideMiner Dashboard</title>
+</head>
+<body>
+<pre id="stats">loading...</pre>
+<script>
+async function refresh(){
+  const r = await fetch('/api/stats');
+  const j = await r.json();
+  document.getElementById('stats').textContent = JSON.stringify(j, null, 2);
+}
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>

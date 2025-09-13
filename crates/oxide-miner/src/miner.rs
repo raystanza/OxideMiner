@@ -1,5 +1,5 @@
 use crate::args::Args;
-use crate::http_api::run_http_api;
+use crate::http_api::{run_http_api, Metrics};
 use crate::util::tiny_jitter_ms;
 use anyhow::Result;
 use oxide_core::worker::{Share, WorkItem};
@@ -7,13 +7,18 @@ use oxide_core::{
     autotune_snapshot, cpu_has_aes, huge_pages_enabled, spawn_workers, Config, DevFeeScheduler,
     StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
-use std::collections::{HashMap, HashSet};
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{atomic::Ordering, Arc};
 use tracing::{info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+fn target_to_diff(t: u32) -> u64 {
+    if t == 0 {
+        0
+    } else {
+        0xFFFF_FFFFu64 / (t as u64)
+    }
+}
 
 pub async fn run(args: Args) -> Result<()> {
     // Prefer RUST_LOG if set; otherwise use --debug to bump verbosity.
@@ -173,27 +178,23 @@ pub async fn run(args: Args) -> Result<()> {
         DEV_FEE_BASIS_POINTS, cfg.enable_devfee
     );
 
-    let accepted = Arc::new(AtomicU64::new(0));
-    let rejected = Arc::new(AtomicU64::new(0));
-
-    // Optional tiny /metrics API
-    if let Some(port) = cfg.api_port {
-        let a = accepted.clone();
-        let r = rejected.clone();
-        tokio::spawn(async move {
-            run_http_api(port, a, r).await;
-        });
-    }
-
     // Snapshot flags for the async task
     let enable_devfee = cfg.enable_devfee;
     let tls = cfg.tls;
 
+    let metrics = Arc::new(Metrics::new(main_pool.clone(), tls));
+
+    if let Some(port) = cfg.api_port {
+        let m = metrics.clone();
+        tokio::spawn(async move {
+            run_http_api(port, m).await;
+        });
+    }
+
     // Pool IO task with reconnect loop
     let pool_handle = tokio::spawn({
         let jobs_tx = jobs_tx.clone();
-        let accepted = accepted.clone();
-        let rejected = rejected.clone();
+        let metrics = metrics.clone();
         let main_pool = main_pool.clone();
         let user_wallet = user_wallet.clone();
         let pass = pass.clone();
@@ -228,16 +229,20 @@ pub async fn run(args: Args) -> Result<()> {
                 // Track valid job_ids for the current session to avoid submitting
                 // stale shares after job clean or reconnect.
                 let mut valid_job_ids: HashSet<String> = HashSet::new();
-                // Track seen nonces per job to prevent duplicates.
                 let mut seen_nonces: HashMap<String, HashSet<u32>> = HashMap::new();
+                let mut job_diffs: HashMap<String, u64> = HashMap::new();
+                let mut pending_shares: VecDeque<(bool, u64)> = VecDeque::new();
 
-                if let Some(job) = initial_job {
+                if let Some(mut job) = initial_job {
                     let id = job.job_id.clone();
+                    job.cache_target();
+                    if let Some(t) = job.target_u32 {
+                        job_diffs.insert(id.clone(), target_to_diff(t));
+                    }
                     let _ = jobs_tx.send(WorkItem {
                         job,
                         is_devfee: false,
                     });
-                    // Seed valid job ids with the login job
                     valid_job_ids.insert(id);
                 }
 
@@ -277,6 +282,8 @@ pub async fn run(args: Args) -> Result<()> {
                                     if let Err(e) = client.submit_share(&share.job_id, &nonce_hex, &result_hex).await {
                                         eprintln!("submit error: {e}");
                                     }
+                                    let diff = job_diffs.get(&share.job_id).copied().unwrap_or(0);
+                                    pending_shares.push_back((share.is_devfee, diff));
 
                                     // After dev fee share, reconnect with user wallet
                                     if share.is_devfee && using_dev {
@@ -338,6 +345,10 @@ pub async fn run(args: Args) -> Result<()> {
                                                 if clean {
                                                     valid_job_ids.clear();
                                                     seen_nonces.clear();
+                                                    job_diffs.clear();
+                                                }
+                                                if let Some(t) = job.target_u32 {
+                                                    job_diffs.insert(job.job_id.clone(), target_to_diff(t));
                                                 }
                                                 valid_job_ids.insert(job.job_id.clone());
                                                 let _ = jobs_tx.send(WorkItem { job, is_devfee: using_dev });
@@ -351,22 +362,38 @@ pub async fn run(args: Args) -> Result<()> {
                                         let ok = res.get("status").and_then(|s| s.as_str()) == Some("OK")
                                             || res.as_bool() == Some(true);
                                         if ok {
-                                            accepted.fetch_add(1, Ordering::Relaxed);
+                                            if let Some((is_dev, diff)) = pending_shares.pop_front() {
+                                                metrics.hashes.fetch_add(diff, Ordering::Relaxed);
+                                                metrics.accepted.fetch_add(1, Ordering::Relaxed);
+                                                if is_dev {
+                                                    metrics.dev_accepted.fetch_add(1, Ordering::Relaxed);
+                                                }
+                                            } else {
+                                                metrics.accepted.fetch_add(1, Ordering::Relaxed);
+                                            }
                                             info!(
-                                                accepted = accepted.load(Ordering::Relaxed),
-                                                rejected = rejected.load(Ordering::Relaxed),
-                                                "share accepted"
+                                                accepted = metrics.accepted.load(Ordering::Relaxed),
+                                                rejected = metrics.rejected.load(Ordering::Relaxed),
+                                                "share accepted",
                                             );
                                             continue;
                                         }
                                     }
                                     if let Some(err) = v.get("error") {
-                                        rejected.fetch_add(1, Ordering::Relaxed);
+                                        if let Some((is_dev, diff)) = pending_shares.pop_front() {
+                                            metrics.hashes.fetch_add(diff, Ordering::Relaxed);
+                                            metrics.rejected.fetch_add(1, Ordering::Relaxed);
+                                            if is_dev {
+                                                metrics.dev_rejected.fetch_add(1, Ordering::Relaxed);
+                                            }
+                                        } else {
+                                            metrics.rejected.fetch_add(1, Ordering::Relaxed);
+                                        }
                                         warn!(
-                                            accepted = accepted.load(Ordering::Relaxed),
-                                            rejected = rejected.load(Ordering::Relaxed),
+                                            accepted = metrics.accepted.load(Ordering::Relaxed),
+                                            rejected = metrics.rejected.load(Ordering::Relaxed),
                                             error = %err,
-                                            "share rejected"
+                                            "share rejected",
                                         );
                                         continue;
                                     }
