@@ -59,3 +59,28 @@ pub struct Args {
     #[arg(long = "benchmark")]
     pub benchmark: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Args;
+    use clap::Parser;
+
+    #[test]
+    fn benchmark_mode_parses_without_pool_or_wallet() {
+        assert!(Args::try_parse_from(["test", "--benchmark"]).is_ok());
+    }
+
+    #[test]
+    fn mining_mode_parses_with_pool_and_wallet() {
+        assert!(
+            Args::try_parse_from(["test", "-o", "pool:5555", "-u", "wallet"]).is_ok()
+        );
+    }
+
+    #[test]
+    fn mining_mode_missing_pool_or_wallet_fails() {
+        assert!(Args::try_parse_from(["test"]).is_err());
+        assert!(Args::try_parse_from(["test", "-o", "pool:5555"]).is_err());
+        assert!(Args::try_parse_from(["test", "-u", "wallet"]).is_err());
+    }
+}

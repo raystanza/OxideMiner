@@ -66,3 +66,35 @@ pub async fn run_http_api(port: u16, accepted: Arc<AtomicU64>, rejected: Arc<Ato
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::run_http_api;
+    use reqwest::Client;
+    use std::sync::{atomic::AtomicU64, Arc};
+    use tokio::time::{sleep, Duration};
+
+    #[tokio::test]
+    async fn metrics_endpoint_reports_counts() {
+        // Pick an available port by binding to port 0 first.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let accepted = Arc::new(AtomicU64::new(5));
+        let rejected = Arc::new(AtomicU64::new(2));
+
+        let server = tokio::spawn(run_http_api(port, accepted.clone(), rejected.clone()));
+        // Give the server a moment to start
+        sleep(Duration::from_millis(50)).await;
+
+        let client = Client::new();
+        let url = format!("http://127.0.0.1:{}/metrics", port);
+        let resp = client.get(url).send().await.unwrap();
+        assert!(resp.status().is_success());
+        let body = resp.text().await.unwrap();
+        assert_eq!(body, "{\"accepted\":5,\"rejected\":2}");
+
+        server.abort();
+    }
+}
