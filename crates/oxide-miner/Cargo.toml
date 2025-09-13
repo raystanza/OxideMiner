@@ -19,6 +19,9 @@ hyper = { workspace = true }
 hyper-util = { workspace = true }
 http-body-util = { workspace = true }
 tracing-appender = "0.2"
+axum = { version = "0.7", features = ["macros"] }
+tokio-stream = "0.1"
+serde = { workspace = true }
 
 [dev-dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

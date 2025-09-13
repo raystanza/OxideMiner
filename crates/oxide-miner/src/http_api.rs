@@ -1,99 +1,153 @@
-use http_body_util::Full;
-use hyper::body::{Bytes, Incoming};
-use hyper::server::conn::http1;
-use hyper::service::service_fn;
-use hyper::{Method, Request, Response};
-use hyper_util::rt::TokioIo;
-use std::convert::Infallible;
-use std::net::SocketAddr;
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use axum::extract::State;
+use axum::response::{Html, Sse};
+use axum::routing::get;
+use axum::{Json, Router};
+use axum::response::sse::Event;
+use serde::Serialize;
 use tokio::net::TcpListener;
+use tokio_stream::{wrappers::IntervalStream, Stream, StreamExt};
 use tracing::info;
 
-pub async fn run_http_api(port: u16, accepted: Arc<AtomicU64>, rejected: Arc<AtomicU64>) {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let listener = match TcpListener::bind(addr).await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("HTTP bind failed: {e}");
-            return;
+/// Shared miner statistics exposed via the HTTP API.
+pub struct ApiStats {
+    pub start: Instant,
+    pub accepted: AtomicU64,
+    pub rejected: AtomicU64,
+    pub devfee_accepted: AtomicU64,
+    pub devfee_rejected: AtomicU64,
+    pub total_hashes: AtomicU64,
+    pub pool: String,
+    pub tls: bool,
+}
+
+impl ApiStats {
+    pub fn new(pool: String, tls: bool) -> Self {
+        Self {
+            start: Instant::now(),
+            accepted: AtomicU64::new(0),
+            rejected: AtomicU64::new(0),
+            devfee_accepted: AtomicU64::new(0),
+            devfee_rejected: AtomicU64::new(0),
+            total_hashes: AtomicU64::new(0),
+            pool,
+            tls,
         }
-    };
-    info!("HTTP API listening on http://{addr}");
-
-    loop {
-        let (stream, _peer) = match listener.accept().await {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("HTTP accept error: {e}");
-                continue;
-            }
-        };
-        let io = TokioIo::new(stream);
-        let a = accepted.clone();
-        let r = rejected.clone();
-
-        tokio::spawn(async move {
-            let svc = service_fn(move |req: Request<Incoming>| {
-                let a = a.clone();
-                let r = r.clone();
-
-                async move {
-                    if req.method() == Method::GET && req.uri().path() == "/metrics" {
-                        let body = format!(
-                            "{{\"accepted\":{},\"rejected\":{}}}",
-                            a.load(Ordering::Relaxed),
-                            r.load(Ordering::Relaxed)
-                        );
-                        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
-                    } else {
-                        Ok::<_, Infallible>(
-                            Response::builder()
-                                .status(404)
-                                .body(Full::new(Bytes::from("not found")))
-                                .unwrap(),
-                        )
-                    }
-                }
-            });
-
-            if let Err(err) = http1::Builder::new().serve_connection(io, svc).await {
-                eprintln!("http connection error: {err}");
-            }
-        });
     }
+
+    pub fn hashrate(&self) -> f64 {
+        let secs = self.start.elapsed().as_secs_f64();
+        if secs > 0.0 {
+            self.total_hashes.load(Ordering::Relaxed) as f64 / secs
+        } else {
+            0.0
+        }
+    }
+
+    fn snapshot(&self) -> StatsResponse {
+        StatsResponse {
+            accepted: self.accepted.load(Ordering::Relaxed),
+            rejected: self.rejected.load(Ordering::Relaxed),
+            devfee_accepted: self.devfee_accepted.load(Ordering::Relaxed),
+            devfee_rejected: self.devfee_rejected.load(Ordering::Relaxed),
+            hashrate: self.hashrate(),
+            pool: self.pool.clone(),
+            tls: self.tls,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct StatsResponse {
+    pub accepted: u64,
+    pub rejected: u64,
+    pub devfee_accepted: u64,
+    pub devfee_rejected: u64,
+    pub hashrate: f64,
+    pub pool: String,
+    pub tls: bool,
+}
+
+/// Serve a tiny HTML dashboard, JSON stats, Prometheus metrics, and optional SSE events.
+pub async fn run_http_api(port: u16, stats: Arc<ApiStats>) {
+    let app = Router::new()
+        .route("/", get(dashboard))
+        .route("/api/stats", get(api_stats))
+        .route("/metrics", get(metrics))
+        .route("/events", get(events))
+        .with_state(stats.clone());
+
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    info!("HTTP API listening on http://{addr}");
+    let listener = TcpListener::bind(addr).await.unwrap();
+    let _ = axum::serve(listener, app.into_make_service()).await;
+}
+
+async fn dashboard() -> Html<&'static str> {
+    const PAGE: &str = r#"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>OxideMiner</title></head><body><h1>OxideMiner</h1><pre id=\"stats\"></pre><script>
+async function refresh(){const r=await fetch('/api/stats');const j=await r.json();document.getElementById('stats').textContent=JSON.stringify(j,null,2);}refresh();setInterval(refresh,1000);
+</script></body></html>"#;
+    Html(PAGE)
+}
+
+async fn api_stats(State(stats): State<Arc<ApiStats>>) -> Json<StatsResponse> {
+    Json(stats.snapshot())
+}
+
+async fn metrics(State(stats): State<Arc<ApiStats>>) -> String {
+    format!(
+        "accepted {}\nrejected {}\ndevfee_accepted {}\ndevfee_rejected {}\nhashrate {}\n",
+        stats.accepted.load(Ordering::Relaxed),
+        stats.rejected.load(Ordering::Relaxed),
+        stats.devfee_accepted.load(Ordering::Relaxed),
+        stats.devfee_rejected.load(Ordering::Relaxed),
+        stats.hashrate()
+    )
+}
+
+async fn events(State(stats): State<Arc<ApiStats>>) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let stream = IntervalStream::new(tokio::time::interval(Duration::from_secs(1)))
+        .map(move |_| {
+            let snapshot = stats.snapshot();
+            let data = serde_json::to_string(&snapshot).unwrap();
+            Ok(Event::default().data(data))
+        });
+    Sse::new(stream)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::run_http_api;
+    use super::{run_http_api, ApiStats};
     use reqwest::Client;
-    use std::sync::{atomic::AtomicU64, Arc};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use tokio::time::{sleep, Duration};
 
     #[tokio::test]
-    async fn metrics_endpoint_reports_counts() {
-        // Pick an available port by binding to port 0 first.
+    async fn stats_and_metrics_endpoints_work() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let accepted = Arc::new(AtomicU64::new(5));
-        let rejected = Arc::new(AtomicU64::new(2));
-
-        let server = tokio::spawn(run_http_api(port, accepted.clone(), rejected.clone()));
-        // Give the server a moment to start
+        let stats = Arc::new(ApiStats::new("pool.test:0".into(), true));
+        stats.accepted.store(5, Ordering::Relaxed);
+        stats.rejected.store(2, Ordering::Relaxed);
+        let server = tokio::spawn(run_http_api(port, stats.clone()));
         sleep(Duration::from_millis(50)).await;
 
         let client = Client::new();
+        let url = format!("http://127.0.0.1:{}/api/stats", port);
+        let body: serde_json::Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+        assert_eq!(body["accepted"], 5);
+        assert_eq!(body["rejected"], 2);
+
         let url = format!("http://127.0.0.1:{}/metrics", port);
-        let resp = client.get(url).send().await.unwrap();
-        assert!(resp.status().is_success());
-        let body = resp.text().await.unwrap();
-        assert_eq!(body, "{\"accepted\":5,\"rejected\":2}");
+        let text = client.get(&url).send().await.unwrap().text().await.unwrap();
+        assert!(text.contains("accepted 5"));
+        assert!(text.contains("rejected 2"));
 
         server.abort();
     }

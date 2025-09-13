@@ -1,5 +1,5 @@
 use crate::args::Args;
-use crate::http_api::run_http_api;
+use crate::http_api::{run_http_api, ApiStats};
 use crate::util::tiny_jitter_ms;
 use anyhow::Result;
 use oxide_core::worker::{Share, WorkItem};
@@ -7,9 +7,9 @@ use oxide_core::{
     autotune_snapshot, cpu_has_aes, huge_pages_enabled, spawn_workers, Config, DevFeeScheduler,
     StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::Ordering,
     Arc,
 };
 use tracing::{info, warn};
@@ -173,15 +173,13 @@ pub async fn run(args: Args) -> Result<()> {
         DEV_FEE_BASIS_POINTS, cfg.enable_devfee
     );
 
-    let accepted = Arc::new(AtomicU64::new(0));
-    let rejected = Arc::new(AtomicU64::new(0));
+    let stats = Arc::new(ApiStats::new(main_pool.clone(), cfg.tls));
 
-    // Optional tiny /metrics API
+    // Optional HTTP API
     if let Some(port) = cfg.api_port {
-        let a = accepted.clone();
-        let r = rejected.clone();
+        let s = stats.clone();
         tokio::spawn(async move {
-            run_http_api(port, a, r).await;
+            run_http_api(port, s).await;
         });
     }
 
@@ -192,8 +190,7 @@ pub async fn run(args: Args) -> Result<()> {
     // Pool IO task with reconnect loop
     let pool_handle = tokio::spawn({
         let jobs_tx = jobs_tx.clone();
-        let accepted = accepted.clone();
-        let rejected = rejected.clone();
+        let stats = stats.clone();
         let main_pool = main_pool.clone();
         let user_wallet = user_wallet.clone();
         let pass = pass.clone();
@@ -230,8 +227,16 @@ pub async fn run(args: Args) -> Result<()> {
                 let mut valid_job_ids: HashSet<String> = HashSet::new();
                 // Track seen nonces per job to prevent duplicates.
                 let mut seen_nonces: HashMap<String, HashSet<u32>> = HashMap::new();
+                // Track target per job for hashrate estimation.
+                let mut job_targets: HashMap<String, u32> = HashMap::new();
+                // Queue of whether pending share responses are devfee.
+                let mut pending_devfee: VecDeque<bool> = VecDeque::new();
 
-                if let Some(job) = initial_job {
+                if let Some(mut job) = initial_job {
+                    job.cache_target();
+                    if let Some(t) = job.target_u32 {
+                        job_targets.insert(job.job_id.clone(), t);
+                    }
                     let id = job.job_id.clone();
                     let _ = jobs_tx.send(WorkItem {
                         job,
@@ -262,6 +267,12 @@ pub async fn run(args: Args) -> Result<()> {
                                         tracing::debug!(job_id = %share.job_id, nonce = share.nonce, "dropping duplicate share (already submitted)");
                                         continue;
                                     }
+                                    if let Some(t) = job_targets.get(&share.job_id) {
+                                        if *t > 0 {
+                                            stats.total_hashes.fetch_add(0xffff_ffffu64 / (*t as u64), Ordering::Relaxed);
+                                        }
+                                    }
+                                    pending_devfee.push_back(share.is_devfee);
                                     // Submit LE nonce (8 hex) and LE result (64 hex)
                                     let nonce_hex  = hex::encode(share.nonce.to_le_bytes());
                                     let result_hex = hex::encode(share.result);
@@ -287,7 +298,13 @@ pub async fn run(args: Args) -> Result<()> {
                                                 // New session: reset valid job ids and dedupe state
                                                 valid_job_ids.clear();
                                                 seen_nonces.clear();
-                                                if let Some(job) = job_opt {
+                                                job_targets.clear();
+                                                pending_devfee.clear();
+                                                if let Some(mut job) = job_opt {
+                                                    job.cache_target();
+                                                    if let Some(t) = job.target_u32 {
+                                                        job_targets.insert(job.job_id.clone(), t);
+                                                    }
                                                     let id = job.job_id.clone();
                                                     let _ = jobs_tx.send(WorkItem { job, is_devfee: false });
                                                     valid_job_ids.insert(id);
@@ -322,7 +339,14 @@ pub async fn run(args: Args) -> Result<()> {
                                                     // New session: reset valid job ids and dedupe state
                                                     valid_job_ids.clear();
                                                     seen_nonces.clear();
+                                                    job_targets.clear();
+                                                    pending_devfee.clear();
                                                     if let Some(job) = job_opt {
+                                                        let mut job = job;
+                                                        job.cache_target();
+                                                        if let Some(t) = job.target_u32 {
+                                                            job_targets.insert(job.job_id.clone(), t);
+                                                        }
                                                         let id = job.job_id.clone();
                                                         let _ = jobs_tx.send(WorkItem { job, is_devfee: true });
                                                         valid_job_ids.insert(id);
@@ -333,11 +357,16 @@ pub async fn run(args: Args) -> Result<()> {
                                         } else if let Some(params) = v.get("params") {
                                             if let Ok(mut job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
                                                 job.cache_target();
+                                                if let Some(t) = job.target_u32 {
+                                                    job_targets.insert(job.job_id.clone(), t);
+                                                }
                                                 // Update valid job ids set: when clean_jobs=true, replace; else, add.
                                                 let clean = params.get("clean_jobs").and_then(|x| x.as_bool()).unwrap_or(true);
                                                 if clean {
                                                     valid_job_ids.clear();
                                                     seen_nonces.clear();
+                                                    job_targets.clear();
+                                                    pending_devfee.clear();
                                                 }
                                                 valid_job_ids.insert(job.job_id.clone());
                                                 let _ = jobs_tx.send(WorkItem { job, is_devfee: using_dev });
@@ -351,22 +380,30 @@ pub async fn run(args: Args) -> Result<()> {
                                         let ok = res.get("status").and_then(|s| s.as_str()) == Some("OK")
                                             || res.as_bool() == Some(true);
                                         if ok {
-                                            accepted.fetch_add(1, Ordering::Relaxed);
+                                            let dev = pending_devfee.pop_front().unwrap_or(false);
+        stats.accepted.fetch_add(1, Ordering::Relaxed);
+                                            if dev {
+                                                stats.devfee_accepted.fetch_add(1, Ordering::Relaxed);
+                                            }
                                             info!(
-                                                accepted = accepted.load(Ordering::Relaxed),
-                                                rejected = rejected.load(Ordering::Relaxed),
-                                                "share accepted"
+                                                accepted = stats.accepted.load(Ordering::Relaxed),
+                                                rejected = stats.rejected.load(Ordering::Relaxed),
+                                                "share accepted",
                                             );
                                             continue;
                                         }
                                     }
                                     if let Some(err) = v.get("error") {
-                                        rejected.fetch_add(1, Ordering::Relaxed);
+                                        let dev = pending_devfee.pop_front().unwrap_or(false);
+                                        stats.rejected.fetch_add(1, Ordering::Relaxed);
+                                        if dev {
+                                            stats.devfee_rejected.fetch_add(1, Ordering::Relaxed);
+                                        }
                                         warn!(
-                                            accepted = accepted.load(Ordering::Relaxed),
-                                            rejected = rejected.load(Ordering::Relaxed),
+                                            accepted = stats.accepted.load(Ordering::Relaxed),
+                                            rejected = stats.rejected.load(Ordering::Relaxed),
                                             error = %err,
-                                            "share rejected"
+                                            "share rejected",
                                         );
                                         continue;
                                     }
