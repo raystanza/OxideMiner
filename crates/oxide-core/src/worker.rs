@@ -1,4 +1,8 @@
 use anyhow::Result;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
@@ -28,6 +32,7 @@ pub fn spawn_workers(
     large_pages: bool,
     batch_size: usize,
     yield_between_batches: bool,
+    hashes: Arc<AtomicU64>,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     #[cfg(feature = "randomx")]
     engine::set_large_pages(large_pages);
@@ -41,6 +46,7 @@ pub fn spawn_workers(
             let mut rx = jobs_tx.subscribe();
             let shares_tx = shares_tx.clone();
             let core_ids = core_ids.clone();
+            let hashes = hashes.clone();
             tokio::spawn(async move {
                 #[cfg(feature = "randomx")]
                 {
@@ -56,6 +62,7 @@ pub fn spawn_workers(
                         yield_between_batches,
                         &mut rx,
                         shares_tx,
+                        hashes,
                     )
                     .await
                     {
@@ -265,6 +272,7 @@ async fn randomx_worker_loop(
     yield_between_batches: bool,
     rx: &mut broadcast::Receiver<WorkItem>,
     shares_tx: mpsc::UnboundedSender<Share>,
+    hashes: Arc<AtomicU64>,
 ) -> Result<()> {
     use engine::*;
 
@@ -341,6 +349,7 @@ async fn randomx_worker_loop(
                 for i in 0..batch_size {
                     put_u32_le(&mut blob, 39, nonce);
                     let digest = hash(vm, &blob);
+                    hashes.fetch_add(1, Ordering::Relaxed);
                     if meets_target(&digest, &j) {
                         let le_hex = hex::encode(digest);
                         let mut be_bytes = digest;
@@ -442,7 +451,8 @@ mod tests {
     async fn spawns_correct_number_of_workers() {
         let (jobs_tx, _jobs_rx) = broadcast::channel(1);
         let (shares_tx, _shares_rx) = mpsc::unbounded_channel();
-        let handles = spawn_workers(3, jobs_tx, shares_tx, false, false, 10_000, true);
+        let hashes = Arc::new(AtomicU64::new(0));
+        let handles = spawn_workers(3, jobs_tx, shares_tx, false, false, 10_000, true, hashes);
         assert_eq!(handles.len(), 3);
         for h in handles {
             h.abort();

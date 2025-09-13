@@ -15,9 +15,9 @@ tracing-subscriber = { workspace = true }
 num_cpus = { workspace = true }
 hex = { workspace = true }
 serde_json = { workspace = true }
-hyper = { workspace = true }
-hyper-util = { workspace = true }
-http-body-util = { workspace = true }
+axum = { version = "0.7", features = ["macros", "json"] }
+tokio-stream = "0.1"
+serde = { workspace = true }
 tracing-appender = "0.2"
 
 [dev-dependencies]

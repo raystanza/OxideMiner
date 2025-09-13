@@ -1,5 +1,5 @@
 use crate::args::Args;
-use crate::http_api::run_http_api;
+use crate::http_api::{run_http_api, ApiState};
 use crate::util::tiny_jitter_ms;
 use anyhow::Result;
 use oxide_core::worker::{Share, WorkItem};
@@ -7,11 +7,12 @@ use oxide_core::{
     autotune_snapshot, cpu_has_aes, huge_pages_enabled, spawn_workers, Config, DevFeeScheduler,
     StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
+use std::time::Instant;
 use tracing::{info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -153,6 +154,35 @@ pub async fn run(args: Args) -> Result<()> {
     if cfg.threads.is_none() {
         info!("auto-selected {} worker threads", n_workers);
     }
+
+    // Metrics counters
+    let accepted = Arc::new(AtomicU64::new(0));
+    let rejected = Arc::new(AtomicU64::new(0));
+    let devfee_accepted = Arc::new(AtomicU64::new(0));
+    let devfee_rejected = Arc::new(AtomicU64::new(0));
+    let hashes = Arc::new(AtomicU64::new(0));
+    let connected = Arc::new(AtomicBool::new(false));
+    let start = Instant::now();
+
+    let api_state = Arc::new(ApiState {
+        accepted: accepted.clone(),
+        rejected: rejected.clone(),
+        devfee_accepted: devfee_accepted.clone(),
+        devfee_rejected: devfee_rejected.clone(),
+        hashes: hashes.clone(),
+        connected: connected.clone(),
+        start,
+        pool: cfg.pool.clone(),
+        tls: cfg.tls,
+    });
+
+    if let Some(port) = cfg.api_port {
+        let state = api_state.clone();
+        tokio::spawn(async move {
+            run_http_api(port, state).await;
+        });
+    }
+
     let _workers = spawn_workers(
         n_workers,
         jobs_tx.clone(),
@@ -161,6 +191,7 @@ pub async fn run(args: Args) -> Result<()> {
         large_pages,
         cfg.batch_size,
         cfg.yield_between_batches,
+        hashes.clone(),
     );
 
     let main_pool = cfg.pool.clone();
@@ -173,18 +204,6 @@ pub async fn run(args: Args) -> Result<()> {
         DEV_FEE_BASIS_POINTS, cfg.enable_devfee
     );
 
-    let accepted = Arc::new(AtomicU64::new(0));
-    let rejected = Arc::new(AtomicU64::new(0));
-
-    // Optional tiny /metrics API
-    if let Some(port) = cfg.api_port {
-        let a = accepted.clone();
-        let r = rejected.clone();
-        tokio::spawn(async move {
-            run_http_api(port, a, r).await;
-        });
-    }
-
     // Snapshot flags for the async task
     let enable_devfee = cfg.enable_devfee;
     let tls = cfg.tls;
@@ -194,6 +213,9 @@ pub async fn run(args: Args) -> Result<()> {
         let jobs_tx = jobs_tx.clone();
         let accepted = accepted.clone();
         let rejected = rejected.clone();
+        let devfee_accepted = devfee_accepted.clone();
+        let devfee_rejected = devfee_rejected.clone();
+        let connected = connected.clone();
         let main_pool = main_pool.clone();
         let user_wallet = user_wallet.clone();
         let pass = pass.clone();
@@ -204,6 +226,7 @@ pub async fn run(args: Args) -> Result<()> {
 
             let mut backoff_ms = 1_000u64;
             loop {
+                connected.store(false, Ordering::Relaxed);
                 let (mut client, initial_job) = match StratumClient::connect_and_login(
                     &main_pool,
                     &user_wallet,
@@ -215,6 +238,7 @@ pub async fn run(args: Args) -> Result<()> {
                 {
                     Ok(v) => {
                         backoff_ms = 1_000;
+                        connected.store(true, Ordering::Relaxed);
                         v
                     }
                     Err(e) => {
@@ -230,6 +254,8 @@ pub async fn run(args: Args) -> Result<()> {
                 let mut valid_job_ids: HashSet<String> = HashSet::new();
                 // Track seen nonces per job to prevent duplicates.
                 let mut seen_nonces: HashMap<String, HashSet<u32>> = HashMap::new();
+                // Track which pending shares are devfee to map responses.
+                let mut pending_devfee: VecDeque<bool> = VecDeque::new();
 
                 if let Some(job) = initial_job {
                     let id = job.job_id.clone();
@@ -276,6 +302,8 @@ pub async fn run(args: Args) -> Result<()> {
 
                                     if let Err(e) = client.submit_share(&share.job_id, &nonce_hex, &result_hex).await {
                                         eprintln!("submit error: {e}");
+                                    } else {
+                                        pending_devfee.push_back(share.is_devfee);
                                     }
 
                                     // After dev fee share, reconnect with user wallet
@@ -351,7 +379,11 @@ pub async fn run(args: Args) -> Result<()> {
                                         let ok = res.get("status").and_then(|s| s.as_str()) == Some("OK")
                                             || res.as_bool() == Some(true);
                                         if ok {
+                                            let is_dev = pending_devfee.pop_front().unwrap_or(false);
                                             accepted.fetch_add(1, Ordering::Relaxed);
+                                            if is_dev {
+                                                devfee_accepted.fetch_add(1, Ordering::Relaxed);
+                                            }
                                             info!(
                                                 accepted = accepted.load(Ordering::Relaxed),
                                                 rejected = rejected.load(Ordering::Relaxed),
@@ -361,7 +393,11 @@ pub async fn run(args: Args) -> Result<()> {
                                         }
                                     }
                                     if let Some(err) = v.get("error") {
+                                        let is_dev = pending_devfee.pop_front().unwrap_or(false);
                                         rejected.fetch_add(1, Ordering::Relaxed);
+                                        if is_dev {
+                                            devfee_rejected.fetch_add(1, Ordering::Relaxed);
+                                        }
                                         warn!(
                                             accepted = accepted.load(Ordering::Relaxed),
                                             rejected = rejected.load(Ordering::Relaxed),
@@ -373,6 +409,7 @@ pub async fn run(args: Args) -> Result<()> {
                                 }
                                 Err(e) => {
                                     eprintln!("pool read error: {e}");
+                                    connected.store(false, Ordering::Relaxed);
                                     sleep(Duration::from_millis(tiny_jitter_ms())).await;
                                     break; // break inner loop -> reconnect
                                 }
