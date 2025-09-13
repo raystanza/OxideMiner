@@ -1,5 +1,6 @@
 use crate::args::Args;
 use crate::http_api::run_http_api;
+use crate::stats::Stats;
 use crate::util::tiny_jitter_ms;
 use anyhow::Result;
 use oxide_core::worker::{Share, WorkItem};
@@ -9,7 +10,7 @@ use oxide_core::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::Ordering,
     Arc,
 };
 use tracing::{info, warn};
@@ -153,6 +154,9 @@ pub async fn run(args: Args) -> Result<()> {
     if cfg.threads.is_none() {
         info!("auto-selected {} worker threads", n_workers);
     }
+
+    let stats = Arc::new(Stats::new(cfg.pool.clone(), cfg.tls));
+
     let _workers = spawn_workers(
         n_workers,
         jobs_tx.clone(),
@@ -161,6 +165,7 @@ pub async fn run(args: Args) -> Result<()> {
         large_pages,
         cfg.batch_size,
         cfg.yield_between_batches,
+        stats.hashes.clone(),
     );
 
     let main_pool = cfg.pool.clone();
@@ -173,15 +178,11 @@ pub async fn run(args: Args) -> Result<()> {
         DEV_FEE_BASIS_POINTS, cfg.enable_devfee
     );
 
-    let accepted = Arc::new(AtomicU64::new(0));
-    let rejected = Arc::new(AtomicU64::new(0));
-
-    // Optional tiny /metrics API
+    // Optional HTTP API
     if let Some(port) = cfg.api_port {
-        let a = accepted.clone();
-        let r = rejected.clone();
+        let s = stats.clone();
         tokio::spawn(async move {
-            run_http_api(port, a, r).await;
+            run_http_api(port, s).await;
         });
     }
 
@@ -192,8 +193,7 @@ pub async fn run(args: Args) -> Result<()> {
     // Pool IO task with reconnect loop
     let pool_handle = tokio::spawn({
         let jobs_tx = jobs_tx.clone();
-        let accepted = accepted.clone();
-        let rejected = rejected.clone();
+        let stats = stats.clone();
         let main_pool = main_pool.clone();
         let user_wallet = user_wallet.clone();
         let pass = pass.clone();
@@ -204,6 +204,7 @@ pub async fn run(args: Args) -> Result<()> {
 
             let mut backoff_ms = 1_000u64;
             loop {
+                stats.pool_connected.store(false, Ordering::Relaxed);
                 let (mut client, initial_job) = match StratumClient::connect_and_login(
                     &main_pool,
                     &user_wallet,
@@ -215,6 +216,7 @@ pub async fn run(args: Args) -> Result<()> {
                 {
                     Ok(v) => {
                         backoff_ms = 1_000;
+                        stats.pool_connected.store(true, Ordering::Relaxed);
                         v
                     }
                     Err(e) => {
@@ -296,6 +298,7 @@ pub async fn run(args: Args) -> Result<()> {
                                             Err(e) => {
                                                 warn!("reconnect failed (devfee -> user): {e}");
                                                 sleep(Duration::from_millis(tiny_jitter_ms())).await;
+                                                stats.pool_connected.store(false, Ordering::Relaxed);
                                                 break; // break inner loop -> reconnect
                                             }
                                         }
@@ -351,20 +354,28 @@ pub async fn run(args: Args) -> Result<()> {
                                         let ok = res.get("status").and_then(|s| s.as_str()) == Some("OK")
                                             || res.as_bool() == Some(true);
                                         if ok {
-                                            accepted.fetch_add(1, Ordering::Relaxed);
+                                            if using_dev {
+                                                stats.dev_accepted.fetch_add(1, Ordering::Relaxed);
+                                            } else {
+                                                stats.accepted.fetch_add(1, Ordering::Relaxed);
+                                            }
                                             info!(
-                                                accepted = accepted.load(Ordering::Relaxed),
-                                                rejected = rejected.load(Ordering::Relaxed),
+                                                accepted = stats.accepted.load(Ordering::Relaxed),
+                                                rejected = stats.rejected.load(Ordering::Relaxed),
                                                 "share accepted"
                                             );
                                             continue;
                                         }
                                     }
                                     if let Some(err) = v.get("error") {
-                                        rejected.fetch_add(1, Ordering::Relaxed);
+                                        if using_dev {
+                                            stats.dev_rejected.fetch_add(1, Ordering::Relaxed);
+                                        } else {
+                                        stats.rejected.fetch_add(1, Ordering::Relaxed);
+                                        }
                                         warn!(
-                                            accepted = accepted.load(Ordering::Relaxed),
-                                            rejected = rejected.load(Ordering::Relaxed),
+                                            accepted = stats.accepted.load(Ordering::Relaxed),
+                                            rejected = stats.rejected.load(Ordering::Relaxed),
                                             error = %err,
                                             "share rejected"
                                         );
@@ -374,6 +385,7 @@ pub async fn run(args: Args) -> Result<()> {
                                 Err(e) => {
                                     eprintln!("pool read error: {e}");
                                     sleep(Duration::from_millis(tiny_jitter_ms())).await;
+                                    stats.pool_connected.store(false, Ordering::Relaxed);
                                     break; // break inner loop -> reconnect
                                 }
                             }
