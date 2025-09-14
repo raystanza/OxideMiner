@@ -22,8 +22,6 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("HTTP bind failed: {e}");
-            // Also print to stderr so user sees it even if logging is off.
-            eprintln!("HTTP bind failed: {e}");
             return;
         }
     };
@@ -34,8 +32,6 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("HTTP accept error: {e}");
-                // Also print to stderr so user sees it even if logging is off.
-                eprintln!("HTTP accept error: {e}");
                 continue;
             }
         };
@@ -148,8 +144,6 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
 
             if let Err(err) = http1::Builder::new().serve_connection(io, svc).await {
                 tracing::error!("HTTP connection error: {err}");
-                // Also print to stderr so user sees it even if logging is off.
-                eprintln!("HTTP connection error: {err}");
             }
         });
     }

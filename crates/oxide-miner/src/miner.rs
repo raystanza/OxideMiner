@@ -220,8 +220,6 @@ pub async fn run(args: Args) -> Result<()> {
                     }
                     Err(e) => {
                         tracing::error!("connect/login failed; retrying in {}s: {e}", backoff_ms / 1000);
-                        // Also print to stderr so user sees it even if logging is off.
-                        eprintln!("connect/login failed: {e}");
                         sleep(Duration::from_millis(backoff_ms)).await;
                         backoff_ms = (backoff_ms * 2).min(60_000);
                         continue;
@@ -279,8 +277,6 @@ pub async fn run(args: Args) -> Result<()> {
 
                                     if let Err(e) = client.submit_share(&share.job_id, &nonce_hex, &result_hex).await {
                                         tracing::error!("submit_share error: {e}");
-                                        // Also print to stderr so user sees it even if logging is off.
-                                        eprintln!("submit error: {e}");
                                     }
 
                                     // After dev fee share, reconnect with user wallet
@@ -387,8 +383,6 @@ pub async fn run(args: Args) -> Result<()> {
                                 }
                                 Err(e) => {
                                     tracing::error!("pool read error: {e}; reconnecting");
-                                    // Also print to stderr so user sees it even if logging is off.
-                                    eprintln!("pool read error: {e}");
                                     sleep(Duration::from_millis(tiny_jitter_ms())).await;
                                     stats.pool_connected.store(false, Ordering::Relaxed);
                                     break; // break inner loop -> reconnect
@@ -407,8 +401,6 @@ pub async fn run(args: Args) -> Result<()> {
         res = pool_handle => {
             if let Err(e) = res {
                 tracing::error!("pool task ended unexpectedly: {e}");
-                // Also print to stderr so user sees it even if logging is off.
-                eprintln!("pool task ended unexpectedly: {e}");
             }
         }
         _ = tokio::signal::ctrl_c() => {
