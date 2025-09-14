@@ -10,29 +10,28 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::{atomic::Ordering, Arc};
 use tokio::net::TcpListener;
-use tracing::info;
 
-const DASHBOARD_HTML: &str = r#"<!DOCTYPE html><html><body><pre id='stats'></pre><script>
-async function update(){const r=await fetch('/api/stats');const j=await r.json();document.getElementById('stats').textContent=JSON.stringify(j,null,2);}
-setInterval(update,1000);update();
-</script></body></html>"#;
+// Embed the dashboard assets at compile time so the binary is self-contained.
+const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
+const DASHBOARD_CSS: &str = include_str!("../assets/dashboard.css");
+const DASHBOARD_JS: &str = include_str!("../assets/dashboard.js");
 
 pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = match TcpListener::bind(addr).await {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("HTTP bind failed: {e}");
+            tracing::error!("HTTP bind failed: {e}");
             return;
         }
     };
-    info!("HTTP API listening on http://{addr}");
+    tracing::info!("HTTP API listening on http://{addr}");
 
     loop {
         let (stream, _peer) = match listener.accept().await {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("HTTP accept error: {e}");
+                tracing::error!("HTTP accept error: {e}");
                 continue;
             }
         };
@@ -53,8 +52,12 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
                             let dev_rej = s.dev_rejected.load(Ordering::Relaxed);
                             let hashes = s.hashes.load(Ordering::Relaxed);
                             let hashrate = s.hashrate();
-                            let connected = if s.pool_connected.load(Ordering::Relaxed) {1} else {0};
-                            let tls = if s.tls {1} else {0};
+                            let connected = if s.pool_connected.load(Ordering::Relaxed) {
+                                1
+                            } else {
+                                0
+                            };
+                            let tls = if s.tls { 1 } else { 0 };
                             use std::fmt::Write;
                             writeln!(body, "oxide_hashes_total {}", hashes).ok();
                             writeln!(body, "oxide_hashrate {}", hashrate).ok();
@@ -65,7 +68,10 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
                             writeln!(body, "oxide_pool_connected {}", connected).ok();
                             writeln!(body, "oxide_tls_enabled {}", tls).ok();
                             let mut resp = Response::new(Full::new(Bytes::from(body)));
-                            resp.headers_mut().insert(header::CONTENT_TYPE, header::HeaderValue::from_static("text/plain"));
+                            resp.headers_mut().insert(
+                                header::CONTENT_TYPE,
+                                header::HeaderValue::from_static("text/plain"),
+                            );
                             Ok::<_, Infallible>(resp)
                         }
                         (&Method::GET, "/api/stats") => {
@@ -87,30 +93,57 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
                                     "dev_accepted": dev_acc,
                                     "dev_rejected": dev_rej,
                                 }
-                            }).to_string();
+                            })
+                            .to_string();
                             let mut resp = Response::new(Full::new(Bytes::from(resp_body)));
-                            resp.headers_mut().insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/json"));
+                            resp.headers_mut().insert(
+                                header::CONTENT_TYPE,
+                                header::HeaderValue::from_static("application/json"),
+                            );
                             Ok::<_, Infallible>(resp)
                         }
                         (&Method::GET, "/") => {
-                            let mut resp = Response::new(Full::new(Bytes::from_static(DASHBOARD_HTML.as_bytes())));
-                            resp.headers_mut().insert(header::CONTENT_TYPE, header::HeaderValue::from_static("text/html"));
+                            let mut resp = Response::new(Full::new(Bytes::from_static(
+                                DASHBOARD_HTML.as_bytes(),
+                            )));
+                            resp.headers_mut().insert(
+                                header::CONTENT_TYPE,
+                                header::HeaderValue::from_static("text/html"),
+                            );
                             Ok::<_, Infallible>(resp)
                         }
-                        _ => {
-                            Ok::<_, Infallible>(
-                                Response::builder()
-                                    .status(404)
-                                    .body(Full::new(Bytes::from("not found")))
-                                    .unwrap(),
-                            )
+                        (&Method::GET, "/dashboard.css") => {
+                            let mut resp = Response::new(Full::new(Bytes::from_static(
+                                DASHBOARD_CSS.as_bytes(),
+                            )));
+                            resp.headers_mut().insert(
+                                header::CONTENT_TYPE,
+                                header::HeaderValue::from_static("text/css"),
+                            );
+                            Ok::<_, Infallible>(resp)
                         }
+                        (&Method::GET, "/dashboard.js") => {
+                            let mut resp = Response::new(Full::new(Bytes::from_static(
+                                DASHBOARD_JS.as_bytes(),
+                            )));
+                            resp.headers_mut().insert(
+                                header::CONTENT_TYPE,
+                                header::HeaderValue::from_static("application/javascript"),
+                            );
+                            Ok::<_, Infallible>(resp)
+                        }
+                        _ => Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(404)
+                                .body(Full::new(Bytes::from("not found")))
+                                .unwrap(),
+                        ),
                     }
                 }
             });
 
             if let Err(err) = http1::Builder::new().serve_connection(io, svc).await {
-                eprintln!("http connection error: {err}");
+                tracing::error!("HTTP connection error: {err}");
             }
         });
     }
@@ -121,8 +154,8 @@ mod tests {
     use super::run_http_api;
     use crate::stats::Stats;
     use reqwest::Client;
-    use std::sync::Arc;
     use std::sync::atomic::Ordering;
+    use std::sync::Arc;
     use tokio::time::{sleep, Duration};
 
     #[tokio::test]
@@ -158,6 +191,12 @@ mod tests {
         let text = resp.text().await.unwrap();
         assert!(text.contains("oxide_shares_accepted_total 5"));
         assert!(text.contains("oxide_devfee_shares_accepted_total 1"));
+
+        let url = format!("http://127.0.0.1:{}/", port);
+        let resp = client.get(url).send().await.unwrap();
+        assert!(resp.status().is_success());
+        let text = resp.text().await.unwrap();
+        assert!(text.contains("OxideMiner Dashboard"));
 
         server.abort();
     }

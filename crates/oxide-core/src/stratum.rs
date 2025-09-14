@@ -7,7 +7,6 @@ use tokio::{
     net::TcpStream,
 };
 use tokio_rustls::{rustls, TlsConnector};
-use tracing::{info, warn};
 use webpki_roots::TLS_SERVER_ROOTS;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,7 +128,7 @@ impl StratumClient {
                         if let Some(job_val) = obj.get("job") {
                             if let Ok(mut job) = serde_json::from_value::<PoolJob>(job_val.clone()) {
                                 job.cache_target();
-                                info!("initial job (in login result)");
+                                tracing::info!("initial job (in login result)");
                                 break Some(job);
                             }
                         }
@@ -138,13 +137,13 @@ impl StratumClient {
                         if let Some(params) = v.get("params") {
                             if let Ok(mut job) = serde_json::from_value::<PoolJob>(params.clone()) {
                                 job.cache_target();
-                                info!("initial job (job notify)");
+                                tracing::info!("initial job (job notify)");
                                 break Some(job);
                             }
                         }
                     }
                 }
-                Err(_) => warn!("pool says: {}", line.trim()),
+                Err(_) => tracing::warn!("pool says: {}", line.trim()),
             }
         };
 

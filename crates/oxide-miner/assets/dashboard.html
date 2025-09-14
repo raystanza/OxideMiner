@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OxideMiner Dashboard</title>
+    <link rel="stylesheet" href="/dashboard.css" />
+</head>
+<body>
+    <div class="container">
+        <h1>OxideMiner Dashboard</h1>
+        <div class="grid">
+            <div class="card">
+                <div class="label">Hashrate</div>
+                <div class="value" id="hashrate">0 H/s</div>
+            </div>
+            <div class="card">
+                <div class="label">Hashes Total</div>
+                <div class="value" id="hashes">0</div>
+            </div>
+            <div class="card">
+                <div class="label">Shares Accepted</div>
+                <div class="value" id="accepted">0</div>
+            </div>
+            <div class="card">
+                <div class="label">Shares Rejected</div>
+                <div class="value" id="rejected">0</div>
+            </div>
+            <div class="card">
+                <div class="label">Dev Shares Accepted</div>
+                <div class="value" id="dev_accepted">0</div>
+            </div>
+            <div class="card">
+                <div class="label">Dev Shares Rejected</div>
+                <div class="value" id="dev_rejected">0</div>
+            </div>
+            <div class="card">
+                <div class="label">Pool</div>
+                <div class="value" id="pool">-</div>
+            </div>
+            <div class="card">
+                <div class="label">Connected</div>
+                <div class="value" id="connected">-</div>
+            </div>
+            <div class="card">
+                <div class="label">TLS</div>
+                <div class="value" id="tls">-</div>
+            </div>
+        </div>
+    </div>
+    <script src="/dashboard.js"></script>
+</body>
+</html>
