@@ -1,0 +1,35 @@
+body {
+    background: #e0e0e0;
+    font-family: Arial, sans-serif;
+    color: #333;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+}
+
+.container {
+    text-align: center;
+}
+
+.card {
+    background: #e0e0e0;
+    border-radius: 20px;
+    box-shadow: 9px 9px 16px #bebebe,
+                -9px -9px 16px #ffffff;
+    padding: 20px 30px;
+}
+
+.stat {
+    margin: 10px 0;
+}
+
+.stat span:first-child {
+    font-weight: bold;
+    margin-right: 5px;
+}
+
+.shares div {
+    margin: 5px 0;
+}

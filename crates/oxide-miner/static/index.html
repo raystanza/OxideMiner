@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Oxide Miner Dashboard</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Oxide Miner</h1>
+        <div class="card">
+            <div class="stat"><span>Pool:</span> <span id="pool">-</span></div>
+            <div class="stat"><span>Status:</span> <span id="status">-</span></div>
+            <div class="stat"><span>Hashrate:</span> <span id="hashrate">-</span></div>
+            <div class="stat"><span>Hashes:</span> <span id="hashes">-</span></div>
+            <div class="stat"><span>Shares:</span>
+                <div class="shares">
+                    <div>Accepted: <span id="accepted">0</span></div>
+                    <div>Rejected: <span id="rejected">0</span></div>
+                    <div>Dev Accepted: <span id="dev_accepted">0</span></div>
+                    <div>Dev Rejected: <span id="dev_rejected">0</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="/app.js"></script>
+</body>
+</html>
