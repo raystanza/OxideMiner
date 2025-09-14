@@ -1,0 +1,42 @@
+body {
+    font-family: Arial, sans-serif;
+    background: #e0e0e0;
+    margin: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+}
+
+.container {
+    max-width: 800px;
+    width: 100%;
+    padding: 20px;
+}
+
+h1 {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.card {
+    background: #e0e0e0;
+    border-radius: 12px;
+    box-shadow: 9px 9px 16px #bebebe,
+                -9px -9px 16px #ffffff;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.card h2 {
+    margin-top: 0;
+}
+
+ul {
+    list-style: none;
+    padding: 0;
+}
+
+li {
+    margin: 4px 0;
+}
