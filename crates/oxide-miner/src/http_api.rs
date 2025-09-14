@@ -8,15 +8,16 @@ use hyper_util::rt::TokioIo;
 use serde_json::json;
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{atomic::Ordering, Arc};
-use tokio::net::TcpListener;
+use tokio::{fs, net::TcpListener};
 
 // Embed the dashboard assets at compile time so the binary is self-contained.
 const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
 const DASHBOARD_CSS: &str = include_str!("../assets/dashboard.css");
 const DASHBOARD_JS: &str = include_str!("../assets/dashboard.js");
 
-pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
+pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<PathBuf>) {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = match TcpListener::bind(addr).await {
         Ok(v) => v,
@@ -37,10 +38,12 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
         };
         let io = TokioIo::new(stream);
         let s = stats.clone();
+        let dash_dir = dashboard_dir.clone();
 
         tokio::spawn(async move {
             let svc = service_fn(move |req: Request<Incoming>| {
                 let s = s.clone();
+                let dash_dir = dash_dir.clone();
 
                 async move {
                     match (req.method(), req.uri().path()) {
@@ -102,35 +105,82 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
                             );
                             Ok::<_, Infallible>(resp)
                         }
-                        (&Method::GET, "/") => {
-                            let mut resp = Response::new(Full::new(Bytes::from_static(
-                                DASHBOARD_HTML.as_bytes(),
-                            )));
-                            resp.headers_mut().insert(
-                                header::CONTENT_TYPE,
-                                header::HeaderValue::from_static("text/html"),
-                            );
-                            Ok::<_, Infallible>(resp)
-                        }
-                        (&Method::GET, "/dashboard.css") => {
-                            let mut resp = Response::new(Full::new(Bytes::from_static(
-                                DASHBOARD_CSS.as_bytes(),
-                            )));
-                            resp.headers_mut().insert(
-                                header::CONTENT_TYPE,
-                                header::HeaderValue::from_static("text/css"),
-                            );
-                            Ok::<_, Infallible>(resp)
-                        }
-                        (&Method::GET, "/dashboard.js") => {
-                            let mut resp = Response::new(Full::new(Bytes::from_static(
-                                DASHBOARD_JS.as_bytes(),
-                            )));
-                            resp.headers_mut().insert(
-                                header::CONTENT_TYPE,
-                                header::HeaderValue::from_static("application/javascript"),
-                            );
-                            Ok::<_, Infallible>(resp)
+                        (&Method::GET, path) => {
+                            if let Some(dir) = &dash_dir {
+                                let file_name = if path == "/" {
+                                    "dashboard.html"
+                                } else {
+                                    &path[1..]
+                                };
+                                let file_path = dir.join(file_name);
+                                match fs::read(&file_path).await {
+                                    Ok(contents) => {
+                                        let mut resp =
+                                            Response::new(Full::new(Bytes::from(contents)));
+                                        let ct = if file_name.ends_with(".html") {
+                                            "text/html"
+                                        } else if file_name.ends_with(".css") {
+                                            "text/css"
+                                        } else if file_name.ends_with(".js") {
+                                            "application/javascript"
+                                        } else {
+                                            "application/octet-stream"
+                                        };
+                                        resp.headers_mut().insert(
+                                            header::CONTENT_TYPE,
+                                            header::HeaderValue::from_static(ct),
+                                        );
+                                        Ok::<_, Infallible>(resp)
+                                    }
+                                    Err(_) => Ok::<_, Infallible>(
+                                        Response::builder()
+                                            .status(404)
+                                            .body(Full::new(Bytes::from("not found")))
+                                            .unwrap(),
+                                    ),
+                                }
+                            } else {
+                                match path {
+                                    "/" => {
+                                        let mut resp = Response::new(Full::new(
+                                            Bytes::from_static(DASHBOARD_HTML.as_bytes()),
+                                        ));
+                                        resp.headers_mut().insert(
+                                            header::CONTENT_TYPE,
+                                            header::HeaderValue::from_static("text/html"),
+                                        );
+                                        Ok::<_, Infallible>(resp)
+                                    }
+                                    "/dashboard.css" => {
+                                        let mut resp = Response::new(Full::new(
+                                            Bytes::from_static(DASHBOARD_CSS.as_bytes()),
+                                        ));
+                                        resp.headers_mut().insert(
+                                            header::CONTENT_TYPE,
+                                            header::HeaderValue::from_static("text/css"),
+                                        );
+                                        Ok::<_, Infallible>(resp)
+                                    }
+                                    "/dashboard.js" => {
+                                        let mut resp = Response::new(Full::new(
+                                            Bytes::from_static(DASHBOARD_JS.as_bytes()),
+                                        ));
+                                        resp.headers_mut().insert(
+                                            header::CONTENT_TYPE,
+                                            header::HeaderValue::from_static(
+                                                "application/javascript",
+                                            ),
+                                        );
+                                        Ok::<_, Infallible>(resp)
+                                    }
+                                    _ => Ok::<_, Infallible>(
+                                        Response::builder()
+                                            .status(404)
+                                            .body(Full::new(Bytes::from("not found")))
+                                            .unwrap(),
+                                    ),
+                                }
+                            }
                         }
                         _ => Ok::<_, Infallible>(
                             Response::builder()
@@ -171,7 +221,7 @@ mod tests {
         stats.dev_accepted.store(1, Ordering::Relaxed);
         stats.hashes.store(100, Ordering::Relaxed);
 
-        let server = tokio::spawn(run_http_api(port, stats.clone()));
+        let server = tokio::spawn(run_http_api(port, stats.clone(), None));
         // Give the server a moment to start
         sleep(Duration::from_millis(50)).await;
 
@@ -197,6 +247,40 @@ mod tests {
         assert!(resp.status().is_success());
         let text = resp.text().await.unwrap();
         assert!(text.contains("OxideMiner Dashboard"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn dashboard_served_from_disk() {
+        // Pick an available port by binding to port 0 first.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let stats = Arc::new(Stats::new("pool".into(), false));
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("dashboard.html"),
+            "<html><body>custom</body></html>",
+        )
+        .unwrap();
+
+        let server = tokio::spawn(run_http_api(
+            port,
+            stats.clone(),
+            Some(dir.path().to_path_buf()),
+        ));
+        // Give the server a moment to start
+        sleep(Duration::from_millis(50)).await;
+
+        let client = Client::new();
+        let url = format!("http://127.0.0.1:{}/", port);
+        let resp = client.get(url).send().await.unwrap();
+        assert!(resp.status().is_success());
+        let text = resp.text().await.unwrap();
+        assert!(text.contains("custom"));
 
         server.abort();
     }

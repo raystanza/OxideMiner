@@ -9,10 +9,7 @@ use oxide_core::{
     StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::collections::{HashMap, HashSet};
-use std::sync::{
-    atomic::Ordering,
-    Arc,
-};
+use std::sync::{atomic::Ordering, Arc};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 pub async fn run(args: Args) -> Result<()> {
@@ -72,7 +69,10 @@ pub async fn run(args: Args) -> Result<()> {
         let large_pages = args.huge_pages && hp_supported;
         tracing::info!(
             "benchmark: threads={} batch_size={} large_pages={} yield={}",
-            n_workers, args.batch_size, large_pages, !args.no_yield
+            n_workers,
+            args.batch_size,
+            large_pages,
+            !args.no_yield
         );
         let hps =
             oxide_core::run_benchmark(n_workers, 10, large_pages, args.batch_size, !args.no_yield)
@@ -80,6 +80,8 @@ pub async fn run(args: Args) -> Result<()> {
         println!("RandomX benchmark: {:.2} H/s", hps);
         return Ok(());
     }
+
+    let dashboard_dir = args.dashboard_dir.clone();
 
     let cfg = Config {
         pool: args.pool.expect("pool required unless --benchmark"),
@@ -174,14 +176,16 @@ pub async fn run(args: Args) -> Result<()> {
 
     tracing::info!(
         "dev fee fixed at {} bps (1%): {}",
-        DEV_FEE_BASIS_POINTS, cfg.enable_devfee
+        DEV_FEE_BASIS_POINTS,
+        cfg.enable_devfee
     );
 
     // Optional HTTP API
     if let Some(port) = cfg.api_port {
         let s = stats.clone();
+        let dir = dashboard_dir.clone();
         tokio::spawn(async move {
-            run_http_api(port, s).await;
+            run_http_api(port, s, dir).await;
         });
     }
 
@@ -219,7 +223,10 @@ pub async fn run(args: Args) -> Result<()> {
                         v
                     }
                     Err(e) => {
-                        tracing::error!("connect/login failed; retrying in {}s: {e}", backoff_ms / 1000);
+                        tracing::error!(
+                            "connect/login failed; retrying in {}s: {e}",
+                            backoff_ms / 1000
+                        );
                         sleep(Duration::from_millis(backoff_ms)).await;
                         backoff_ms = (backoff_ms * 2).min(60_000);
                         continue;

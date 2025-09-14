@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -34,6 +35,10 @@ pub struct Args {
     /// Expose a simple HTTP API on this port
     #[arg(long = "api-port")]
     pub api_port: Option<u16>,
+
+    /// Serve dashboard files from this directory instead of embedded assets
+    #[arg(long = "dashboard-dir")]
+    pub dashboard_dir: Option<PathBuf>,
 
     /// Pin worker threads to CPU cores
     #[arg(long = "affinity")]
@@ -72,9 +77,7 @@ mod tests {
 
     #[test]
     fn mining_mode_parses_with_pool_and_wallet() {
-        assert!(
-            Args::try_parse_from(["test", "-o", "pool:5555", "-u", "wallet"]).is_ok()
-        );
+        assert!(Args::try_parse_from(["test", "-o", "pool:5555", "-u", "wallet"]).is_ok());
     }
 
     #[test]
