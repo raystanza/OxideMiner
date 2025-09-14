@@ -2,7 +2,6 @@ use anyhow::Result;
 use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
-use tracing::{info, warn};
 
 use crate::stratum::PoolJob;
 
@@ -63,12 +62,12 @@ pub fn spawn_workers(
                     )
                     .await
                     {
-                        warn!(worker = i, error = ?e, "worker exited");
+                        tracing::warn!(worker = i, error = ?e, "worker exited");
                     }
                 }
                 #[cfg(not(feature = "randomx"))]
                 {
-                    warn!(worker = i, "built without RandomX; idle worker");
+                    tracing::warn!(worker = i, "built without RandomX; idle worker");
                     loop {
                         let _ = rx.recv().await;
                     }
@@ -87,7 +86,6 @@ mod engine {
         cell::RefCell,
         sync::atomic::{AtomicBool, Ordering},
     };
-    use tracing::warn;
 
     // Thin wrappers to mirror the old shape
     #[derive(Clone)]
@@ -139,7 +137,7 @@ mod engine {
             Err(e) => {
                 // If large pages were requested but allocation failed, retry without them.
                 if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
-                    warn!("RandomX large pages allocation failed for cache; retrying without large pages: {e}");
+                    tracing::warn!("RandomX large pages allocation failed for cache; retrying without large pages: {e}");
                     flags &= !RandomXFlag::FLAG_LARGE_PAGES;
                     RandomXCache::new(flags, key)?
                 } else {
@@ -161,7 +159,7 @@ mod engine {
             Ok(d) => d,
             Err(e) => {
                 if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
-                    warn!("RandomX large pages allocation failed for dataset; retrying without large pages: {e}");
+                    tracing::warn!("RandomX large pages allocation failed for dataset; retrying without large pages: {e}");
                     flags &= !RandomXFlag::FLAG_LARGE_PAGES;
                     RandomXDataset::new(flags, cache.inner.clone(), threads)?
                 } else {
@@ -317,7 +315,7 @@ async fn randomx_worker_loop(
 
         // Ensure nonce room
         if blob.len() < 39 + 4 {
-            warn!(
+            tracing::warn!(
                 worker = worker_id,
                 blob_len = blob.len(),
                 "job blob too short to hold nonce at offset 39; skipping job"
@@ -353,7 +351,7 @@ async fn randomx_worker_loop(
                         let mut be_bytes = digest;
                         be_bytes.reverse();
                         let be_hex = hex::encode(be_bytes);
-                        info!(
+                        tracing::info!(
                             worker = worker_id,
                             job_id = %j.job_id,
                             nonce,

@@ -13,7 +13,6 @@ use std::sync::{
     atomic::Ordering,
     Arc,
 };
-use tracing::{info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 pub async fn run(args: Args) -> Result<()> {
@@ -54,7 +53,7 @@ pub async fn run(args: Args) -> Result<()> {
             .with(file_layer)
             .init();
 
-        info!("debug logging enabled; writing rotating logs under ./logs/");
+        tracing::info!("debug logging enabled; writing rotating logs under ./logs/");
     } else {
         tracing_subscriber::registry()
             .with(env_filter)
@@ -66,12 +65,12 @@ pub async fn run(args: Args) -> Result<()> {
     if args.benchmark {
         let hp_supported = huge_pages_enabled();
         if args.huge_pages && !hp_supported {
-            warn!("Huge pages are NOT enabled; RandomX performance may be reduced.");
+            tracing::warn!("Huge pages are NOT enabled; RandomX performance may be reduced.");
         }
         let snap = autotune_snapshot();
         let n_workers = args.threads.unwrap_or(snap.suggested_threads);
         let large_pages = args.huge_pages && hp_supported;
-        info!(
+        tracing::info!(
             "benchmark: threads={} batch_size={} large_pages={} yield={}",
             n_workers, args.batch_size, large_pages, !args.no_yield
         );
@@ -100,7 +99,7 @@ pub async fn run(args: Args) -> Result<()> {
     // Detect huge/large pages and warn once if not present
     let hp_supported = huge_pages_enabled();
     if !hp_supported {
-        warn!(
+        tracing::warn!(
             "Huge pages are NOT enabled; RandomX performance may be reduced. \
             Linux: configure vm.nr_hugepages; Windows: enable 'Lock pages in memory' and Large Pages."
         );
@@ -120,7 +119,7 @@ pub async fn run(args: Args) -> Result<()> {
     let large_pages = cfg.huge_pages && hp_supported;
 
     if let Some(user_t) = cfg.threads {
-        info!(
+        tracing::info!(
             "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages={} -> threads={} (OVERRIDE; auto={})",
             snap.physical_cores,
             l3_mib.unwrap_or(0),
@@ -131,7 +130,7 @@ pub async fn run(args: Args) -> Result<()> {
             auto_threads
         );
     } else {
-        info!(
+        tracing::info!(
             "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages={} -> threads={}",
             snap.physical_cores,
             l3_mib.unwrap_or(0),
@@ -148,11 +147,11 @@ pub async fn run(args: Args) -> Result<()> {
     let (shares_tx, mut shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
 
     if !huge_pages_enabled() {
-        warn!("huge pages are not enabled; mining performance may be reduced");
+        tracing::warn!("huge pages are not enabled; mining performance may be reduced");
     }
 
     if cfg.threads.is_none() {
-        info!("auto-selected {} worker threads", n_workers);
+        tracing::info!("auto-selected {} worker threads", n_workers);
     }
 
     let stats = Arc::new(Stats::new(cfg.pool.clone(), cfg.tls));
@@ -173,7 +172,7 @@ pub async fn run(args: Args) -> Result<()> {
     let pass = cfg.pass.clone().unwrap_or_else(|| "x".into());
     let agent = cfg.agent.clone();
 
-    info!(
+    tracing::info!(
         "dev fee fixed at {} bps (1%): {}",
         DEV_FEE_BASIS_POINTS, cfg.enable_devfee
     );
@@ -220,6 +219,8 @@ pub async fn run(args: Args) -> Result<()> {
                         v
                     }
                     Err(e) => {
+                        tracing::error!("connect/login failed; retrying in {}s: {e}", backoff_ms / 1000);
+                        // Also print to stderr so user sees it even if logging is off.
                         eprintln!("connect/login failed: {e}");
                         sleep(Duration::from_millis(backoff_ms)).await;
                         backoff_ms = (backoff_ms * 2).min(60_000);
@@ -277,6 +278,8 @@ pub async fn run(args: Args) -> Result<()> {
                                     );
 
                                     if let Err(e) = client.submit_share(&share.job_id, &nonce_hex, &result_hex).await {
+                                        tracing::error!("submit_share error: {e}");
+                                        // Also print to stderr so user sees it even if logging is off.
                                         eprintln!("submit error: {e}");
                                     }
 
@@ -296,7 +299,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                 }
                                             }
                                             Err(e) => {
-                                                warn!("reconnect failed (devfee -> user): {e}");
+                                                tracing::warn!("reconnect failed (devfee -> user): {e}");
                                                 sleep(Duration::from_millis(tiny_jitter_ms())).await;
                                                 stats.pool_connected.store(false, Ordering::Relaxed);
                                                 break; // break inner loop -> reconnect
@@ -305,7 +308,7 @@ pub async fn run(args: Args) -> Result<()> {
                                     }
                                 }
                                 None => {
-                                    warn!("shares channel closed (no workers alive); stopping pool task to avoid reconnect storm");
+                                    tracing::warn!("shares channel closed (no workers alive); stopping pool task to avoid reconnect storm");
                                     return; // end the pool task instead of reconnecting
                                 }
                             }
@@ -331,7 +334,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                         valid_job_ids.insert(id);
                                                     }
                                                 }
-                                                Err(e) => warn!("devfee connect failed: {e}"),
+                                                Err(e) => tracing::warn!("devfee connect failed: {e}"),
                                             }
                                         } else if let Some(params) = v.get("params") {
                                             if let Ok(mut job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
@@ -359,7 +362,7 @@ pub async fn run(args: Args) -> Result<()> {
                                             } else {
                                                 stats.accepted.fetch_add(1, Ordering::Relaxed);
                                             }
-                                            info!(
+                                            tracing::info!(
                                                 accepted = stats.accepted.load(Ordering::Relaxed),
                                                 rejected = stats.rejected.load(Ordering::Relaxed),
                                                 "share accepted"
@@ -373,7 +376,7 @@ pub async fn run(args: Args) -> Result<()> {
                                         } else {
                                         stats.rejected.fetch_add(1, Ordering::Relaxed);
                                         }
-                                        warn!(
+                                        tracing::warn!(
                                             accepted = stats.accepted.load(Ordering::Relaxed),
                                             rejected = stats.rejected.load(Ordering::Relaxed),
                                             error = %err,
@@ -383,6 +386,8 @@ pub async fn run(args: Args) -> Result<()> {
                                     }
                                 }
                                 Err(e) => {
+                                    tracing::error!("pool read error: {e}; reconnecting");
+                                    // Also print to stderr so user sees it even if logging is off.
                                     eprintln!("pool read error: {e}");
                                     sleep(Duration::from_millis(tiny_jitter_ms())).await;
                                     stats.pool_connected.store(false, Ordering::Relaxed);
@@ -401,6 +406,8 @@ pub async fn run(args: Args) -> Result<()> {
     tokio::select! {
         res = pool_handle => {
             if let Err(e) = res {
+                tracing::error!("pool task ended unexpectedly: {e}");
+                // Also print to stderr so user sees it even if logging is off.
                 eprintln!("pool task ended unexpectedly: {e}");
             }
         }

@@ -10,7 +10,6 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::{atomic::Ordering, Arc};
 use tokio::net::TcpListener;
-use tracing::info;
 
 // Embed the dashboard assets at compile time so the binary is self-contained.
 const DASHBOARD_HTML: &str = include_str!("../assets/index.html");
@@ -22,16 +21,20 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
     let listener = match TcpListener::bind(addr).await {
         Ok(v) => v,
         Err(e) => {
+            tracing::error!("HTTP bind failed: {e}");
+            // Also print to stderr so user sees it even if logging is off.
             eprintln!("HTTP bind failed: {e}");
             return;
         }
     };
-    info!("HTTP API listening on http://{addr}");
+    tracing::info!("HTTP API listening on http://{addr}");
 
     loop {
         let (stream, _peer) = match listener.accept().await {
             Ok(v) => v,
             Err(e) => {
+                tracing::error!("HTTP accept error: {e}");
+                // Also print to stderr so user sees it even if logging is off.
                 eprintln!("HTTP accept error: {e}");
                 continue;
             }
@@ -144,7 +147,9 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
             });
 
             if let Err(err) = http1::Builder::new().serve_connection(io, svc).await {
-                eprintln!("http connection error: {err}");
+                tracing::error!("HTTP connection error: {err}");
+                // Also print to stderr so user sees it even if logging is off.
+                eprintln!("HTTP connection error: {err}");
             }
         });
     }
