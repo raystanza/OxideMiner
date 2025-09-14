@@ -12,9 +12,9 @@ use std::sync::{atomic::Ordering, Arc};
 use tokio::net::TcpListener;
 
 // Embed the dashboard assets at compile time so the binary is self-contained.
-const DASHBOARD_HTML: &str = include_str!("../assets/index.html");
-const DASHBOARD_CSS: &str = include_str!("../assets/style.css");
-const DASHBOARD_JS: &str = include_str!("../assets/app.js");
+const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
+const DASHBOARD_CSS: &str = include_str!("../assets/dashboard.css");
+const DASHBOARD_JS: &str = include_str!("../assets/dashboard.js");
 
 pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -112,7 +112,7 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
                             );
                             Ok::<_, Infallible>(resp)
                         }
-                        (&Method::GET, "/style.css") => {
+                        (&Method::GET, "/dashboard.css") => {
                             let mut resp = Response::new(Full::new(Bytes::from_static(
                                 DASHBOARD_CSS.as_bytes(),
                             )));
@@ -122,7 +122,7 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>) {
                             );
                             Ok::<_, Infallible>(resp)
                         }
-                        (&Method::GET, "/app.js") => {
+                        (&Method::GET, "/dashboard.js") => {
                             let mut resp = Response::new(Full::new(Bytes::from_static(
                                 DASHBOARD_JS.as_bytes(),
                             )));
