@@ -30,6 +30,92 @@ pub fn huge_pages_enabled() -> bool {
     }
 }
 
+#[cfg(target_os = "windows")]
+pub fn enable_large_page_privilege() -> bool {
+    use once_cell::sync::OnceCell;
+    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, SetLastError, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, HANDLE,
+    };
+    use windows_sys::Win32::Security::{
+        AdjustTokenPrivileges, LookupPrivilegeValueW, LUID, LUID_AND_ATTRIBUTES,
+        SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    static ENABLED: OnceCell<bool> = OnceCell::new();
+
+    *ENABLED.get_or_init(|| unsafe {
+        let mut token: HANDLE = 0;
+        let process = GetCurrentProcess();
+        if OpenProcessToken(process, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token) == 0 {
+            let err = GetLastError();
+            tracing::warn!(error = err, "OpenProcessToken failed; unable to enable SeLockMemoryPrivilege");
+            return false;
+        }
+
+        let name: Vec<u16> = OsStr::new("SeLockMemoryPrivilege")
+            .encode_wide()
+            .chain(once(0))
+            .collect();
+
+        let mut luid = LUID { LowPart: 0, HighPart: 0 };
+        if LookupPrivilegeValueW(std::ptr::null(), name.as_ptr(), &mut luid) == 0 {
+            let err = GetLastError();
+            tracing::warn!(error = err, "LookupPrivilegeValueW failed for SeLockMemoryPrivilege");
+            CloseHandle(token);
+            return false;
+        }
+
+        let mut tp = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+
+        SetLastError(ERROR_SUCCESS);
+        if AdjustTokenPrivileges(
+            token,
+            0,
+            &mut tp,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            let err = GetLastError();
+            tracing::warn!(error = err, "AdjustTokenPrivileges failed while enabling SeLockMemoryPrivilege");
+            CloseHandle(token);
+            return false;
+        }
+
+        let err = GetLastError();
+        CloseHandle(token);
+
+        match err {
+            ERROR_SUCCESS => {
+                tracing::info!("Enabled SeLockMemoryPrivilege for large page allocations");
+                true
+            }
+            ERROR_NOT_ALL_ASSIGNED => {
+                tracing::warn!(
+                    "SeLockMemoryPrivilege is not assigned to this account; large page allocations will be disabled"
+                );
+                false
+            }
+            _ => {
+                tracing::warn!(
+                    error = err,
+                    "Unexpected error after AdjustTokenPrivileges when enabling SeLockMemoryPrivilege"
+                );
+                false
+            }
+        }
+    })
+}
+
 #[cfg(target_os = "linux")]
 fn parse_hugepages_total(meminfo: &str) -> bool {
     for line in meminfo.lines() {
@@ -66,10 +152,10 @@ fn l3_cache_bytes() -> Option<usize> {
             if cache.level() == 3 && matches!(cache.cache_type(), raw_cpuid::CacheType::Unified) {
                 // CPUID leaf 0x4 size formula:
                 // size = associativity * partitions * line_size * sets
-                let ways  = cache.associativity() as usize;
+                let ways = cache.associativity() as usize;
                 let parts = cache.physical_line_partitions() as usize;
-                let line  = cache.coherency_line_size() as usize;
-                let sets  = cache.sets() as usize;
+                let line = cache.coherency_line_size() as usize;
+                let sets = cache.sets() as usize;
                 return Some(ways * parts * line * sets);
             }
         }
@@ -108,13 +194,17 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
 
     // RandomX "fast" dataset and per-thread scratchpad estimates
     let dataset = 2_u64 * 1024 * 1024 * 1024; // ~2 GiB
-    let scratch = 2_u64 * 1024 * 1024;        // ~2 MiB per thread
+    let scratch = 2_u64 * 1024 * 1024; // ~2 MiB per thread
 
     let mut threads = physical;
 
     // L3 clamp (~2 MiB per thread)
     if let Some(l3b) = l3 {
-        let l3_per_thread = if l3b > 64 * 1024 * 1024 { 4 * 1024 * 1024 } else { 2 * 1024 * 1024 };
+        let l3_per_thread = if l3b > 64 * 1024 * 1024 {
+            4 * 1024 * 1024
+        } else {
+            2 * 1024 * 1024
+        };
         let cache_threads = (l3b / l3_per_thread).max(1);
         threads = threads.min(cache_threads);
     }
