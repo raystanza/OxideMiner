@@ -5,7 +5,11 @@
 //
 // Compatible with sysinfo >= 0.30 (methods are inherent on `System`).
 
+use anyhow::Result;
 use sysinfo::System;
+
+#[cfg(target_os = "windows")]
+use anyhow::anyhow;
 
 /// Check if operating system has huge pages / large pages available.
 /// On Linux this inspects `/proc/meminfo`'s `HugePages_Total` value.
@@ -28,6 +32,103 @@ pub fn huge_pages_enabled() -> bool {
     {
         false
     }
+}
+
+/// On Windows attempt to enable the SeLockMemoryPrivilege so large-page allocations
+/// succeed. On other platforms this is a no-op.
+pub fn enable_large_page_privilege() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        enable_large_page_privilege_windows()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn enable_large_page_privilege_windows() -> Result<()> {
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr::null_mut};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_NOT_ALL_ASSIGNED, HANDLE, LUID,
+    };
+    use windows_sys::Win32::Security::Authorization::{
+        OpenProcessToken, TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::Security::{
+        AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+        TOKEN_PRIVILEGES,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    unsafe {
+        let mut token: HANDLE = 0;
+        if OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        ) == 0
+        {
+            return Err(anyhow!(
+                "OpenProcessToken failed while enabling SeLockMemoryPrivilege: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        struct TokenHandle(HANDLE);
+        impl Drop for TokenHandle {
+            fn drop(&mut self) {
+                if self.0 != 0 {
+                    unsafe {
+                        CloseHandle(self.0);
+                    }
+                }
+            }
+        }
+
+        let _guard = TokenHandle(token);
+
+        let mut privileges = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: LUID {
+                    LowPart: 0,
+                    HighPart: 0,
+                },
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+
+        let mut name: Vec<u16> = OsStr::new("SeLockMemoryPrivilege").encode_wide().collect();
+        name.push(0);
+        if LookupPrivilegeValueW(
+            null_mut(),
+            name.as_ptr(),
+            &mut privileges.Privileges[0].Luid,
+        ) == 0
+        {
+            return Err(anyhow!(
+                "LookupPrivilegeValueW failed for SeLockMemoryPrivilege: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        if AdjustTokenPrivileges(token, 0, &mut privileges, 0, null_mut(), null_mut()) == 0 {
+            return Err(anyhow!(
+                "AdjustTokenPrivileges failed for SeLockMemoryPrivilege: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        if GetLastError() == ERROR_NOT_ALL_ASSIGNED {
+            return Err(anyhow!(
+                "SeLockMemoryPrivilege is not assigned to the current process token"
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -66,10 +167,10 @@ fn l3_cache_bytes() -> Option<usize> {
             if cache.level() == 3 && matches!(cache.cache_type(), raw_cpuid::CacheType::Unified) {
                 // CPUID leaf 0x4 size formula:
                 // size = associativity * partitions * line_size * sets
-                let ways  = cache.associativity() as usize;
+                let ways = cache.associativity() as usize;
                 let parts = cache.physical_line_partitions() as usize;
-                let line  = cache.coherency_line_size() as usize;
-                let sets  = cache.sets() as usize;
+                let line = cache.coherency_line_size() as usize;
+                let sets = cache.sets() as usize;
                 return Some(ways * parts * line * sets);
             }
         }
@@ -108,13 +209,17 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
 
     // RandomX "fast" dataset and per-thread scratchpad estimates
     let dataset = 2_u64 * 1024 * 1024 * 1024; // ~2 GiB
-    let scratch = 2_u64 * 1024 * 1024;        // ~2 MiB per thread
+    let scratch = 2_u64 * 1024 * 1024; // ~2 MiB per thread
 
     let mut threads = physical;
 
     // L3 clamp (~2 MiB per thread)
     if let Some(l3b) = l3 {
-        let l3_per_thread = if l3b > 64 * 1024 * 1024 { 4 * 1024 * 1024 } else { 2 * 1024 * 1024 };
+        let l3_per_thread = if l3b > 64 * 1024 * 1024 {
+            4 * 1024 * 1024
+        } else {
+            2 * 1024 * 1024
+        };
         let cache_threads = (l3b / l3_per_thread).max(1);
         threads = threads.min(cache_threads);
     }

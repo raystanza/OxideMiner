@@ -67,6 +67,11 @@ pub async fn run(args: Args) -> Result<()> {
         let snap = autotune_snapshot();
         let n_workers = args.threads.unwrap_or(snap.suggested_threads);
         let large_pages = args.huge_pages && hp_supported;
+        if large_pages {
+            if let Err(e) = oxide_core::enable_large_page_privilege() {
+                tracing::warn!(error = ?e, "failed to enable SeLockMemoryPrivilege; large pages may be unavailable");
+            }
+        }
         tracing::info!(
             "benchmark: threads={} batch_size={} large_pages={} yield={}",
             n_workers,
@@ -119,6 +124,11 @@ pub async fn run(args: Args) -> Result<()> {
 
     // If spawn call passes a 'large_pages' boolean, prefer user opt-in AND OS support
     let large_pages = cfg.huge_pages && hp_supported;
+    if large_pages {
+        if let Err(e) = oxide_core::enable_large_page_privilege() {
+            tracing::warn!(error = ?e, "failed to enable SeLockMemoryPrivilege; large pages may be unavailable");
+        }
+    }
 
     if let Some(user_t) = cfg.threads {
         tracing::info!(
