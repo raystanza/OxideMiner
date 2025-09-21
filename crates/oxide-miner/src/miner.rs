@@ -110,7 +110,7 @@ pub async fn run(args: Args) -> Result<()> {
     // Take snapshot to log how auto-tune decided thread count
     let snap = autotune_snapshot();
     let auto_threads = snap.suggested_threads;
-    let n_workers = cfg.threads.unwrap_or(auto_threads);
+    let mut n_workers = cfg.threads.unwrap_or(auto_threads);
 
     // One-line summary that's easy to read in logs
     let l3_mib = snap.l3_bytes.map(|b| (b as u64) / (1024 * 1024));
@@ -118,16 +118,47 @@ pub async fn run(args: Args) -> Result<()> {
     let aes = cpu_has_aes();
 
     // If spawn call passes a 'large_pages' boolean, prefer user opt-in AND OS support
-    let large_pages = cfg.huge_pages && hp_supported;
+    let mut large_pages = cfg.huge_pages && hp_supported;
+
+    if large_pages && !snap.huge_page_status.supported {
+        tracing::warn!("Huge pages requested but not currently available; continuing without them");
+        large_pages = false;
+    }
+
+    if large_pages {
+        if let Some(cap) = snap.huge_page_thread_cap {
+            if cap == 0 {
+                let avail_hp_mib =
+                    snap.huge_page_status.available_bytes.unwrap_or(0) / (1024 * 1024);
+                tracing::warn!(
+                    available_hugepage_mib = avail_hp_mib,
+                    "Huge page pool is too small for the RandomX dataset; disabling huge pages",
+                );
+                large_pages = false;
+            } else if n_workers > cap {
+                tracing::warn!(
+                    requested_threads = n_workers,
+                    hugepage_cap = cap,
+                    "Clamping worker threads to huge page capacity",
+                );
+                n_workers = cap.max(1);
+            }
+        }
+    }
+
+    if n_workers == 0 {
+        n_workers = 1;
+    }
 
     if let Some(user_t) = cfg.threads {
         tracing::info!(
-            "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages={} -> threads={} (OVERRIDE; auto={})",
+            "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages={} -> threads={} (OVERRIDE={} auto={})",
             snap.physical_cores,
             l3_mib.unwrap_or(0),
             avail_mib,
             aes,
             large_pages,
+            n_workers,
             user_t,
             auto_threads
         );
@@ -147,10 +178,6 @@ pub async fn run(args: Args) -> Result<()> {
     let (jobs_tx, _jobs_rx0) = tokio::sync::broadcast::channel(64);
     // MPSC: shares <- workers
     let (shares_tx, mut shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
-
-    if !huge_pages_enabled() {
-        tracing::warn!("huge pages are not enabled; mining performance may be reduced");
-    }
 
     if cfg.threads.is_none() {
         tracing::info!("auto-selected {} worker threads", n_workers);

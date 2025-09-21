@@ -8,6 +8,12 @@ use std::time::{Duration, Instant};
 use tokio::task;
 
 #[cfg(feature = "randomx")]
+use tracing::warn;
+
+#[cfg(feature = "randomx")]
+use crate::system::{huge_page_status, huge_page_thread_capacity};
+
+#[cfg(feature = "randomx")]
 use crate::worker::{create_vm_for_dataset, ensure_fullmem_dataset, hash, set_large_pages};
 
 /// Run a simple RandomX benchmark and return hashes per second.
@@ -19,7 +25,37 @@ pub async fn run_benchmark(
     batch_size: usize,
     yield_between_batches: bool,
 ) -> Result<f64> {
-    set_large_pages(large_pages);
+    let dataset_bytes = 2_u64 * 1024 * 1024 * 1024;
+    let scratch_bytes = 2_u64 * 1024 * 1024;
+
+    let mut use_large_pages = large_pages;
+    let mut threads = threads;
+
+    if use_large_pages {
+        let status = huge_page_status();
+        if !status.supported {
+            warn!("Large pages requested for benchmark but not available; falling back to small pages");
+            use_large_pages = false;
+        } else if let Some(cap) = huge_page_thread_capacity(&status, dataset_bytes, scratch_bytes) {
+            if cap == 0 {
+                let avail_mib = status.available_bytes.unwrap_or(0) / (1024 * 1024);
+                warn!(
+                    available_mib = avail_mib,
+                    "Huge page pool is too small for benchmark dataset; disabling large pages",
+                );
+                use_large_pages = false;
+            } else if threads > cap {
+                warn!(
+                    requested = threads,
+                    cap = cap,
+                    "Clamping benchmark threads to huge page capacity",
+                );
+                threads = cap;
+            }
+        }
+    }
+
+    set_large_pages(use_large_pages);
     let duration = Duration::from_secs(seconds);
     let threads_u32 = threads as u32;
 
