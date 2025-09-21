@@ -5,8 +5,12 @@ name = "oxide-miner"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["randomx"]
+randomx = ["oxide-core/randomx"]
+
 [dependencies]
-oxide-core = { path = "../oxide-core", features = ["randomx"] }
+oxide-core = { path = "../oxide-core", default-features = false }
 anyhow = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }

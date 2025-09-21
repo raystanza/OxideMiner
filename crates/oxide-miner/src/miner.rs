@@ -66,7 +66,26 @@ pub async fn run(args: Args) -> Result<()> {
         }
         let snap = autotune_snapshot();
         let n_workers = args.threads.unwrap_or(snap.suggested_threads);
-        let large_pages = args.huge_pages && hp_supported;
+        #[cfg_attr(not(feature = "randomx"), allow(unused_mut))]
+        let mut large_pages = args.huge_pages && hp_supported;
+
+        #[cfg(feature = "randomx")]
+        if large_pages {
+            match oxide_core::system::try_enable_large_pages() {
+                Ok(()) => {
+                    tracing::debug!(
+                        "large/huge pages privilege available for benchmark allocations"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "requested large/huge pages for benchmark but privilege is unavailable; falling back"
+                    );
+                    large_pages = false;
+                }
+            }
+        }
         tracing::info!(
             "benchmark: threads={} batch_size={} large_pages={} yield={}",
             n_workers,
@@ -118,7 +137,26 @@ pub async fn run(args: Args) -> Result<()> {
     let aes = cpu_has_aes();
 
     // If spawn call passes a 'large_pages' boolean, prefer user opt-in AND OS support
-    let large_pages = cfg.huge_pages && hp_supported;
+    #[cfg_attr(not(feature = "randomx"), allow(unused_mut))]
+    let mut large_pages = cfg.huge_pages && hp_supported;
+
+    #[cfg(feature = "randomx")]
+    if large_pages {
+        match oxide_core::system::try_enable_large_pages() {
+            Ok(()) => {
+                tracing::debug!(
+                    "large/huge pages privilege available for RandomX dataset allocations"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "requested large/huge pages but privilege is unavailable; continuing without them"
+                );
+                large_pages = false;
+            }
+        }
+    }
 
     if let Some(user_t) = cfg.threads {
         tracing::info!(

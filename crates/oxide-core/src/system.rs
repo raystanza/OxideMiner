@@ -5,7 +5,9 @@
 //
 // Compatible with sysinfo >= 0.30 (methods are inherent on `System`).
 
+use once_cell::sync::OnceCell;
 use sysinfo::System;
+use thiserror::Error;
 
 /// Check if operating system has huge pages / large pages available.
 /// On Linux this inspects `/proc/meminfo`'s `HugePages_Total` value.
@@ -30,6 +32,39 @@ pub fn huge_pages_enabled() -> bool {
     }
 }
 
+/// Error returned when attempting to enable huge/large pages fails.
+#[derive(Debug, Clone, Error)]
+pub enum LargePageError {
+    /// Wrapper around a failing Windows API call.
+    #[error("{operation} failed with Windows error {code:#010X}")]
+    WindowsApi {
+        /// API that returned an error.
+        operation: &'static str,
+        /// Error code returned from `GetLastError`.
+        code: u32,
+    },
+    /// The process token does not hold SeLockMemoryPrivilege.
+    #[error("SeLockMemoryPrivilege is not assigned to this process token")]
+    PrivilegeNotAssigned,
+    /// Catch-all for platforms without huge/large page support.
+    #[error("large/huge pages are unsupported on this platform")]
+    Unsupported,
+}
+
+static LARGE_PAGE_INIT: OnceCell<Result<(), LargePageError>> = OnceCell::new();
+
+/// Attempt to enable large/huge pages for the current process.
+///
+/// On Windows this enables the SeLockMemoryPrivilege privilege so that
+/// `VirtualAlloc(..., MEM_LARGE_PAGES, ...)` succeeds. Linux does not require
+/// additional preparation beyond reserving HugeTLB pages ahead of time, so the
+/// function is a no-op there. On other targets it returns `Unsupported`.
+pub fn try_enable_large_pages() -> Result<(), LargePageError> {
+    LARGE_PAGE_INIT
+        .get_or_init(|| enable_large_pages_once())
+        .clone()
+}
+
 #[cfg(target_os = "linux")]
 fn parse_hugepages_total(meminfo: &str) -> bool {
     for line in meminfo.lines() {
@@ -42,6 +77,89 @@ fn parse_hugepages_total(meminfo: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(target_os = "windows")]
+fn enable_large_pages_once() -> Result<(), LargePageError> {
+    use windows_sys::core::w;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_NOT_ALL_ASSIGNED, HANDLE,
+    };
+    use windows_sys::Win32::Security::{
+        AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token: HANDLE = 0;
+        if OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        ) == 0
+        {
+            return Err(win32_error("OpenProcessToken"));
+        }
+
+        let result = {
+            let mut luid = windows_sys::Win32::Foundation::LUID {
+                LowPart: 0,
+                HighPart: 0,
+            };
+            if LookupPrivilegeValueW(std::ptr::null(), w!("SeLockMemoryPrivilege"), &mut luid) == 0
+            {
+                Err(win32_error("LookupPrivilegeValueW"))
+            } else {
+                let privileges = TOKEN_PRIVILEGES {
+                    PrivilegeCount: 1,
+                    Privileges: [LUID_AND_ATTRIBUTES {
+                        Luid: luid,
+                        Attributes: SE_PRIVILEGE_ENABLED,
+                    }],
+                };
+
+                let adjust_result = AdjustTokenPrivileges(
+                    token,
+                    0,
+                    &privileges,
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                );
+                let last_error = GetLastError();
+                if adjust_result == 0 {
+                    Err(LargePageError::WindowsApi {
+                        operation: "AdjustTokenPrivileges",
+                        code: last_error,
+                    })
+                } else if last_error == ERROR_NOT_ALL_ASSIGNED {
+                    Err(LargePageError::PrivilegeNotAssigned)
+                } else {
+                    Ok(())
+                }
+            }
+        };
+
+        CloseHandle(token);
+        result
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn win32_error(operation: &'static str) -> LargePageError {
+    let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+    LargePageError::WindowsApi { operation, code }
+}
+
+#[cfg(target_os = "linux")]
+fn enable_large_pages_once() -> Result<(), LargePageError> {
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn enable_large_pages_once() -> Result<(), LargePageError> {
+    Err(LargePageError::Unsupported)
 }
 
 /// Determine whether the current CPU supports AES instructions (x86/x86_64).
@@ -66,10 +184,10 @@ fn l3_cache_bytes() -> Option<usize> {
             if cache.level() == 3 && matches!(cache.cache_type(), raw_cpuid::CacheType::Unified) {
                 // CPUID leaf 0x4 size formula:
                 // size = associativity * partitions * line_size * sets
-                let ways  = cache.associativity() as usize;
+                let ways = cache.associativity() as usize;
                 let parts = cache.physical_line_partitions() as usize;
-                let line  = cache.coherency_line_size() as usize;
-                let sets  = cache.sets() as usize;
+                let line = cache.coherency_line_size() as usize;
+                let sets = cache.sets() as usize;
                 return Some(ways * parts * line * sets);
             }
         }
@@ -108,13 +226,17 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
 
     // RandomX "fast" dataset and per-thread scratchpad estimates
     let dataset = 2_u64 * 1024 * 1024 * 1024; // ~2 GiB
-    let scratch = 2_u64 * 1024 * 1024;        // ~2 MiB per thread
+    let scratch = 2_u64 * 1024 * 1024; // ~2 MiB per thread
 
     let mut threads = physical;
 
     // L3 clamp (~2 MiB per thread)
     if let Some(l3b) = l3 {
-        let l3_per_thread = if l3b > 64 * 1024 * 1024 { 4 * 1024 * 1024 } else { 2 * 1024 * 1024 };
+        let l3_per_thread = if l3b > 64 * 1024 * 1024 {
+            4 * 1024 * 1024
+        } else {
+            2 * 1024 * 1024
+        };
         let cache_threads = (l3b / l3_per_thread).max(1);
         threads = threads.min(cache_threads);
     }
@@ -167,5 +289,6 @@ mod tests {
     fn feature_checks_do_not_panic() {
         let _ = cpu_has_aes();
         let _ = huge_pages_enabled();
+        let _ = try_enable_large_pages();
     }
 }
