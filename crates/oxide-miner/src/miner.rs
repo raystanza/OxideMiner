@@ -66,12 +66,30 @@ pub async fn run(args: Args) -> Result<()> {
         }
         let snap = autotune_snapshot();
         let n_workers = args.threads.unwrap_or(snap.suggested_threads);
-        let large_pages = args.huge_pages && hp_supported;
+        let huge_free_mib = snap.huge_page_free_bytes.map(|b| b / (1024 * 1024));
+        let mut large_pages = args.huge_pages && hp_supported;
+        if large_pages {
+            if let Some(free) = snap.huge_page_free_bytes {
+                if free < snap.dataset_bytes {
+                    let dataset_mib = snap.dataset_bytes / (1024 * 1024);
+                    tracing::warn!(
+                        hugepages_free_mib = huge_free_mib,
+                        dataset_mib,
+                        "huge pages requested but only {:?} MiB are free (dataset requires {} MiB); disabling large pages",
+                        huge_free_mib,
+                        dataset_mib
+                    );
+                    large_pages = false;
+                }
+            }
+        }
         tracing::info!(
-            "benchmark: threads={} batch_size={} large_pages={} yield={}",
+            "benchmark: threads={} batch_size={} large_pages={} hugepages_supported={} hugepages_free_mib={:?} yield={}",
             n_workers,
             args.batch_size,
             large_pages,
+            hp_supported,
+            huge_free_mib,
             !args.no_yield
         );
         let hps =
@@ -116,28 +134,46 @@ pub async fn run(args: Args) -> Result<()> {
     let l3_mib = snap.l3_bytes.map(|b| (b as u64) / (1024 * 1024));
     let avail_mib = snap.available_bytes / (1024 * 1024);
     let aes = cpu_has_aes();
-
-    // If spawn call passes a 'large_pages' boolean, prefer user opt-in AND OS support
-    let large_pages = cfg.huge_pages && hp_supported;
+    let huge_free_mib = snap.huge_page_free_bytes.map(|b| b / (1024 * 1024));
+    let mut large_pages = cfg.huge_pages && hp_supported;
+    if large_pages {
+        if let Some(free) = snap.huge_page_free_bytes {
+            if free < snap.dataset_bytes {
+                let dataset_mib = snap.dataset_bytes / (1024 * 1024);
+                tracing::warn!(
+                    hugepages_free_mib = huge_free_mib,
+                    dataset_mib,
+                    "huge pages requested but only {:?} MiB are free (dataset requires {} MiB); disabling large pages",
+                    huge_free_mib,
+                    dataset_mib
+                );
+                large_pages = false;
+            }
+        }
+    }
 
     if let Some(user_t) = cfg.threads {
         tracing::info!(
-            "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages={} -> threads={} (OVERRIDE; auto={})",
+            "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages_supported={} hugepages_free_mib={:?} large_pages={} -> threads={} (OVERRIDE; auto={})",
             snap.physical_cores,
             l3_mib.unwrap_or(0),
             avail_mib,
             aes,
+            hp_supported,
+            huge_free_mib,
             large_pages,
             user_t,
             auto_threads
         );
     } else {
         tracing::info!(
-            "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages={} -> threads={}",
+            "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages_supported={} hugepages_free_mib={:?} large_pages={} -> threads={}",
             snap.physical_cores,
             l3_mib.unwrap_or(0),
             avail_mib,
             aes,
+            hp_supported,
+            huge_free_mib,
             large_pages,
             n_workers
         );
@@ -147,10 +183,6 @@ pub async fn run(args: Args) -> Result<()> {
     let (jobs_tx, _jobs_rx0) = tokio::sync::broadcast::channel(64);
     // MPSC: shares <- workers
     let (shares_tx, mut shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
-
-    if !huge_pages_enabled() {
-        tracing::warn!("huge pages are not enabled; mining performance may be reduced");
-    }
 
     if cfg.threads.is_none() {
         tracing::info!("auto-selected {} worker threads", n_workers);

@@ -1,5 +1,8 @@
 use anyhow::Result;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 
@@ -114,6 +117,16 @@ mod engine {
     static LARGE_PAGES: AtomicBool = AtomicBool::new(false);
 
     pub fn set_large_pages(enable: bool) {
+        #[cfg(target_os = "windows")]
+        {
+            if enable && !system::ensure_lock_memory_privilege() {
+                tracing::warn!(
+                    "large pages requested but SeLockMemoryPrivilege is unavailable; disabling large pages"
+                );
+                LARGE_PAGES.store(false, Ordering::Relaxed);
+                return;
+            }
+        }
         LARGE_PAGES.store(enable, Ordering::Relaxed);
     }
 
@@ -179,13 +192,30 @@ mod engine {
         cache: Option<&Cache>,
         dataset: Option<&Dataset>,
     ) -> Result<Vm> {
-        let flags = flags.unwrap_or_else(default_flags);
+        let mut flags = flags.unwrap_or_else(default_flags);
         // VM::new takes OWNED Option<RandomXCache>/<RandomXDataset>.
-        let vm = RandomXVM::new(
+        let vm = match RandomXVM::new(
             flags,
             cache.map(|c| c.inner.clone()),
             dataset.map(|d| d.inner.clone()),
-        )?;
+        ) {
+            Ok(vm) => vm,
+            Err(e) => {
+                if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
+                    tracing::warn!(
+                        "RandomX large pages allocation failed for VM; retrying without large pages: {e}"
+                    );
+                    flags &= !RandomXFlag::FLAG_LARGE_PAGES;
+                    RandomXVM::new(
+                        flags,
+                        cache.map(|c| c.inner.clone()),
+                        dataset.map(|d| d.inner.clone()),
+                    )?
+                } else {
+                    return Err(e.into());
+                }
+            }
+        };
         Ok(Vm {
             inner: vm,
             _flags: flags,
@@ -442,15 +472,24 @@ fn meets_target(hash: &[u8; 32], job: &PoolJob) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{atomic::AtomicU64, Arc};
     use tokio::sync::{broadcast, mpsc};
-    use std::sync::{Arc, atomic::AtomicU64};
 
     #[tokio::test]
     async fn spawns_correct_number_of_workers() {
         let (jobs_tx, _jobs_rx) = broadcast::channel(1);
         let (shares_tx, _shares_rx) = mpsc::unbounded_channel();
         let hash_counter = Arc::new(AtomicU64::new(0));
-        let handles = spawn_workers(3, jobs_tx, shares_tx, false, false, 10_000, true, hash_counter);
+        let handles = spawn_workers(
+            3,
+            jobs_tx,
+            shares_tx,
+            false,
+            false,
+            10_000,
+            true,
+            hash_counter,
+        );
         assert_eq!(handles.len(), 3);
         for h in handles {
             h.abort();
