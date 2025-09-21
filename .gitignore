@@ -26,6 +26,9 @@ Thumbs.db
 /logs/
 /log/
 
+# Dev files
+/dev/
+
 # Environment variables
 .env
 

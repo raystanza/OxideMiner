@@ -1,104 +1,192 @@
 # Enable-LargePages.ps1
 # Grants "Lock pages in memory" (SeLockMemoryPrivilege) to a user so apps can use large pages.
-# Usage (Run as Admin):
-#   .\Enable-LargePages.ps1                   # targets current user
-#   .\Enable-LargePages.ps1 -User 'MYPC\miner' # explicit user
-# Notes: Sign out/in after success so new privilege is in your token.
+# RUN THIS FROM AN ELEVATED (ADMIN) POWERSHELL.
+# Usage:
+#   .\Enable-LargePages.ps1                      # target current user
+#   .\Enable-LargePages.ps1 -User 'MACHINE\miner' # explicit local user
+#   .\Enable-LargePages.ps1 -User 'DOMAIN\user'   # domain user
+# Optional:
+#   -SkipGpUpdate   # do not call gpupdate /force
+#   -Verbose        # print detailed steps
 
 [CmdletBinding()]
 param(
-    [string]$User = "$env:USERDOMAIN\$env:USERNAME"
+    [string]$User = "$env:USERDOMAIN\$env:USERNAME",
+    [switch]$SkipGpUpdate
 )
 
 function Assert-Administrator {
-    $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).
-        IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    if (-not $isAdmin) {
-        Write-Host "ERROR: This script must be run as Administrator." -ForegroundColor Red
-        exit 1
+    $id  = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $pri = New-Object Security.Principal.WindowsPrincipal($id)
+    if (-not $pri.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
+        Write-Error "This script must be run as Administrator. Right-click your console > Run as administrator."
+        return $false
     }
+    return $true
 }
 
-function Get-Sid([string]$accountName) {
+function Resolve-UserSid([string]$AccountName) {
     try {
-        $nt = New-Object System.Security.Principal.NTAccount($accountName)
-        return ($nt.Translate([System.Security.Principal.SecurityIdentifier]).Value)
+        $nt  = New-Object System.Security.Principal.NTAccount($AccountName)
+        $sid = $nt.Translate([System.Security.Principal.SecurityIdentifier]).Value
+        return $sid
     } catch {
-        Write-Host "ERROR: Could not resolve user '$accountName' to a SID." -ForegroundColor Red
-        throw
+        throw "Could not resolve account '$AccountName' to a SID. Try 'MACHINE\user' or 'DOMAIN\user'."
     }
 }
 
-function Update-SeLockMemoryPrivilege([string]$sid) {
-    $temp = [IO.Path]::GetTempPath()
-    $export = Join-Path $temp ("secpol-export-{0}.inf" -f ([guid]::NewGuid()))
-    $import = Join-Path $temp ("secpol-import-{0}.inf" -f ([guid]::NewGuid()))
-    $dbPath = Join-Path $temp ("secpol-{0}.sdb" -f ([guid]::NewGuid()))
+function Get-SeceditPath {
+    $p = Join-Path $env:SystemRoot 'System32\secedit.exe'
+    if (-not (Test-Path $p)) { throw "secedit.exe not found at $p" }
+    return $p
+}
 
-    Write-Host "1) Exporting current local security policy..." -ForegroundColor Cyan
-    $p = Start-Process secedit "/export /cfg `"$export`"" -PassThru -Wait -WindowStyle Hidden
-    if ($p.ExitCode -ne 0) { throw "secedit export failed with code $($p.ExitCode)" }
+function Export-LocalPolicy([string]$OutInfPath) {
+    $secedit = Get-SeceditPath
+    Write-Verbose "Exporting USER_RIGHTS to: $OutInfPath"
+    & $secedit /export /cfg "$OutInfPath" /areas USER_RIGHTS | Out-Null
+    if ($LASTEXITCODE -eq 740) { throw "Elevation required (exit 740). Run this script as Administrator." }
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $OutInfPath)) {
+        throw "secedit export failed with exit code $LASTEXITCODE"
+    }
+}
 
-    Write-Host "2) Preparing updated INF with SeLockMemoryPrivilege for SID: $sid" -ForegroundColor Cyan
-    $content = Get-Content -Raw -LiteralPath $export
-    if ($content -notmatch '\[Privilege Rights\]') {
-        $content = $content.TrimEnd() + "`r`n`r`n[Privilege Rights]`r`n"
+function Set-LocalPolicy([string]$DbPath, [string]$CfgPath) {
+    $secedit = Get-SeceditPath
+    Write-Verbose "Applying USER_RIGHTS from: $CfgPath"
+    & $secedit /configure /db "$DbPath" /cfg "$CfgPath" /areas USER_RIGHTS | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "secedit configure failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Merge-SeLockMemoryPrivilege([string[]]$InfLines, [string]$Sid) {
+    # Returns updated lines with *SID added to SeLockMemoryPrivilege (de-duplicated)
+    $out    = New-Object System.Collections.Generic.List[string]
+    $inPR   = $false
+    $found  = $false
+    $sawPR  = $false
+    $star   = "*$Sid"
+
+    for ($i = 0; $i -lt $InfLines.Count; $i++) {
+        $line = $InfLines[$i]
+
+        if ($line -match '^\s*\[Privilege Rights\]\s*$') {
+            $inPR = $true
+            $sawPR = $true
+            $out.Add($line)
+            continue
+        }
+
+        if ($inPR -and $line -match '^\s*\[') {
+            if (-not $found) {
+                $out.Add("SeLockMemoryPrivilege = $star")
+                $found = $true
+            }
+            $inPR = $false
+            $out.Add($line)
+            continue
+        }
+
+        if ($inPR -and $line -match '^\s*SeLockMemoryPrivilege\s*=\s*(.*)$') {
+            $vals = $matches[1].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+            if ($vals -notcontains $star) { $vals += $star }
+            $vals = $vals | Select-Object -Unique
+            $out.Add("SeLockMemoryPrivilege = " + ($vals -join ', '))
+            $found = $true
+            continue
+        }
+
+        $out.Add($line)
     }
 
-    $lines = $content -split "`r?`n"
-    $outLines = New-Object System.Collections.Generic.List[string]
-    $inPrivilegeSection = $false
-    $handled = $false
+    if (-not $sawPR) {
+        $out.Add('')
+        $out.Add('[Privilege Rights]')
+        $out.Add("SeLockMemoryPrivilege = $star")
+        $found = $true
+    } elseif ($inPR -and -not $found) {
+        $out.Add("SeLockMemoryPrivilege = $star")
+        $found = $true
+    }
 
-    foreach ($line in $lines) {
-        if ($line -match '^\s*\[Privilege Rights\]\s*$') { $inPrivilegeSection = $true }
-        if ($inPrivilegeSection -and $line -match '^\s*SeLockMemoryPrivilege\s*=\s*(.*)$') {
-            $existing = $matches[1].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
-            $sidEntry = "*$sid"
-            if ($existing -notcontains $sidEntry) { $existing += $sidEntry }
-            $new = "SeLockMemoryPrivilege = " + ($existing -join ',')
-            $outLines.Add($new)
-            $handled = $true
-        } else {
-            $outLines.Add($line)
+    return ,$out
+}
+
+function Grant-SeLockMemoryPrivilege([string]$TargetUser) {
+    Write-Host "Target user: $TargetUser" -ForegroundColor Yellow
+    $sid = Resolve-UserSid $TargetUser
+    Write-Host "Resolved SID: $sid" -ForegroundColor Yellow
+
+    $temp    = Join-Path $env:TEMP ("lp_" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $temp | Out-Null
+    $export  = Join-Path $temp 'secpol_export.inf'
+    $import  = Join-Path $temp 'secpol_import.inf'
+    $db      = Join-Path $temp 'secpol.sdb'
+
+    # 1) Export
+    Write-Host "1) Exporting current local security policy (USER_RIGHTS)..." -ForegroundColor Cyan
+    Export-LocalPolicy -OutInfPath $export
+
+    # 2) Merge
+    Write-Host "2) Updating SeLockMemoryPrivilege with *$sid ..." -ForegroundColor Cyan
+    $lines = Get-Content -LiteralPath $export -Encoding Unicode
+    $updated = Merge-SeLockMemoryPrivilege -InfLines $lines -Sid $sid
+    [System.IO.File]::WriteAllText($import, ($updated -join "`r`n"), [System.Text.Encoding]::Unicode)
+
+    # 3) Apply
+    Write-Host "3) Applying updated privilege rights..." -ForegroundColor Cyan
+    Set-LocalPolicy -DbPath $db -CfgPath $import
+
+    if (-not $SkipGpUpdate) {
+        Write-Host "4) Forcing policy refresh (gpupdate /target:computer /force)..." -ForegroundColor Cyan
+        & (Join-Path $env:SystemRoot 'System32\gpupdate.exe') /target:computer /force | Out-Null
+        # ignore gpupdate exit code; local user rights typically apply without it, but this helps under some configs
+    } else {
+        Write-Verbose "Skipping gpupdate per -SkipGpUpdate."
+    }
+
+    # 5) Verify by re-export
+    Write-Host "5) Verifying assignment by re-exporting policy..." -ForegroundColor Cyan
+    $verify = Join-Path $temp 'verify.inf'
+    Export-LocalPolicy -OutInfPath $verify
+    $verifyLines = Get-Content -LiteralPath $verify -Encoding Unicode
+
+    $inPR = $false
+    $present = $false
+    foreach ($line in $verifyLines) {
+        if ($line -match '^\s*\[Privilege Rights\]\s*$') { $inPR = $true; continue }
+        if ($inPR -and $line -match '^\s*\[') { break }
+        if ($inPR -and $line -match '^\s*SeLockMemoryPrivilege\s*=\s*(.*)$') {
+            $vals = $matches[1].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+            if ($vals -contains "*$sid") { $present = $true; break }
         }
     }
 
-    if (-not $handled) {
-        # Append inside [Privilege Rights]
-        $idx = $outLines.FindIndex({ $_ -match '^\s*\[Privilege Rights\]\s*$' })
-        if ($idx -ge 0) {
-            $outLines.Insert($idx + 1, "SeLockMemoryPrivilege = *$sid")
-        } else {
-            # Fallback: append at end with section
-            $outLines.Add("[Privilege Rights]")
-            $outLines.Add("SeLockMemoryPrivilege = *$sid")
-        }
+    if ($present) {
+        Write-Host ""
+        Write-Host "SUCCESS: 'Lock pages in memory' (SeLockMemoryPrivilege) is assigned to $TargetUser." -ForegroundColor Green
+        Write-Host "IMPORTANT: Sign out and back in (or restart the service account) so the new privilege is in your logon token."
+        Write-Host "Note: 'whoami /priv' may show SeLockMemoryPrivilege as 'Disabled' until an app enables it at runtime." -ForegroundColor DarkYellow
+    } else {
+        Write-Host ""
+        Write-Host "WARNING: Could not confirm the SID under SeLockMemoryPrivilege after applying." -ForegroundColor Yellow
+        Write-Host "Check for domain GPO overrides (run: gpresult /r) or re-run this script." -ForegroundColor Yellow
     }
-
-    $final = ($outLines -join "`r`n")
-    [System.IO.File]::WriteAllText($import, $final, [System.Text.Encoding]::Unicode)
-
-    Write-Host "3) Applying updated privilege rights (this changes local security policy)..." -ForegroundColor Cyan
-    $p = Start-Process secedit "/configure /db `"$dbPath`" /cfg `"$import`" /areas USER_RIGHTS" -PassThru -Wait -WindowStyle Hidden
-    if ($p.ExitCode -ne 0) { throw "secedit configure failed with code $($p.ExitCode)" }
-
-    Write-Host "4) Forcing policy refresh..." -ForegroundColor Cyan
-    Start-Process gpupdate "/target:computer /force" -Wait -WindowStyle Hidden | Out-Null
 
     Write-Host ""
-    Write-Host "SUCCESS: 'Lock pages in memory' granted to $User." -ForegroundColor Green
-    Write-Host "IMPORTANT: Sign out and back in (or restart the service account) so the new privilege appears in your token."
-    Write-Host "You can check with:  whoami /priv | findstr /I SeLockMemoryPrivilege"
+    Write-Host "Diagnostics:" -ForegroundColor DarkCyan
+    Write-Host "  whoami /priv | findstr /I SeLockMemoryPrivilege"
+    Write-Host "  gpresult /r"
+    Write-Host "  (If domain-joined, domain GPO can override local Privilege Rights.)"
 }
 
+# ----- Main -----
+if (-not (Assert-Administrator)) { return }
 try {
-    Assert-Administrator
-    Write-Host "Enabling Large Pages (SeLockMemoryPrivilege) for user: $User" -ForegroundColor Yellow
-    Write-Host "This lets apps that request large pages allocate them. It does NOT force large pages globally." -ForegroundColor DarkYellow
-    $sid = Get-Sid -accountName $User
-    Update-SeLockMemoryPrivilege -sid $sid
+    Write-Host "Granting Large Pages privilege (SeLockMemoryPrivilege) for: $User" -ForegroundColor White
+    Grant-SeLockMemoryPrivilege -TargetUser $User
 } catch {
     Write-Host "FAILED: $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
+    # Do not close the window; just return.
 }
