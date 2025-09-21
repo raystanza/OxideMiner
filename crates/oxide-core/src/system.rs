@@ -7,9 +7,42 @@
 
 use sysinfo::System;
 
+#[cfg(target_os = "windows")]
+use std::io;
+
+#[cfg(target_os = "windows")]
+use windows_sys::core::w;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, SetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_ALL_ASSIGNED,
+    HANDLE,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Security::{
+    AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, OpenProcessToken, LUID,
+    LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES,
+    TOKEN_INFORMATION_CLASS::TokenPrivileges, TOKEN_PRIVILEGES, TOKEN_QUERY,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+#[cfg(target_os = "windows")]
+struct ScopedHandle(HANDLE);
+
+#[cfg(target_os = "windows")]
+impl Drop for ScopedHandle {
+    fn drop(&mut self) {
+        if self.0 != 0 {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
 /// Check if operating system has huge pages / large pages available.
 /// On Linux this inspects `/proc/meminfo`'s `HugePages_Total` value.
-/// On Windows it queries `GetLargePageMinimum`.
+/// On Windows it checks `GetLargePageMinimum` and the `SeLockMemoryPrivilege`.
 pub fn huge_pages_enabled() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -20,9 +53,20 @@ pub fn huge_pages_enabled() -> bool {
     }
     #[cfg(target_os = "windows")]
     {
-        // windows-sys with feature Win32_System_Memory
-        use windows_sys::Win32::System::Memory::GetLargePageMinimum;
-        unsafe { GetLargePageMinimum() > 0 }
+        if unsafe { windows_sys::Win32::System::Memory::GetLargePageMinimum() } == 0 {
+            false
+        } else {
+            match has_lock_memory_privilege() {
+                Ok(has_priv) => has_priv,
+                Err(err) => {
+                    tracing::debug!(
+                        error = ?err,
+                        "failed to query SeLockMemoryPrivilege; assuming large pages unavailable"
+                    );
+                    false
+                }
+            }
+        }
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
@@ -42,6 +86,118 @@ fn parse_hugepages_total(meminfo: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(target_os = "windows")]
+fn lock_memory_luid() -> io::Result<LUID> {
+    unsafe {
+        let mut luid = std::mem::zeroed();
+        if LookupPrivilegeValueW(std::ptr::null(), w!("SeLockMemoryPrivilege"), &mut luid) == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(luid)
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn has_lock_memory_privilege() -> io::Result<bool> {
+    unsafe {
+        let mut raw: HANDLE = 0;
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let token = ScopedHandle(raw);
+        let luid = lock_memory_luid()?;
+
+        let mut needed = 0u32;
+        let status = GetTokenInformation(
+            token.0,
+            TokenPrivileges,
+            std::ptr::null_mut(),
+            0,
+            &mut needed,
+        );
+        if status == 0 {
+            let err = GetLastError();
+            if err != ERROR_INSUFFICIENT_BUFFER {
+                return Err(io::Error::from_raw_os_error(err as i32));
+            }
+        }
+
+        if needed == 0 {
+            return Ok(false);
+        }
+
+        let mut buf = vec![0u8; needed as usize];
+        if GetTokenInformation(
+            token.0,
+            TokenPrivileges,
+            buf.as_mut_ptr() as *mut _,
+            needed,
+            &mut needed,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+
+        let privileges = {
+            let tp = &*(buf.as_ptr() as *const TOKEN_PRIVILEGES);
+            std::slice::from_raw_parts(tp.Privileges.as_ptr(), tp.PrivilegeCount as usize)
+        };
+
+        Ok(privileges
+            .iter()
+            .any(|p| p.Luid.LowPart == luid.LowPart && p.Luid.HighPart == luid.HighPart))
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn enable_lock_memory_privilege() -> io::Result<()> {
+    unsafe {
+        let mut raw: HANDLE = 0;
+        if OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut raw,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let token = ScopedHandle(raw);
+        let luid = lock_memory_luid()?;
+
+        let mut tp = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+
+        SetLastError(0);
+        if AdjustTokenPrivileges(
+            token.0,
+            0,
+            &mut tp,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+
+        let err = GetLastError();
+        if err == ERROR_NOT_ALL_ASSIGNED {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "SeLockMemoryPrivilege is not assigned to this account",
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 /// Determine whether the current CPU supports AES instructions (x86/x86_64).
@@ -66,10 +222,10 @@ fn l3_cache_bytes() -> Option<usize> {
             if cache.level() == 3 && matches!(cache.cache_type(), raw_cpuid::CacheType::Unified) {
                 // CPUID leaf 0x4 size formula:
                 // size = associativity * partitions * line_size * sets
-                let ways  = cache.associativity() as usize;
+                let ways = cache.associativity() as usize;
                 let parts = cache.physical_line_partitions() as usize;
-                let line  = cache.coherency_line_size() as usize;
-                let sets  = cache.sets() as usize;
+                let line = cache.coherency_line_size() as usize;
+                let sets = cache.sets() as usize;
                 return Some(ways * parts * line * sets);
             }
         }
@@ -108,13 +264,17 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
 
     // RandomX "fast" dataset and per-thread scratchpad estimates
     let dataset = 2_u64 * 1024 * 1024 * 1024; // ~2 GiB
-    let scratch = 2_u64 * 1024 * 1024;        // ~2 MiB per thread
+    let scratch = 2_u64 * 1024 * 1024; // ~2 MiB per thread
 
     let mut threads = physical;
 
     // L3 clamp (~2 MiB per thread)
     if let Some(l3b) = l3 {
-        let l3_per_thread = if l3b > 64 * 1024 * 1024 { 4 * 1024 * 1024 } else { 2 * 1024 * 1024 };
+        let l3_per_thread = if l3b > 64 * 1024 * 1024 {
+            4 * 1024 * 1024
+        } else {
+            2 * 1024 * 1024
+        };
         let cache_threads = (l3b / l3_per_thread).max(1);
         threads = threads.min(cache_threads);
     }

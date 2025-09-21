@@ -1,5 +1,8 @@
 use anyhow::Result;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 
@@ -114,7 +117,33 @@ mod engine {
     static LARGE_PAGES: AtomicBool = AtomicBool::new(false);
 
     pub fn set_large_pages(enable: bool) {
-        LARGE_PAGES.store(enable, Ordering::Relaxed);
+        let effective = if !enable {
+            false
+        } else {
+            #[cfg(target_os = "windows")]
+            {
+                match system::enable_lock_memory_privilege() {
+                    Ok(()) => true,
+                    Err(err) => {
+                        tracing::warn!(
+                            error = ?err,
+                            "failed to enable SeLockMemoryPrivilege; disabling large pages"
+                        );
+                        false
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            {
+                true
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            {
+                false
+            }
+        };
+
+        LARGE_PAGES.store(effective, Ordering::Relaxed);
     }
 
     fn default_flags() -> RandomXFlag {
@@ -442,15 +471,24 @@ fn meets_target(hash: &[u8; 32], job: &PoolJob) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{atomic::AtomicU64, Arc};
     use tokio::sync::{broadcast, mpsc};
-    use std::sync::{Arc, atomic::AtomicU64};
 
     #[tokio::test]
     async fn spawns_correct_number_of_workers() {
         let (jobs_tx, _jobs_rx) = broadcast::channel(1);
         let (shares_tx, _shares_rx) = mpsc::unbounded_channel();
         let hash_counter = Arc::new(AtomicU64::new(0));
-        let handles = spawn_workers(3, jobs_tx, shares_tx, false, false, 10_000, true, hash_counter);
+        let handles = spawn_workers(
+            3,
+            jobs_tx,
+            shares_tx,
+            false,
+            false,
+            10_000,
+            true,
+            hash_counter,
+        );
         assert_eq!(handles.len(), 3);
         for h in handles {
             h.abort();
