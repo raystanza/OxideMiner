@@ -9,24 +9,216 @@ use sysinfo::System;
 
 /// Check if operating system has huge pages / large pages available.
 /// On Linux this inspects `/proc/meminfo`'s `HugePages_Total` value.
-/// On Windows it queries `GetLargePageMinimum`.
+/// On Windows it attempts to enable the SeLockMemoryPrivilege and query
+/// `GetLargePageMinimum()`.
 pub fn huge_pages_enabled() -> bool {
     #[cfg(target_os = "linux")]
     {
-        if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
-            return parse_hugepages_total(&meminfo);
-        }
-        false
+        return linux_huge_pages_enabled();
     }
     #[cfg(target_os = "windows")]
     {
-        // windows-sys with feature Win32_System_Memory
-        use windows_sys::Win32::System::Memory::GetLargePageMinimum;
-        unsafe { GetLargePageMinimum() > 0 }
+        return windows_large_pages::huge_pages_enabled();
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
-        false
+        return false;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_huge_pages_enabled() -> bool {
+    if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+        return parse_hugepages_total(&meminfo);
+    }
+    false
+}
+
+#[cfg(target_os = "windows")]
+mod windows_large_pages {
+    use std::{
+        error::Error, ffi::OsStr, fmt, iter, os::windows::ffi::OsStrExt, ptr, sync::OnceLock,
+    };
+
+    use tracing::{debug, warn};
+
+    use windows_sys::Win32::{
+        Foundation::{
+            CloseHandle, GetLastError, ERROR_NOT_ALL_ASSIGNED, ERROR_PRIVILEGE_NOT_HELD, HANDLE,
+        },
+        Security::{
+            AdjustTokenPrivileges, LookupPrivilegeValueW, LUID, LUID_AND_ATTRIBUTES,
+            SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+        },
+        System::{
+            Memory::GetLargePageMinimum,
+            Threading::{GetCurrentProcess, OpenProcessToken},
+        },
+    };
+
+    const SE_LOCK_MEMORY_PRIVILEGE: &str = "SeLockMemoryPrivilege";
+
+    #[derive(Debug)]
+    enum LargePageError {
+        WinApi { func: &'static str, code: u32 },
+        PrivilegeNotAssigned,
+        Unsupported,
+    }
+
+    impl fmt::Display for LargePageError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                LargePageError::WinApi { func, code } => {
+                    write!(f, "{func} failed with error code {code}")
+                }
+                LargePageError::PrivilegeNotAssigned => write!(
+                    f,
+                    "SeLockMemoryPrivilege is not assigned to the current process",
+                ),
+                LargePageError::Unsupported => {
+                    write!(f, "Windows large pages are not supported on this system")
+                }
+            }
+        }
+    }
+
+    impl Error for LargePageError {}
+
+    struct TokenHandle(HANDLE);
+
+    impl TokenHandle {
+        fn new(handle: HANDLE) -> Self {
+            Self(handle)
+        }
+
+        fn handle(&self) -> HANDLE {
+            self.0
+        }
+    }
+
+    impl Drop for TokenHandle {
+        fn drop(&mut self) {
+            if self.0 != 0 {
+                unsafe {
+                    CloseHandle(self.0);
+                }
+            }
+        }
+    }
+
+    pub(super) fn huge_pages_enabled() -> bool {
+        static RESULT: OnceLock<bool> = OnceLock::new();
+        *RESULT.get_or_init(|| match large_page_minimum() {
+            Ok(bytes) => {
+                debug!(large_page_minimum_bytes = bytes, "Windows large pages enabled");
+                true
+            }
+            Err(LargePageError::PrivilegeNotAssigned) => {
+                warn!(
+                    "Windows large pages disabled: SeLockMemoryPrivilege is not held by this process"
+                );
+                false
+            }
+            Err(LargePageError::Unsupported) => {
+                debug!("Windows large pages unsupported on this system");
+                false
+            }
+            Err(LargePageError::WinApi { func, code }) => {
+                warn!(
+                    windows_error = code,
+                    func,
+                    "Failed to query Windows large pages support"
+                );
+                false
+            }
+        })
+    }
+
+    fn large_page_minimum() -> Result<usize, LargePageError> {
+        enable_lock_memory_privilege()?;
+        let minimum = unsafe { GetLargePageMinimum() };
+        if minimum == 0 {
+            let code = unsafe { GetLastError() };
+            if code == ERROR_PRIVILEGE_NOT_HELD || code == ERROR_NOT_ALL_ASSIGNED {
+                return Err(LargePageError::PrivilegeNotAssigned);
+            }
+            if code != 0 {
+                return Err(LargePageError::WinApi {
+                    func: "GetLargePageMinimum",
+                    code,
+                });
+            }
+            return Err(LargePageError::Unsupported);
+        }
+        Ok(minimum as usize)
+    }
+
+    fn enable_lock_memory_privilege() -> Result<(), LargePageError> {
+        unsafe {
+            let mut token_raw: HANDLE = 0;
+            if OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                &mut token_raw,
+            ) == 0
+            {
+                return Err(last_os_error("OpenProcessToken"));
+            }
+            let token = TokenHandle::new(token_raw);
+
+            let mut luid = LUID {
+                LowPart: 0,
+                HighPart: 0,
+            };
+            let privilege_name = wide_string(SE_LOCK_MEMORY_PRIVILEGE);
+            if LookupPrivilegeValueW(ptr::null(), privilege_name.as_ptr(), &mut luid) == 0 {
+                return Err(last_os_error("LookupPrivilegeValueW"));
+            }
+
+            let mut privileges = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: luid,
+                    Attributes: SE_PRIVILEGE_ENABLED,
+                }],
+            };
+
+            if AdjustTokenPrivileges(
+                token.handle(),
+                0,
+                &mut privileges,
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            ) == 0
+            {
+                return Err(last_os_error("AdjustTokenPrivileges"));
+            }
+
+            let status = unsafe { GetLastError() };
+            if status == ERROR_NOT_ALL_ASSIGNED {
+                return Err(LargePageError::PrivilegeNotAssigned);
+            }
+            if status != 0 {
+                return Err(LargePageError::WinApi {
+                    func: "AdjustTokenPrivileges",
+                    code: status,
+                });
+            }
+            Ok(())
+        }
+    }
+
+    fn wide_string(value: &str) -> Vec<u16> {
+        OsStr::new(value)
+            .encode_wide()
+            .chain(iter::once(0))
+            .collect::<Vec<_>>()
+    }
+
+    fn last_os_error(func: &'static str) -> LargePageError {
+        let code = unsafe { GetLastError() };
+        LargePageError::WinApi { func, code }
     }
 }
 
@@ -66,10 +258,10 @@ fn l3_cache_bytes() -> Option<usize> {
             if cache.level() == 3 && matches!(cache.cache_type(), raw_cpuid::CacheType::Unified) {
                 // CPUID leaf 0x4 size formula:
                 // size = associativity * partitions * line_size * sets
-                let ways  = cache.associativity() as usize;
+                let ways = cache.associativity() as usize;
                 let parts = cache.physical_line_partitions() as usize;
-                let line  = cache.coherency_line_size() as usize;
-                let sets  = cache.sets() as usize;
+                let line = cache.coherency_line_size() as usize;
+                let sets = cache.sets() as usize;
                 return Some(ways * parts * line * sets);
             }
         }
@@ -108,13 +300,17 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
 
     // RandomX "fast" dataset and per-thread scratchpad estimates
     let dataset = 2_u64 * 1024 * 1024 * 1024; // ~2 GiB
-    let scratch = 2_u64 * 1024 * 1024;        // ~2 MiB per thread
+    let scratch = 2_u64 * 1024 * 1024; // ~2 MiB per thread
 
     let mut threads = physical;
 
     // L3 clamp (~2 MiB per thread)
     if let Some(l3b) = l3 {
-        let l3_per_thread = if l3b > 64 * 1024 * 1024 { 4 * 1024 * 1024 } else { 2 * 1024 * 1024 };
+        let l3_per_thread = if l3b > 64 * 1024 * 1024 {
+            4 * 1024 * 1024
+        } else {
+            2 * 1024 * 1024
+        };
         let cache_threads = (l3b / l3_per_thread).max(1);
         threads = threads.min(cache_threads);
     }
