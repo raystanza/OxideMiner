@@ -148,7 +148,7 @@ pub async fn run(args: Args) -> Result<()> {
     // MPSC: shares <- workers
     let (shares_tx, mut shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
 
-    if !huge_pages_enabled() {
+    if !hp_supported {
         tracing::warn!("huge pages are not enabled; mining performance may be reduced");
     }
 

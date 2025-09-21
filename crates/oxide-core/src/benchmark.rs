@@ -19,7 +19,19 @@ pub async fn run_benchmark(
     batch_size: usize,
     yield_between_batches: bool,
 ) -> Result<f64> {
-    set_large_pages(large_pages);
+    let use_large_pages = if large_pages {
+        if crate::system::huge_pages_enabled() {
+            true
+        } else {
+            tracing::warn!(
+                "huge pages requested for benchmark but unavailable; running without them"
+            );
+            false
+        }
+    } else {
+        false
+    };
+    set_large_pages(use_large_pages);
     let duration = Duration::from_secs(seconds);
     let threads_u32 = threads as u32;
 
