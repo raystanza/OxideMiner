@@ -2,8 +2,6 @@
 // - Huge/large pages detection (Linux/Windows)
 // - CPU feature probes (AES for RandomX HARD_AES)
 // - Heuristics for recommended thread count based on cores/L3/memory
-//
-// Compatible with sysinfo >= 0.30 (methods are inherent on `System`).
 
 use sysinfo::System;
 
@@ -11,21 +9,21 @@ use sysinfo::System;
 use std::{mem, ptr, slice};
 
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, HANDLE,
+use windows_sys::Win32::{
+    Foundation::{
+        CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS,
+        ERROR_NOT_ALL_ASSIGNED, HANDLE, LUID,
+    },
+    Security::{
+        AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, TokenPrivileges,
+        LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, SE_LOCK_MEMORY_NAME,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    },
+    System::{
+        Memory::GetLargePageMinimum,
+        Threading::{GetCurrentProcess, OpenProcessToken},
+    },
 };
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::Security::{
-    AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, OpenProcessToken,
-    TokenPrivileges, LUID, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
-    SE_PRIVILEGE_ENABLED_BY_DEFAULT, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
-};
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::System::Memory::GetLargePageMinimum;
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::System::SystemServices::SE_LOCK_MEMORY_NAME;
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 /// Size of the RandomX dataset in bytes when running in fast (full memory) mode.
 pub const RANDOMX_DATASET_BYTES: u64 = 2_u64 * 1024 * 1024 * 1024; // ~2 GiB
@@ -145,6 +143,9 @@ fn windows_huge_page_status() -> HugePageStatus {
         if page_min == 0 {
             return HugePageStatus::default();
         }
+        // Try to enable privilege (no harm if already enabled)
+        let _ = enable_lock_memory_privilege();
+
         HugePageStatus {
             supported: true,
             has_privilege: has_lock_memory_privilege(),
@@ -175,19 +176,18 @@ fn enable_lock_memory_privilege() -> bool {
             return true;
         }
 
-        let mut token: HANDLE = 0;
+        let mut token: HANDLE = std::ptr::null_mut();
         if OpenProcessToken(
             GetCurrentProcess(),
             TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
             &mut token,
-        ) == 0
-        {
+        ) == 0 {
             return false;
         }
 
         let mut luid: LUID = mem::zeroed();
         if LookupPrivilegeValueW(ptr::null(), SE_LOCK_MEMORY_NAME, &mut luid) == 0 {
-            CloseHandle(token);
+            let _ = CloseHandle(token);
             return false;
         }
 
@@ -199,26 +199,33 @@ fn enable_lock_memory_privilege() -> bool {
             }],
         };
 
-        let adjust_result = AdjustTokenPrivileges(
+        // Request enable
+        if AdjustTokenPrivileges(
             token,
             0,
             &mut privileges,
             0,
             ptr::null_mut(),
             ptr::null_mut(),
-        );
-        let last_error = GetLastError();
-        CloseHandle(token);
+        ) == 0 {
+            let _ = CloseHandle(token);
+            return false; // API call failed
+        }
 
-        if adjust_result == 0 {
+        // Succeeded, but did it actually enable?
+        let gle = GetLastError();
+        let _ = CloseHandle(token);
+
+        if gle == ERROR_NOT_ALL_ASSIGNED {
+            // Account doesn't have SeLockMemoryPrivilege in User Rights Assignment
+            return false;
+        }
+        if gle != ERROR_SUCCESS {
+            // Defensive: unexpected last-error after success path
             return false;
         }
 
-        if last_error != ERROR_SUCCESS {
-            return false;
-        }
-
-        // Confirm the privilege is now active.
+        // Confirm it shows as enabled now
         has_lock_memory_privilege()
     }
 }
@@ -226,14 +233,14 @@ fn enable_lock_memory_privilege() -> bool {
 #[cfg(target_os = "windows")]
 fn has_lock_memory_privilege() -> bool {
     unsafe {
-        let mut token: HANDLE = 0;
+        let mut token: HANDLE = std::ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
             return false;
         }
 
         let mut luid: LUID = mem::zeroed();
         if LookupPrivilegeValueW(ptr::null(), SE_LOCK_MEMORY_NAME, &mut luid) == 0 {
-            CloseHandle(token);
+            let _ = CloseHandle(token);
             return false;
         }
 
@@ -246,7 +253,7 @@ fn has_lock_memory_privilege() -> bool {
             &mut required_len,
         );
         if GetLastError() != ERROR_INSUFFICIENT_BUFFER {
-            CloseHandle(token);
+            let _ = CloseHandle(token);
             return false;
         }
 
@@ -259,7 +266,7 @@ fn has_lock_memory_privilege() -> bool {
             &mut required_len,
         ) == 0
         {
-            CloseHandle(token);
+            let _ = CloseHandle(token);
             return false;
         }
 
@@ -267,19 +274,20 @@ fn has_lock_memory_privilege() -> bool {
         let count = (*token_privileges).PrivilegeCount as usize;
         let privileges_ptr = (*token_privileges).Privileges.as_ptr();
         let privileges = slice::from_raw_parts(privileges_ptr, count);
-        let mut has_priv = false;
-        for privilege in privileges {
-            if privilege.Luid.LowPart == luid.LowPart && privilege.Luid.HighPart == luid.HighPart {
-                let enabled_mask = SE_PRIVILEGE_ENABLED | SE_PRIVILEGE_ENABLED_BY_DEFAULT;
-                if (privilege.Attributes & enabled_mask) != 0 {
-                    has_priv = true;
+
+        let mut enabled = false;
+        for p in privileges {
+            if p.Luid.LowPart == luid.LowPart && p.Luid.HighPart == luid.HighPart {
+                // Only accept 'enabled now'
+                if (p.Attributes & SE_PRIVILEGE_ENABLED) != 0 {
+                    enabled = true;
                 }
                 break;
             }
         }
 
-        CloseHandle(token);
-        has_priv
+        let _ = CloseHandle(token);
+        enabled
     }
 }
 
