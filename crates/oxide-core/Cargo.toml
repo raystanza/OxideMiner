@@ -25,6 +25,7 @@ webpki-roots = { workspace = true }
 core_affinity = { workspace = true }
 sysinfo = { workspace = true }
 raw-cpuid = { workspace = true }
+libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = [

@@ -24,6 +24,10 @@ pub async fn run_benchmark(
     let _ = set_large_pages(large_pages);
     let duration = Duration::from_secs(seconds);
     let threads_u32 = threads as u32;
+    let dataset_threads = std::cmp::max(threads_u32, num_cpus::get_physical() as u32);
+
+    let seed = [0u8; 32];
+    let (shared_cache, shared_dataset) = ensure_fullmem_dataset(&seed, dataset_threads)?;
 
     let mut handles: Vec<task::JoinHandle<Result<u64>>> = Vec::new();
     for id in 0..threads {
@@ -31,12 +35,10 @@ pub async fn run_benchmark(
         let batch_size = batch_size;
         let threads_u32 = threads_u32;
         let yield_between_batches = yield_between_batches;
+        let cache = shared_cache.clone();
+        let dataset = shared_dataset.clone();
         handles.push(task::spawn(async move {
-            let seed = [0u8; 32];
-            let vm = {
-                let (cache, dataset) = ensure_fullmem_dataset(&seed, threads_u32)?;
-                create_vm_for_dataset(&cache, &dataset, None)?
-            };
+            let vm = create_vm_for_dataset(&cache, &dataset, None)?;
             let mut blob = vec![0u8; 43];
             let mut nonce = id as u32;
             let start = Instant::now();

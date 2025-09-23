@@ -85,11 +85,17 @@ pub fn spawn_workers(
 #[cfg(feature = "randomx")]
 mod engine {
     use crate::system::{self, RANDOMX_DATASET_BYTES};
-    use anyhow::Result;
+    use anyhow::{anyhow, Result};
+    use libc::c_ulong;
+    use once_cell::sync::Lazy;
     use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
     use std::{
-        cell::RefCell,
-        sync::atomic::{AtomicBool, Ordering},
+        mem,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, RwLock,
+        },
+        thread,
     };
 
     // Thin wrappers to mirror the old shape
@@ -107,6 +113,150 @@ mod engine {
         pub(crate) _key: Vec<u8>,       // intentionally unused (for future)
     }
 
+    #[repr(C)]
+    struct RandomxDatasetOpaque {
+        _unused: [u8; 0],
+    }
+
+    #[repr(C)]
+    struct RandomxCacheOpaque {
+        _unused: [u8; 0],
+    }
+
+    #[repr(C)]
+    struct RandomXCacheInnerRepr {
+        cache_ptr: *mut RandomxCacheOpaque,
+    }
+
+    #[repr(C)]
+    struct RandomXCacheRepr {
+        inner: Arc<RandomXCacheInnerRepr>,
+    }
+
+    #[repr(C)]
+    struct RandomXDatasetInnerRepr {
+        dataset_ptr: *mut RandomxDatasetOpaque,
+        dataset_count: u32,
+        cache: RandomXCache,
+    }
+
+    #[repr(C)]
+    struct RandomXDatasetRepr {
+        inner: Arc<RandomXDatasetInnerRepr>,
+    }
+
+    extern "C" {
+        fn randomx_alloc_dataset(flags: u32) -> *mut RandomxDatasetOpaque;
+        fn randomx_init_dataset(
+            dataset: *mut RandomxDatasetOpaque,
+            cache: *mut RandomxCacheOpaque,
+            start_item: c_ulong,
+            item_count: c_ulong,
+        );
+    }
+
+    fn cache_inner(cache: &RandomXCache) -> &RandomXCacheInnerRepr {
+        unsafe {
+            let repr = cache as *const RandomXCache as *const RandomXCacheRepr;
+            Arc::as_ref(&(*repr).inner)
+        }
+    }
+
+    fn dataset_inner(dataset: &RandomXDataset) -> &RandomXDatasetInnerRepr {
+        unsafe {
+            let repr = dataset as *const RandomXDataset as *const RandomXDatasetRepr;
+            Arc::as_ref(&(*repr).inner)
+        }
+    }
+
+    fn dataset_ptr(dataset: &RandomXDataset) -> *mut RandomxDatasetOpaque {
+        dataset_inner(dataset).dataset_ptr
+    }
+
+    fn dataset_item_count(dataset: &RandomXDataset) -> u64 {
+        dataset_inner(dataset).dataset_count as u64
+    }
+
+    fn cache_ptr(cache: &RandomXCache) -> *mut RandomxCacheOpaque {
+        cache_inner(cache).cache_ptr
+    }
+
+    fn allocate_dataset(flags: RandomXFlag, cache: &Cache) -> Result<RandomXDataset> {
+        let item_count = RandomXDataset::count().map_err(|e| anyhow!(e))?;
+        let dataset_ptr = unsafe { randomx_alloc_dataset(flags.bits()) };
+        if dataset_ptr.is_null() {
+            return Err(anyhow!("Could not allocate dataset"));
+        }
+        let inner = RandomXDatasetInnerRepr {
+            dataset_ptr,
+            dataset_count: item_count,
+            cache: cache.inner.clone(),
+        };
+        let repr = RandomXDatasetRepr {
+            inner: Arc::new(inner),
+        };
+        let dataset = unsafe { mem::transmute::<RandomXDatasetRepr, RandomXDataset>(repr) };
+        Ok(dataset)
+    }
+
+    fn init_dataset_parallel(
+        dataset: &RandomXDataset,
+        cache: &RandomXCache,
+        threads: u32,
+    ) -> Result<()> {
+        let total_items = dataset_item_count(dataset);
+        if total_items == 0 {
+            return Ok(());
+        }
+        let dataset_ptr = dataset_ptr(dataset) as usize;
+        let cache_ptr = cache_ptr(cache) as usize;
+        let thread_count = threads.max(1).min(total_items as u32);
+        let base = total_items / thread_count as u64;
+        let remainder = total_items % thread_count as u64;
+        let mut handles = Vec::with_capacity(thread_count as usize);
+        let mut start = 0u64;
+        for i in 0..thread_count {
+            let mut count = base;
+            if (i as u64) < remainder {
+                count += 1;
+            }
+            if count == 0 {
+                continue;
+            }
+            let thread_start = start;
+            let dataset_ptr = dataset_ptr;
+            let cache_ptr = cache_ptr;
+            handles.push(
+                thread::Builder::new()
+                    .name(format!("randomx-dataset-init-{i}"))
+                    .stack_size(DATASET_INIT_STACK_BYTES)
+                    .spawn(move || unsafe {
+                        randomx_init_dataset(
+                            dataset_ptr as *mut RandomxDatasetOpaque,
+                            cache_ptr as *mut RandomxCacheOpaque,
+                            thread_start as c_ulong,
+                            count as c_ulong,
+                        );
+                    })
+                    .map_err(|e| anyhow!("failed to spawn dataset init worker: {e}"))?,
+            );
+            start += count;
+        }
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|e| anyhow!("dataset init worker panicked: {e:?}"))?;
+        }
+        Ok(())
+    }
+
+    // RandomX cache/dataset objects are read-only after initialization and may be shared across
+    // threads safely.
+    unsafe impl Send for Cache {}
+    unsafe impl Sync for Cache {}
+    unsafe impl Send for Dataset {}
+    unsafe impl Sync for Dataset {}
+
     pub struct Vm {
         pub(crate) inner: RandomXVM,
         pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
@@ -117,6 +267,8 @@ mod engine {
 
     // randomx-rs exposes FLAG_* constants.
     static LARGE_PAGES: AtomicBool = AtomicBool::new(false);
+
+    const DATASET_INIT_STACK_BYTES: usize = 8 * 1024 * 1024;
 
     pub fn set_large_pages(enable: bool) -> bool {
         if !enable {
@@ -207,21 +359,24 @@ mod engine {
 
     pub fn new_dataset(flags: Option<RandomXFlag>, cache: &Cache, threads: u32) -> Result<Dataset> {
         let mut flags = flags.unwrap_or_else(default_flags);
-        // Dataset::new takes OWNED cache and a u32 thread count.
-        let ds = match RandomXDataset::new(flags, cache.inner.clone(), threads) {
+        let init_threads = threads.max(1);
+        let dataset = match allocate_dataset(flags, cache) {
             Ok(d) => d,
             Err(e) => {
                 if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
-                    tracing::warn!("RandomX large pages allocation failed for dataset; retrying without large pages: {e}");
+                    tracing::warn!(
+                        "RandomX large pages allocation failed for dataset; retrying without large pages: {e}"
+                    );
                     flags &= !RandomXFlag::FLAG_LARGE_PAGES;
-                    RandomXDataset::new(flags, cache.inner.clone(), threads)?
+                    allocate_dataset(flags, cache)?
                 } else {
-                    return Err(e.into());
+                    return Err(e);
                 }
             }
         };
+        init_dataset_parallel(&dataset, &cache.inner, init_threads)?;
         Ok(Dataset {
-            inner: ds,
+            inner: dataset,
             _flags: flags,
             _key: cache.key.clone(),
         })
@@ -255,45 +410,50 @@ mod engine {
 
     // ------------------------ Thread-local dataset cache ------------------------
 
-    #[derive(Clone)]
-    pub struct Global {
-        pub _flags: RandomXFlag, // intentionally unused (for future)
-        pub key: Vec<u8>,
-        pub cache: Cache,
-        pub dataset: Dataset,
+    struct SharedDataset {
+        key: Vec<u8>,
+        cache: Cache,
+        dataset: Dataset,
     }
 
-    thread_local! {
-        static TLS: RefCell<Option<Global>> = RefCell::new(None);
-    }
-
-    /// Ensure a FULL_MEM dataset exists for this thread + seed key.
-    pub fn ensure_fullmem_dataset(seed_key: &[u8], threads: u32) -> Result<(Cache, Dataset)> {
-        let flags = default_flags();
-
-        // Fast path: same key already built on this thread
-        if let Some(pair) = TLS.with(|cell| {
-            cell.borrow().as_ref().and_then(|g| {
-                if g.key == seed_key {
-                    Some((g.cache.clone(), g.dataset.clone()))
-                } else {
-                    None
-                }
-            })
-        }) {
-            return Ok(pair);
+    impl SharedDataset {
+        fn matches(&self, key: &[u8]) -> bool {
+            self.key.as_slice() == key
         }
 
-        // Miss or key changed: rebuild
+        fn clone_pair(&self) -> (Cache, Dataset) {
+            (self.cache.clone(), self.dataset.clone())
+        }
+    }
+
+    static GLOBAL_DATASET: Lazy<RwLock<Option<SharedDataset>>> = Lazy::new(|| RwLock::new(None));
+
+    /// Ensure a FULL_MEM dataset exists for this process + seed key.
+    pub fn ensure_fullmem_dataset(seed_key: &[u8], threads: u32) -> Result<(Cache, Dataset)> {
+        let init_threads = threads.max(1);
+        {
+            let guard = GLOBAL_DATASET.read().expect("dataset lock poisoned");
+            if let Some(shared) = guard.as_ref() {
+                if shared.matches(seed_key) {
+                    return Ok(shared.clone_pair());
+                }
+            }
+        }
+
+        let mut guard = GLOBAL_DATASET.write().expect("dataset lock poisoned");
+        if let Some(shared) = guard.as_ref() {
+            if shared.matches(seed_key) {
+                return Ok(shared.clone_pair());
+            }
+        }
+
+        let flags = default_flags();
         let cache = new_cache(Some(flags), seed_key)?;
-        let dataset = new_dataset(Some(flags), &cache, threads)?;
-        TLS.with(|cell| {
-            *cell.borrow_mut() = Some(Global {
-                _flags: flags,
-                key: seed_key.to_vec(),
-                cache: cache.clone(),
-                dataset: dataset.clone(),
-            });
+        let dataset = new_dataset(Some(flags), &cache, init_threads)?;
+        *guard = Some(SharedDataset {
+            key: seed_key.to_vec(),
+            cache: cache.clone(),
+            dataset: dataset.clone(),
         });
 
         Ok((cache, dataset))
@@ -328,6 +488,7 @@ async fn randomx_worker_loop(
 
     // Precompute once (Send + Copy)
     let threads_u32: u32 = worker_count as u32;
+    let dataset_threads: u32 = std::cmp::max(threads_u32, num_cpus::get_physical() as u32);
     let mut current_seed: Option<Vec<u8>> = None;
     let mut vm: Option<Vm> = None;
 
@@ -357,7 +518,7 @@ async fn randomx_worker_loop(
             seed_bytes.resize(32, 0u8);
         }
         if current_seed.as_deref() != Some(seed_bytes.as_slice()) {
-            let (cache, dataset) = ensure_fullmem_dataset(&seed_bytes, threads_u32)?;
+            let (cache, dataset) = ensure_fullmem_dataset(&seed_bytes, dataset_threads)?;
             vm = Some(create_vm_for_dataset(&cache, &dataset, None)?);
             current_seed = Some(seed_bytes.clone());
         }
