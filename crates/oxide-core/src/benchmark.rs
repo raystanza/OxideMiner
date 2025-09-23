@@ -34,7 +34,7 @@ pub async fn run_benchmark(
         handles.push(task::spawn(async move {
             let seed = [0u8; 32];
             let vm = {
-                let (cache, dataset) = ensure_fullmem_dataset(&seed, threads_u32)?;
+                let (cache, dataset) = ensure_fullmem_dataset(&seed, threads_u32).await?;
                 create_vm_for_dataset(&cache, &dataset, None)?
             };
             let mut blob = vec![0u8; 43];

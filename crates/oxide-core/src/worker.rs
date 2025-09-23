@@ -86,11 +86,13 @@ pub fn spawn_workers(
 mod engine {
     use crate::system::{self, RANDOMX_DATASET_BYTES};
     use anyhow::Result;
+    use once_cell::sync::Lazy;
     use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
-    use std::{
-        cell::RefCell,
-        sync::atomic::{AtomicBool, Ordering},
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
     };
+    use tokio::sync::Mutex;
 
     // Thin wrappers to mirror the old shape
     #[derive(Clone)]
@@ -100,12 +102,20 @@ mod engine {
         pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
     }
 
+    // RandomX cache memory is immutable after creation and safe to share across threads.
+    unsafe impl Send for Cache {}
+    unsafe impl Sync for Cache {}
+
     #[derive(Clone)]
     pub struct Dataset {
         pub(crate) inner: RandomXDataset,
         pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
         pub(crate) _key: Vec<u8>,       // intentionally unused (for future)
     }
+
+    // RandomX datasets are read-only once initialized and can be shared across threads.
+    unsafe impl Send for Dataset {}
+    unsafe impl Sync for Dataset {}
 
     pub struct Vm {
         pub(crate) inner: RandomXVM,
@@ -253,49 +263,45 @@ mod engine {
         out
     }
 
-    // ------------------------ Thread-local dataset cache ------------------------
+    // ------------------------ Shared dataset cache ------------------------
 
-    #[derive(Clone)]
-    pub struct Global {
-        pub _flags: RandomXFlag, // intentionally unused (for future)
-        pub key: Vec<u8>,
-        pub cache: Cache,
-        pub dataset: Dataset,
+    struct SharedDataset {
+        key: Vec<u8>,
+        cache: Arc<Cache>,
+        dataset: Arc<Dataset>,
     }
 
-    thread_local! {
-        static TLS: RefCell<Option<Global>> = RefCell::new(None);
-    }
+    static SHARED_DATASET: Lazy<Mutex<Option<SharedDataset>>> = Lazy::new(|| Mutex::new(None));
 
-    /// Ensure a FULL_MEM dataset exists for this thread + seed key.
-    pub fn ensure_fullmem_dataset(seed_key: &[u8], threads: u32) -> Result<(Cache, Dataset)> {
-        let flags = default_flags();
+    /// Ensure a FULL_MEM dataset exists for the provided seed key and share it across workers.
+    pub async fn ensure_fullmem_dataset(
+        seed_key: &[u8],
+        threads: u32,
+    ) -> Result<(Arc<Cache>, Arc<Dataset>)> {
+        let mut guard = SHARED_DATASET.lock().await;
 
-        // Fast path: same key already built on this thread
-        if let Some(pair) = TLS.with(|cell| {
-            cell.borrow().as_ref().and_then(|g| {
-                if g.key == seed_key {
-                    Some((g.cache.clone(), g.dataset.clone()))
-                } else {
-                    None
-                }
-            })
-        }) {
-            return Ok(pair);
+        if let Some(shared) = guard.as_ref() {
+            if shared.key.as_slice() == seed_key {
+                return Ok((shared.cache.clone(), shared.dataset.clone()));
+            }
         }
 
-        // Miss or key changed: rebuild
-        let cache = new_cache(Some(flags), seed_key)?;
-        let dataset = new_dataset(Some(flags), &cache, threads)?;
-        TLS.with(|cell| {
-            *cell.borrow_mut() = Some(Global {
-                _flags: flags,
-                key: seed_key.to_vec(),
-                cache: cache.clone(),
-                dataset: dataset.clone(),
-            });
+        let (cache, dataset) = build_fullmem_dataset(seed_key, threads)?;
+        let cache = Arc::new(cache);
+        let dataset = Arc::new(dataset);
+        *guard = Some(SharedDataset {
+            key: seed_key.to_vec(),
+            cache: cache.clone(),
+            dataset: dataset.clone(),
         });
 
+        Ok((cache, dataset))
+    }
+
+    fn build_fullmem_dataset(seed_key: &[u8], threads: u32) -> Result<(Cache, Dataset)> {
+        let flags = default_flags();
+        let cache = new_cache(Some(flags), seed_key)?;
+        let dataset = new_dataset(Some(flags), &cache, threads)?;
         Ok((cache, dataset))
     }
 
@@ -357,7 +363,7 @@ async fn randomx_worker_loop(
             seed_bytes.resize(32, 0u8);
         }
         if current_seed.as_deref() != Some(seed_bytes.as_slice()) {
-            let (cache, dataset) = ensure_fullmem_dataset(&seed_bytes, threads_u32)?;
+            let (cache, dataset) = ensure_fullmem_dataset(&seed_bytes, threads_u32).await?;
             vm = Some(create_vm_for_dataset(&cache, &dataset, None)?);
             current_seed = Some(seed_bytes.clone());
         }
