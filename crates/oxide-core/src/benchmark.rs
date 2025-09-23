@@ -7,6 +7,9 @@ use anyhow::{anyhow, Result};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "randomx")]
+use std::sync::Arc;
+
+#[cfg(feature = "randomx")]
 use tokio::task;
 
 #[cfg(feature = "randomx")]
@@ -25,18 +28,21 @@ pub async fn run_benchmark(
     let duration = Duration::from_secs(seconds);
     let threads_u32 = threads as u32;
 
+    let seed = [0u8; 32];
+    let (cache, dataset) = ensure_fullmem_dataset(&seed, threads_u32)?;
+    let shared_cache = Arc::new(cache);
+    let shared_dataset = Arc::new(dataset);
+
     let mut handles: Vec<task::JoinHandle<Result<u64>>> = Vec::new();
     for id in 0..threads {
         let duration = duration;
         let batch_size = batch_size;
         let threads_u32 = threads_u32;
         let yield_between_batches = yield_between_batches;
+        let cache = Arc::clone(&shared_cache);
+        let dataset = Arc::clone(&shared_dataset);
         handles.push(task::spawn(async move {
-            let seed = [0u8; 32];
-            let vm = {
-                let (cache, dataset) = ensure_fullmem_dataset(&seed, threads_u32)?;
-                create_vm_for_dataset(&cache, &dataset, None)?
-            };
+            let vm = create_vm_for_dataset(&cache, &dataset, None)?;
             let mut blob = vec![0u8; 43];
             let mut nonce = id as u32;
             let start = Instant::now();
