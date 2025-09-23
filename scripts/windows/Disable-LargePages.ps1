@@ -1,4 +1,6 @@
-# Disable-LargePages.ps1
+#
+# OxideMiner/scripts/windows/Disable-LargePages.ps1
+#
 # Rollback script to remove SeLockMemoryPrivilege from a user.
 # It will:
 #  - Modify local security policy to remove SeLockMemoryPrivilege from the target user.

@@ -1,3 +1,5 @@
+// OxideMiner/crates/oxide-miner/src/main.rs
+
 mod args;
 mod http_api;
 mod miner;

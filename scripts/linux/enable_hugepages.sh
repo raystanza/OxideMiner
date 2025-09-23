@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# enable_hugepages.sh
+#
+# OxideMiner/scripts/linux/enable_hugepages.sh
+#
 # Enables persistent 2MiB HugeTLB pages on Debian, mounts /mnt/hugepages,
 # creates a 'hugepages' group, adds user, and sets THP to 'madvise'.
 # Defaults: reserve ~25% of RAM as hugepages (min 64 pages), THP=madvise, user=SUDO_USER.

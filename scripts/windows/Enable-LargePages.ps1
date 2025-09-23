@@ -1,4 +1,6 @@
-# Enable-LargePages.ps1
+#
+# OxideMiner/scripts/windows/Enable-LargePages.ps1
+#
 # Grants "Lock pages in memory" (SeLockMemoryPrivilege) to a user so apps can use large pages.
 # RUN THIS FROM AN ELEVATED (ADMIN) POWERSHELL.
 # Usage:

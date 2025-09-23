@@ -1,3 +1,5 @@
+// OxideMiner/crates/oxide-miner/src/util.rs
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn tiny_jitter_ms() -> u64 {

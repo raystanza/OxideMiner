@@ -1,3 +1,5 @@
+// OxideMiner/crates/oxide-core/src/config.rs
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

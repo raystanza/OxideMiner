@@ -1,3 +1,5 @@
+// OxideMiner/crates/oxide-core/src/stratum.rs
+
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

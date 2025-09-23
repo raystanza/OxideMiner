@@ -1,3 +1,5 @@
+// OxideMiner/crates/oxide-miner/src/args.rs
+
 use clap::Parser;
 use std::path::PathBuf;
 

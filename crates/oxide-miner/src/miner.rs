@@ -1,3 +1,5 @@
+// OxideMiner/crates/oxide-miner/src/miner.rs
+
 use crate::args::Args;
 use crate::http_api::run_http_api;
 use crate::stats::Stats;

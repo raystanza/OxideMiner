@@ -1,3 +1,5 @@
+// OxideMiner/crates/oxide-core/src/worker.rs
+
 use anyhow::Result;
 use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -1,3 +1,5 @@
+// OxideMiner/crates/oxide-core/src/devfee.rs
+
 /// 1% developer fee = 100 basis points
 pub const DEV_FEE_BASIS_POINTS: u32 = 100;
 

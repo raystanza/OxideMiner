@@ -1,3 +1,5 @@
+// OxideMiner/crates/oxide-core/src/system.rs
+
 // Cross-platform system capability helpers for OxideMiner.
 // - Huge/large pages detection (Linux/Windows)
 // - CPU feature probes (AES for RandomX HARD_AES)
