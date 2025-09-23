@@ -4,6 +4,9 @@
 members = ["crates/oxide-core", "crates/oxide-miner"]
 resolver = "2"
 
+[patch.crates-io]
+randomx-sys = { path = "crates/randomx-sys" }
+
 [workspace.package]
 edition = "2021"
 license = "MIT"

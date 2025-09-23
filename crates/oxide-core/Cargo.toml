@@ -7,7 +7,7 @@ edition = "2021"
 
 [features]
 default = []
-randomx = ["dep:randomx-rs"]
+randomx = ["dep:randomx-sys"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -19,7 +19,9 @@ tracing = { workspace = true }
 hex = { workspace = true }
 num_cpus = { workspace = true }
 once_cell = { workspace = true }
-randomx-rs = { version = "1.4", optional = true }
+bitflags = "2"
+libc = "0.2"
+randomx-sys = { version = "0.1", optional = true }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
 core_affinity = { workspace = true }

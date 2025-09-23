@@ -85,37 +85,49 @@ pub fn spawn_workers(
 #[cfg(feature = "randomx")]
 mod engine {
     use crate::system::{self, RANDOMX_DATASET_BYTES};
-    use anyhow::Result;
-    use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
+    use anyhow::{anyhow, Result};
+    use bitflags::bitflags;
+    use libc::c_ulong;
+    use once_cell::sync::Lazy;
+    use randomx_sys::{
+        randomx_alloc_cache, randomx_alloc_dataset, randomx_calculate_hash, randomx_create_vm,
+        randomx_dataset_item_count, randomx_destroy_vm, randomx_init_cache, randomx_init_dataset,
+        randomx_release_cache, randomx_release_dataset,
+    };
     use std::{
-        cell::RefCell,
-        sync::atomic::{AtomicBool, Ordering},
+        cmp,
+        ffi::c_void,
+        ptr,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, RwLock,
+        },
+        thread,
     };
 
-    // Thin wrappers to mirror the old shape
-    #[derive(Clone)]
-    pub struct Cache {
-        pub(crate) inner: RandomXCache,
-        pub(crate) key: Vec<u8>,
-        pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
+    const INIT_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    bitflags! {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub struct RandomXFlag: u32 {
+            const FLAG_DEFAULT      = 0b0000_0000;
+            const FLAG_LARGE_PAGES  = 0b0000_0001;
+            const FLAG_HARD_AES     = 0b0000_0010;
+            const FLAG_FULL_MEM     = 0b0000_0100;
+            const FLAG_JIT          = 0b0000_1000;
+            const FLAG_SECURE       = 0b0001_0000;
+            const FLAG_ARGON2_SSSE3 = 0b0010_0000;
+            const FLAG_ARGON2_AVX2  = 0b0100_0000;
+            const FLAG_ARGON2       = 0b0110_0000;
+        }
     }
 
-    #[derive(Clone)]
-    pub struct Dataset {
-        pub(crate) inner: RandomXDataset,
-        pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
-        pub(crate) _key: Vec<u8>,       // intentionally unused (for future)
+    impl Default for RandomXFlag {
+        fn default() -> Self {
+            RandomXFlag::FLAG_DEFAULT
+        }
     }
 
-    pub struct Vm {
-        pub(crate) inner: RandomXVM,
-        pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
-    }
-
-    // RandomX VMs are not thread-safe by default, but we confine each to a single worker thread.
-    unsafe impl Send for Vm {}
-
-    // randomx-rs exposes FLAG_* constants.
     static LARGE_PAGES: AtomicBool = AtomicBool::new(false);
 
     pub fn set_large_pages(enable: bool) -> bool {
@@ -126,14 +138,18 @@ mod engine {
 
         let mut status = system::huge_page_status();
         if !status.supported {
-            tracing::warn!("Large pages requested but the operating system does not report support; continuing without them");
+            tracing::warn!(
+                "Large pages requested but the operating system does not report support; continuing without them"
+            );
             LARGE_PAGES.store(false, Ordering::Relaxed);
             return false;
         }
 
         if !status.has_privilege {
             if !system::enable_large_page_privilege() {
-                tracing::warn!("Large pages requested but unable to enable required privileges; continuing without large pages");
+                tracing::warn!(
+                    "Large pages requested but unable to enable required privileges; continuing without large pages"
+                );
                 LARGE_PAGES.store(false, Ordering::Relaxed);
                 return false;
             }
@@ -163,7 +179,7 @@ mod engine {
 
         LARGE_PAGES.store(true, Ordering::Relaxed);
         if let Some(page) = status.page_size_bytes {
-            tracing::info!(page_size_bytes = page, "RandomX large pages enabled",);
+            tracing::info!(page_size_bytes = page, "RandomX large pages enabled");
         } else {
             tracing::info!("RandomX large pages enabled");
         }
@@ -181,50 +197,160 @@ mod engine {
         flags
     }
 
-    pub fn new_cache(flags: Option<RandomXFlag>, key: &[u8]) -> Result<Cache> {
-        let mut flags = flags.unwrap_or_else(default_flags);
+    struct CacheInner {
+        ptr: *mut randomx_sys::randomx_cache,
+    }
 
-        // First attempt with requested flags
-        let cache = match RandomXCache::new(flags, key) {
-            Ok(c) => c,
-            Err(e) => {
-                // If large pages were requested but allocation failed, retry without them.
-                if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
-                    tracing::warn!("RandomX large pages allocation failed for cache; retrying without large pages: {e}");
-                    flags &= !RandomXFlag::FLAG_LARGE_PAGES;
-                    RandomXCache::new(flags, key)?
-                } else {
-                    return Err(e.into());
-                }
+    impl Drop for CacheInner {
+        fn drop(&mut self) {
+            unsafe { randomx_release_cache(self.ptr) };
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct Cache {
+        inner: Arc<CacheInner>,
+        key: Vec<u8>,
+        _flags: RandomXFlag,
+    }
+
+    unsafe impl Send for Cache {}
+    unsafe impl Sync for Cache {}
+
+    impl Cache {
+        fn ptr(&self) -> *mut randomx_sys::randomx_cache {
+            self.inner.ptr
+        }
+    }
+
+    struct DatasetInner {
+        ptr: *mut randomx_sys::randomx_dataset,
+        item_count: u64,
+    }
+
+    impl Drop for DatasetInner {
+        fn drop(&mut self) {
+            unsafe { randomx_release_dataset(self.ptr) };
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct Dataset {
+        inner: Arc<DatasetInner>,
+        _flags: RandomXFlag,
+        _key: Vec<u8>,
+    }
+
+    unsafe impl Send for Dataset {}
+    unsafe impl Sync for Dataset {}
+
+    impl Dataset {
+        fn ptr(&self) -> *mut randomx_sys::randomx_dataset {
+            self.inner.ptr
+        }
+
+        fn item_count(&self) -> u64 {
+            self.inner.item_count
+        }
+
+        fn init_range(&self, cache: &Cache, start: u64, count: u64) -> Result<()> {
+            debug_assert!(start + count <= self.item_count());
+            if count == 0 {
+                return Ok(());
             }
-        };
-        Ok(Cache {
-            inner: cache,
-            key: key.to_vec(),
-            _flags: flags,
-        })
+            let start = to_c_ulong(start)?;
+            let count = to_c_ulong(count)?;
+            unsafe { randomx_init_dataset(self.ptr(), cache.ptr(), start, count) };
+            Ok(())
+        }
+    }
+
+    pub struct Vm {
+        ptr: *mut randomx_sys::randomx_vm,
+        _cache: Option<Cache>,
+        _dataset: Option<Dataset>,
+        _flags: RandomXFlag,
+    }
+
+    unsafe impl Send for Vm {}
+
+    impl Drop for Vm {
+        fn drop(&mut self) {
+            unsafe { randomx_destroy_vm(self.ptr) };
+        }
+    }
+
+    fn to_c_ulong(value: u64) -> Result<c_ulong> {
+        if value > (c_ulong::MAX as u64) {
+            Err(anyhow!("dataset range {} exceeds c_ulong::MAX", value))
+        } else {
+            Ok(value as c_ulong)
+        }
+    }
+
+    pub fn new_cache(flags: Option<RandomXFlag>, key: &[u8]) -> Result<Cache> {
+        let mut attempt = flags.unwrap_or_else(default_flags);
+
+        loop {
+            let ptr = unsafe { randomx_alloc_cache(attempt.bits()) };
+            if ptr.is_null() {
+                if attempt.contains(RandomXFlag::FLAG_LARGE_PAGES) {
+                    tracing::warn!(
+                        "RandomX large pages allocation failed for cache; retrying without large pages"
+                    );
+                    attempt &= !RandomXFlag::FLAG_LARGE_PAGES;
+                    continue;
+                }
+                return Err(anyhow!("Could not allocate RandomX cache"));
+            }
+
+            unsafe {
+                randomx_init_cache(ptr, key.as_ptr() as *const c_void, key.len());
+            }
+
+            return Ok(Cache {
+                inner: Arc::new(CacheInner { ptr }),
+                key: key.to_vec(),
+                _flags: attempt,
+            });
+        }
     }
 
     pub fn new_dataset(flags: Option<RandomXFlag>, cache: &Cache, threads: u32) -> Result<Dataset> {
-        let mut flags = flags.unwrap_or_else(default_flags);
-        // Dataset::new takes OWNED cache and a u32 thread count.
-        let ds = match RandomXDataset::new(flags, cache.inner.clone(), threads) {
-            Ok(d) => d,
-            Err(e) => {
-                if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
-                    tracing::warn!("RandomX large pages allocation failed for dataset; retrying without large pages: {e}");
-                    flags &= !RandomXFlag::FLAG_LARGE_PAGES;
-                    RandomXDataset::new(flags, cache.inner.clone(), threads)?
-                } else {
-                    return Err(e.into());
+        let mut attempt = flags.unwrap_or_else(default_flags);
+
+        let dataset = loop {
+            let ptr = unsafe { randomx_alloc_dataset(attempt.bits()) };
+            if ptr.is_null() {
+                if attempt.contains(RandomXFlag::FLAG_LARGE_PAGES) {
+                    tracing::warn!(
+                        "RandomX large pages allocation failed for dataset; retrying without large pages"
+                    );
+                    attempt &= !RandomXFlag::FLAG_LARGE_PAGES;
+                    continue;
                 }
+                return Err(anyhow!("Could not allocate RandomX dataset"));
             }
+
+            let count = unsafe { randomx_dataset_item_count() };
+            if count == 0 {
+                unsafe { randomx_release_dataset(ptr) };
+                return Err(anyhow!("randomx_dataset_item_count returned 0"));
+            }
+
+            break Dataset {
+                inner: Arc::new(DatasetInner {
+                    ptr,
+                    item_count: count as u64,
+                }),
+                _flags: attempt,
+                _key: cache.key.clone(),
+            };
         };
-        Ok(Dataset {
-            inner: ds,
-            _flags: flags,
-            _key: cache.key.clone(),
-        })
+
+        initialize_dataset_parallel(&dataset, cache, threads)?;
+
+        Ok(dataset)
     }
 
     pub fn new_vm(
@@ -233,79 +359,137 @@ mod engine {
         dataset: Option<&Dataset>,
     ) -> Result<Vm> {
         let flags = flags.unwrap_or_else(default_flags);
-        // VM::new takes OWNED Option<RandomXCache>/<RandomXDataset>.
-        let vm = RandomXVM::new(
-            flags,
-            cache.map(|c| c.inner.clone()),
-            dataset.map(|d| d.inner.clone()),
-        )?;
+        let cache_ptr = cache.map(|c| c.ptr()).unwrap_or(ptr::null_mut());
+        let dataset_ptr = dataset.map(|d| d.ptr()).unwrap_or(ptr::null_mut());
+
+        let ptr = unsafe { randomx_create_vm(flags.bits(), cache_ptr, dataset_ptr) };
+        if ptr.is_null() {
+            return Err(anyhow!("Failed to create RandomX VM"));
+        }
+
         Ok(Vm {
-            inner: vm,
+            ptr,
+            _cache: cache.cloned(),
+            _dataset: dataset.cloned(),
             _flags: flags,
         })
     }
 
-    /// Calculate hash as fixed [u8;32].
     pub fn hash(vm: &Vm, input: &[u8]) -> [u8; 32] {
-        let v = vm.inner.calculate_hash(input).expect("randomx hash failed");
         let mut out = [0u8; 32];
-        out.copy_from_slice(&v); // randomx is always 32 bytes
+        unsafe {
+            randomx_calculate_hash(
+                vm.ptr,
+                input.as_ptr() as *const c_void,
+                input.len(),
+                out.as_mut_ptr() as *mut c_void,
+            );
+        }
         out
     }
 
-    // ------------------------ Thread-local dataset cache ------------------------
-
-    #[derive(Clone)]
-    pub struct Global {
-        pub _flags: RandomXFlag, // intentionally unused (for future)
-        pub key: Vec<u8>,
-        pub cache: Cache,
-        pub dataset: Dataset,
+    struct SharedDataset {
+        key: Vec<u8>,
+        cache: Cache,
+        dataset: Dataset,
     }
 
-    thread_local! {
-        static TLS: RefCell<Option<Global>> = RefCell::new(None);
-    }
-
-    /// Ensure a FULL_MEM dataset exists for this thread + seed key.
-    pub fn ensure_fullmem_dataset(seed_key: &[u8], threads: u32) -> Result<(Cache, Dataset)> {
-        let flags = default_flags();
-
-        // Fast path: same key already built on this thread
-        if let Some(pair) = TLS.with(|cell| {
-            cell.borrow().as_ref().and_then(|g| {
-                if g.key == seed_key {
-                    Some((g.cache.clone(), g.dataset.clone()))
-                } else {
-                    None
-                }
-            })
-        }) {
-            return Ok(pair);
+    impl SharedDataset {
+        fn matches(&self, key: &[u8]) -> bool {
+            self.key.as_slice() == key
         }
 
-        // Miss or key changed: rebuild
+        fn clone_pair(&self) -> (Cache, Dataset) {
+            (self.cache.clone(), self.dataset.clone())
+        }
+    }
+
+    static GLOBAL_DATASET: Lazy<RwLock<Option<SharedDataset>>> = Lazy::new(|| RwLock::new(None));
+
+    pub fn ensure_fullmem_dataset(seed_key: &[u8], threads: u32) -> Result<(Cache, Dataset)> {
+        {
+            let guard = GLOBAL_DATASET.read().expect("dataset lock poisoned");
+            if let Some(shared) = guard.as_ref() {
+                if shared.matches(seed_key) {
+                    return Ok(shared.clone_pair());
+                }
+            }
+        }
+
+        let mut guard = GLOBAL_DATASET.write().expect("dataset lock poisoned");
+        if let Some(shared) = guard.as_ref() {
+            if shared.matches(seed_key) {
+                return Ok(shared.clone_pair());
+            }
+        }
+
+        let flags = default_flags();
         let cache = new_cache(Some(flags), seed_key)?;
         let dataset = new_dataset(Some(flags), &cache, threads)?;
-        TLS.with(|cell| {
-            *cell.borrow_mut() = Some(Global {
-                _flags: flags,
-                key: seed_key.to_vec(),
-                cache: cache.clone(),
-                dataset: dataset.clone(),
-            });
+        *guard = Some(SharedDataset {
+            key: seed_key.to_vec(),
+            cache: cache.clone(),
+            dataset: dataset.clone(),
         });
 
         Ok((cache, dataset))
     }
 
-    /// Convenience: create a VM bound to an existing cache+dataset.
     pub fn create_vm_for_dataset(
         cache: &Cache,
         dataset: &Dataset,
         flags: Option<RandomXFlag>,
     ) -> Result<Vm> {
         new_vm(flags, Some(cache), Some(dataset))
+    }
+
+    fn initialize_dataset_parallel(
+        dataset: &Dataset,
+        cache: &Cache,
+        requested_threads: u32,
+    ) -> Result<()> {
+        let total_items = dataset.item_count();
+        if total_items == 0 {
+            return Ok(());
+        }
+
+        let mut threads = cmp::max(requested_threads as usize, 1);
+        threads = cmp::max(threads, cmp::max(num_cpus::get_physical(), 1));
+        threads = cmp::min(threads, total_items as usize);
+        threads = cmp::max(threads, 1);
+
+        let base = total_items / threads as u64;
+        let remainder = total_items % threads as u64;
+
+        let mut handles = Vec::with_capacity(threads);
+        let mut start = 0u64;
+        for idx in 0..threads {
+            let count = base + if (idx as u64) < remainder { 1 } else { 0 };
+            if count == 0 {
+                continue;
+            }
+            let cache = cache.clone();
+            let dataset = dataset.clone();
+            let start_item = start;
+            start += count;
+
+            let builder = thread::Builder::new()
+                .name(format!("randomx-dataset-init-{idx}"))
+                .stack_size(INIT_STACK_SIZE_BYTES);
+
+            let handle = builder
+                .spawn(move || -> Result<()> { dataset.init_range(&cache, start_item, count) })
+                .map_err(|e| anyhow!("failed to spawn dataset init thread: {e}"))?;
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|e| anyhow!("dataset init thread panicked: {e:?}"))??;
+        }
+
+        Ok(())
     }
 }
 
