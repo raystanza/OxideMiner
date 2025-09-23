@@ -86,10 +86,11 @@ pub fn spawn_workers(
 mod engine {
     use crate::system::{self, RANDOMX_DATASET_BYTES};
     use anyhow::Result;
+    use once_cell::sync::Lazy;
     use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
-    use std::{
-        cell::RefCell,
-        sync::atomic::{AtomicBool, Ordering},
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        RwLock,
     };
 
     // Thin wrappers to mirror the old shape
@@ -100,12 +101,18 @@ mod engine {
         pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
     }
 
+    unsafe impl Send for Cache {}
+    unsafe impl Sync for Cache {}
+
     #[derive(Clone)]
     pub struct Dataset {
         pub(crate) inner: RandomXDataset,
         pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
         pub(crate) _key: Vec<u8>,       // intentionally unused (for future)
     }
+
+    unsafe impl Send for Dataset {}
+    unsafe impl Sync for Dataset {}
 
     pub struct Vm {
         pub(crate) inner: RandomXVM,
@@ -256,44 +263,44 @@ mod engine {
     // ------------------------ Thread-local dataset cache ------------------------
 
     #[derive(Clone)]
-    pub struct Global {
-        pub _flags: RandomXFlag, // intentionally unused (for future)
-        pub key: Vec<u8>,
-        pub cache: Cache,
-        pub dataset: Dataset,
+    struct SharedDataset {
+        requested_flags: RandomXFlag,
+        cache: Cache,
+        dataset: Dataset,
     }
 
-    thread_local! {
-        static TLS: RefCell<Option<Global>> = RefCell::new(None);
-    }
+    static GLOBAL_DATASET: Lazy<RwLock<Option<SharedDataset>>> = Lazy::new(|| RwLock::new(None));
 
-    /// Ensure a FULL_MEM dataset exists for this thread + seed key.
+    /// Ensure a FULL_MEM dataset exists for the given seed key, sharing it across threads.
     pub fn ensure_fullmem_dataset(seed_key: &[u8], threads: u32) -> Result<(Cache, Dataset)> {
-        let flags = default_flags();
+        let requested_flags = default_flags();
 
-        // Fast path: same key already built on this thread
-        if let Some(pair) = TLS.with(|cell| {
-            cell.borrow().as_ref().and_then(|g| {
-                if g.key == seed_key {
-                    Some((g.cache.clone(), g.dataset.clone()))
-                } else {
-                    None
+        {
+            let guard = GLOBAL_DATASET
+                .read()
+                .expect("RandomX dataset cache lock poisoned");
+            if let Some(shared) = guard.as_ref() {
+                if shared.requested_flags == requested_flags && shared.cache.key == seed_key {
+                    return Ok((shared.cache.clone(), shared.dataset.clone()));
                 }
-            })
-        }) {
-            return Ok(pair);
+            }
         }
 
-        // Miss or key changed: rebuild
-        let cache = new_cache(Some(flags), seed_key)?;
-        let dataset = new_dataset(Some(flags), &cache, threads)?;
-        TLS.with(|cell| {
-            *cell.borrow_mut() = Some(Global {
-                _flags: flags,
-                key: seed_key.to_vec(),
-                cache: cache.clone(),
-                dataset: dataset.clone(),
-            });
+        let mut guard = GLOBAL_DATASET
+            .write()
+            .expect("RandomX dataset cache lock poisoned");
+        if let Some(shared) = guard.as_ref() {
+            if shared.requested_flags == requested_flags && shared.cache.key == seed_key {
+                return Ok((shared.cache.clone(), shared.dataset.clone()));
+            }
+        }
+
+        let cache = new_cache(Some(requested_flags), seed_key)?;
+        let dataset = new_dataset(Some(requested_flags), &cache, threads)?;
+        *guard = Some(SharedDataset {
+            requested_flags,
+            cache: cache.clone(),
+            dataset: dataset.clone(),
         });
 
         Ok((cache, dataset))
