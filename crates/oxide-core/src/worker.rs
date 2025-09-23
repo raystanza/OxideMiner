@@ -85,17 +85,32 @@ pub fn spawn_workers(
 #[cfg(feature = "randomx")]
 mod engine {
     use crate::system::{self, RANDOMX_DATASET_BYTES};
-    use anyhow::Result;
+    use anyhow::{anyhow, Result};
+    use once_cell::sync::Lazy;
     use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
-    use std::{
-        cell::RefCell,
-        sync::atomic::{AtomicBool, Ordering},
+    use std::cmp;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        RwLock,
     };
+    use std::thread;
 
     // Thin wrappers to mirror the old shape
     #[derive(Clone)]
+    struct ThreadSafeCache(RandomXCache);
+
+    unsafe impl Send for ThreadSafeCache {}
+    unsafe impl Sync for ThreadSafeCache {}
+
+    impl ThreadSafeCache {
+        fn clone_inner(&self) -> RandomXCache {
+            self.0.clone()
+        }
+    }
+
+    #[derive(Clone)]
     pub struct Cache {
-        pub(crate) inner: RandomXCache,
+        inner: ThreadSafeCache,
         pub(crate) key: Vec<u8>,
         pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
     }
@@ -106,6 +121,13 @@ mod engine {
         pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
         pub(crate) _key: Vec<u8>,       // intentionally unused (for future)
     }
+
+    // RandomX cache/dataset objects are read-only after initialization and may be shared across
+    // threads safely.
+    unsafe impl Send for Cache {}
+    unsafe impl Sync for Cache {}
+    unsafe impl Send for Dataset {}
+    unsafe impl Sync for Dataset {}
 
     pub struct Vm {
         pub(crate) inner: RandomXVM,
@@ -199,32 +221,65 @@ mod engine {
             }
         };
         Ok(Cache {
-            inner: cache,
+            inner: ThreadSafeCache(cache),
             key: key.to_vec(),
             _flags: flags,
         })
     }
 
+    // Windows defaults the main thread to a 1 MiB stack, which is insufficient for RandomX dataset
+    // initialization when large pages are enabled.  Spawn helper threads with a larger stack so the
+    // heavy initialization work happens off the main thread.
+    const DATASET_INIT_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+    fn spawn_dataset_init(
+        flags: RandomXFlag,
+        cache: &Cache,
+        init_threads: usize,
+    ) -> Result<Dataset> {
+        let cache_clone = cache.clone();
+        let thread_name = format!("randomx-dataset-init-{init_threads}");
+        let handle = thread::Builder::new()
+            .name(thread_name)
+            .stack_size(DATASET_INIT_STACK_BYTES)
+            .spawn(move || -> Result<Dataset, randomx_rs::RandomXError> {
+                let dataset = RandomXDataset::new(flags, cache_clone.inner.clone_inner(), 0)?;
+                Ok(Dataset {
+                    inner: dataset,
+                    _flags: flags,
+                    _key: cache_clone.key.clone(),
+                })
+            })
+            .map_err(|e| anyhow!("failed to spawn dataset init thread: {e}"))?;
+
+        let result = handle
+            .join()
+            .map_err(|e| anyhow!("dataset init thread panicked: {e:?}"))?;
+
+        Ok(result?)
+    }
+
     pub fn new_dataset(flags: Option<RandomXFlag>, cache: &Cache, threads: u32) -> Result<Dataset> {
         let mut flags = flags.unwrap_or_else(default_flags);
-        // Dataset::new takes OWNED cache and a u32 thread count.
-        let ds = match RandomXDataset::new(flags, cache.inner.clone(), threads) {
+        let requested = usize::try_from(threads.max(1)).unwrap_or(1);
+        let init_threads = cmp::max(requested, num_cpus::get_physical());
+
+        let ds = match spawn_dataset_init(flags, cache, init_threads) {
             Ok(d) => d,
-            Err(e) => {
+            Err(first_err) => {
                 if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
-                    tracing::warn!("RandomX large pages allocation failed for dataset; retrying without large pages: {e}");
+                    tracing::warn!(
+                        "RandomX large pages allocation failed for dataset; retrying without large pages: {first_err}"
+                    );
                     flags &= !RandomXFlag::FLAG_LARGE_PAGES;
-                    RandomXDataset::new(flags, cache.inner.clone(), threads)?
+                    spawn_dataset_init(flags, cache, init_threads)?
                 } else {
-                    return Err(e.into());
+                    return Err(first_err);
                 }
             }
         };
-        Ok(Dataset {
-            inner: ds,
-            _flags: flags,
-            _key: cache.key.clone(),
-        })
+
+        Ok(ds)
     }
 
     pub fn new_vm(
@@ -236,7 +291,7 @@ mod engine {
         // VM::new takes OWNED Option<RandomXCache>/<RandomXDataset>.
         let vm = RandomXVM::new(
             flags,
-            cache.map(|c| c.inner.clone()),
+            cache.map(|c| c.inner.clone_inner()),
             dataset.map(|d| d.inner.clone()),
         )?;
         Ok(Vm {
@@ -255,45 +310,49 @@ mod engine {
 
     // ------------------------ Thread-local dataset cache ------------------------
 
-    #[derive(Clone)]
-    pub struct Global {
-        pub _flags: RandomXFlag, // intentionally unused (for future)
-        pub key: Vec<u8>,
-        pub cache: Cache,
-        pub dataset: Dataset,
+    struct SharedDataset {
+        key: Vec<u8>,
+        cache: Cache,
+        dataset: Dataset,
     }
 
-    thread_local! {
-        static TLS: RefCell<Option<Global>> = RefCell::new(None);
-    }
-
-    /// Ensure a FULL_MEM dataset exists for this thread + seed key.
-    pub fn ensure_fullmem_dataset(seed_key: &[u8], threads: u32) -> Result<(Cache, Dataset)> {
-        let flags = default_flags();
-
-        // Fast path: same key already built on this thread
-        if let Some(pair) = TLS.with(|cell| {
-            cell.borrow().as_ref().and_then(|g| {
-                if g.key == seed_key {
-                    Some((g.cache.clone(), g.dataset.clone()))
-                } else {
-                    None
-                }
-            })
-        }) {
-            return Ok(pair);
+    impl SharedDataset {
+        fn matches(&self, key: &[u8]) -> bool {
+            self.key.as_slice() == key
         }
 
-        // Miss or key changed: rebuild
+        fn clone_pair(&self) -> (Cache, Dataset) {
+            (self.cache.clone(), self.dataset.clone())
+        }
+    }
+
+    static GLOBAL_DATASET: Lazy<RwLock<Option<SharedDataset>>> = Lazy::new(|| RwLock::new(None));
+
+    /// Ensure a FULL_MEM dataset exists for this process + seed key.
+    pub fn ensure_fullmem_dataset(seed_key: &[u8], threads: u32) -> Result<(Cache, Dataset)> {
+        {
+            let guard = GLOBAL_DATASET.read().expect("dataset lock poisoned");
+            if let Some(shared) = guard.as_ref() {
+                if shared.matches(seed_key) {
+                    return Ok(shared.clone_pair());
+                }
+            }
+        }
+
+        let mut guard = GLOBAL_DATASET.write().expect("dataset lock poisoned");
+        if let Some(shared) = guard.as_ref() {
+            if shared.matches(seed_key) {
+                return Ok(shared.clone_pair());
+            }
+        }
+
+        let flags = default_flags();
         let cache = new_cache(Some(flags), seed_key)?;
         let dataset = new_dataset(Some(flags), &cache, threads)?;
-        TLS.with(|cell| {
-            *cell.borrow_mut() = Some(Global {
-                _flags: flags,
-                key: seed_key.to_vec(),
-                cache: cache.clone(),
-                dataset: dataset.clone(),
-            });
+        *guard = Some(SharedDataset {
+            key: seed_key.to_vec(),
+            cache: cache.clone(),
+            dataset: dataset.clone(),
         });
 
         Ok((cache, dataset))
