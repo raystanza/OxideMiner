@@ -13,13 +13,13 @@ use std::{mem, ptr, slice};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS,
-        ERROR_NOT_ALL_ASSIGNED, HANDLE, LUID,
+        CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_ALL_ASSIGNED,
+        ERROR_SUCCESS, HANDLE, LUID,
     },
     Security::{
         AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, TokenPrivileges,
-        LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, SE_LOCK_MEMORY_NAME,
-        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+        LUID_AND_ATTRIBUTES, SE_LOCK_MEMORY_NAME, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES,
+        TOKEN_PRIVILEGES, TOKEN_QUERY,
     },
     System::{
         Memory::GetLargePageMinimum,
@@ -183,7 +183,8 @@ fn enable_lock_memory_privilege() -> bool {
             GetCurrentProcess(),
             TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
             &mut token,
-        ) == 0 {
+        ) == 0
+        {
             return false;
         }
 
@@ -209,7 +210,8 @@ fn enable_lock_memory_privilege() -> bool {
             0,
             ptr::null_mut(),
             ptr::null_mut(),
-        ) == 0 {
+        ) == 0
+        {
             let _ = CloseHandle(token);
             return false; // API call failed
         }
