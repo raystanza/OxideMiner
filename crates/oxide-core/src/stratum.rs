@@ -128,7 +128,8 @@ impl StratumClient {
                             client.session_id = Some(id.to_string());
                         }
                         if let Some(job_val) = obj.get("job") {
-                            if let Ok(mut job) = serde_json::from_value::<PoolJob>(job_val.clone()) {
+                            if let Ok(mut job) = serde_json::from_value::<PoolJob>(job_val.clone())
+                            {
                                 job.cache_target();
                                 tracing::info!("initial job (in login result)");
                                 break Some(job);
@@ -242,7 +243,11 @@ impl StratumClient {
     async fn read_line(&mut self) -> Result<String> {
         let mut buf = String::new();
         let n = self.reader.read_line(&mut buf).await?;
-        if n == 0 { Ok(String::new()) } else { Ok(buf) }
+        if n == 0 {
+            Ok(String::new())
+        } else {
+            Ok(buf)
+        }
     }
 }
 
@@ -253,11 +258,17 @@ mod tests {
 
     #[test]
     fn request_ids_increment() {
-        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> =
-            BufReader::with_capacity(4096, Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>);
-        let writer: Box<dyn io::AsyncWrite + Unpin + Send> =
-            Box::new(io::sink());
-        let mut client = StratumClient { reader, writer, session_id: None, next_req_id: 1 };
+        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> = BufReader::with_capacity(
+            4096,
+            Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>,
+        );
+        let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(io::sink());
+        let mut client = StratumClient {
+            reader,
+            writer,
+            session_id: None,
+            next_req_id: 1,
+        };
         assert_eq!(client.take_req_id(), 1);
         assert_eq!(client.take_req_id(), 2);
     }
@@ -265,10 +276,17 @@ mod tests {
     #[tokio::test]
     async fn send_line_appends_newline() {
         let (write_half, mut read_half) = io::duplex(64);
-        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> =
-            BufReader::with_capacity(4096, Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>);
+        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> = BufReader::with_capacity(
+            4096,
+            Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>,
+        );
         let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(write_half);
-        let mut client = StratumClient { reader, writer, session_id: None, next_req_id: 1 };
+        let mut client = StratumClient {
+            reader,
+            writer,
+            session_id: None,
+            next_req_id: 1,
+        };
         client.send_line("ping".into()).await.unwrap();
         let mut buf = [0u8; 5];
         read_half.read_exact(&mut buf).await.unwrap();
@@ -281,10 +299,17 @@ mod tests {
         tokio::spawn(async move {
             write_side.write_all(b"garbage\n{\"a\":1}\n").await.unwrap();
         });
-        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> =
-            BufReader::with_capacity(4096, Box::new(read_side) as Box<dyn io::AsyncRead + Unpin + Send>);
+        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> = BufReader::with_capacity(
+            4096,
+            Box::new(read_side) as Box<dyn io::AsyncRead + Unpin + Send>,
+        );
         let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(io::sink());
-        let mut client = StratumClient { reader, writer, session_id: None, next_req_id: 1 };
+        let mut client = StratumClient {
+            reader,
+            writer,
+            session_id: None,
+            next_req_id: 1,
+        };
         let v = client.read_json().await.unwrap();
         assert_eq!(v.get("a").and_then(|x| x.as_u64()), Some(1));
     }

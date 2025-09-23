@@ -21,7 +21,7 @@ pub async fn run_benchmark(
     batch_size: usize,
     yield_between_batches: bool,
 ) -> Result<f64> {
-    set_large_pages(large_pages);
+    let _ = set_large_pages(large_pages);
     let duration = Duration::from_secs(seconds);
     let threads_u32 = threads as u32;
 

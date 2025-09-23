@@ -3,8 +3,8 @@
 mod args;
 mod http_api;
 mod miner;
-mod util;
 mod stats;
+mod util;
 
 use anyhow::Result;
 use args::Args;

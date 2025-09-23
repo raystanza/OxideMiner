@@ -7,7 +7,7 @@ use crate::util::tiny_jitter_ms;
 use anyhow::Result;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
-    autotune_snapshot, cpu_has_aes, huge_pages_enabled, spawn_workers, Config, DevFeeScheduler,
+    autotune_snapshot, cpu_has_aes, spawn_workers, Config, DevFeeScheduler, HugePageStatus,
     StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::collections::{HashMap, HashSet};
@@ -62,13 +62,13 @@ pub async fn run(args: Args) -> Result<()> {
     // ----------------------------------------------------------
 
     if args.benchmark {
-        let hp_supported = huge_pages_enabled();
-        if args.huge_pages && !hp_supported {
-            tracing::warn!("Huge pages are NOT enabled; RandomX performance may be reduced.");
-        }
         let snap = autotune_snapshot();
+        let hp_status = snap.huge_page_status.clone();
+        if args.huge_pages && !hp_status.dataset_fits(snap.dataset_bytes) {
+            warn_huge_page_limit(&hp_status, snap.dataset_bytes);
+        }
         let n_workers = args.threads.unwrap_or(snap.suggested_threads);
-        let large_pages = args.huge_pages && hp_supported;
+        let large_pages = args.huge_pages && hp_status.dataset_fits(snap.dataset_bytes);
         tracing::info!(
             "benchmark: threads={} batch_size={} large_pages={} yield={}",
             n_workers,
@@ -100,17 +100,12 @@ pub async fn run(args: Args) -> Result<()> {
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
     };
 
-    // Detect huge/large pages and warn once if not present
-    let hp_supported = huge_pages_enabled();
-    if !hp_supported {
-        tracing::warn!(
-            "Huge pages are NOT enabled; RandomX performance may be reduced. \
-            Linux: configure vm.nr_hugepages; Windows: enable 'Lock pages in memory' and Large Pages."
-        );
-    }
-
     // Take snapshot to log how auto-tune decided thread count
     let snap = autotune_snapshot();
+    let hp_status = snap.huge_page_status.clone();
+    if !hp_status.enabled() {
+        warn_huge_page_limit(&hp_status, snap.dataset_bytes);
+    }
     let auto_threads = snap.suggested_threads;
     let n_workers = cfg.threads.unwrap_or(auto_threads);
 
@@ -120,7 +115,10 @@ pub async fn run(args: Args) -> Result<()> {
     let aes = cpu_has_aes();
 
     // If spawn call passes a 'large_pages' boolean, prefer user opt-in AND OS support
-    let large_pages = cfg.huge_pages && hp_supported;
+    let large_pages = cfg.huge_pages && hp_status.dataset_fits(snap.dataset_bytes);
+    if cfg.huge_pages && !large_pages && hp_status.enabled() {
+        warn_huge_page_limit(&hp_status, snap.dataset_bytes);
+    }
 
     if let Some(user_t) = cfg.threads {
         tracing::info!(
@@ -149,10 +147,6 @@ pub async fn run(args: Args) -> Result<()> {
     let (jobs_tx, _jobs_rx0) = tokio::sync::broadcast::channel(64);
     // MPSC: shares <- workers
     let (shares_tx, mut shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
-
-    if !huge_pages_enabled() {
-        tracing::warn!("huge pages are not enabled; mining performance may be reduced");
-    }
 
     if cfg.threads.is_none() {
         tracing::info!("auto-selected {} worker threads", n_workers);
@@ -418,4 +412,30 @@ pub async fn run(args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn warn_huge_page_limit(status: &HugePageStatus, dataset_bytes: u64) {
+    if !status.supported {
+        tracing::warn!(
+            "Huge pages are NOT enabled; RandomX performance may be reduced. \
+            Linux: configure vm.nr_hugepages; Windows: enable 'Lock pages in memory' and Large Pages."
+        );
+    } else if !status.has_privilege {
+        tracing::warn!(
+            "Huge pages support detected but the current process lacks permission. \
+            Windows: grant the 'Lock pages in memory' privilege to the user running OxideMiner."
+        );
+    } else if !status.enabled() {
+        tracing::warn!(
+            "Huge pages are configured but no free huge pages are available. \
+            Reserve huge pages via vm.nr_hugepages before starting the miner."
+        );
+    } else if !status.dataset_fits(dataset_bytes) {
+        let free = status.free_bytes.unwrap_or(0);
+        tracing::warn!(
+            free_bytes = free,
+            required_bytes = dataset_bytes,
+            "Huge page pool is too small for the RandomX dataset; continuing without huge pages",
+        );
+    }
 }

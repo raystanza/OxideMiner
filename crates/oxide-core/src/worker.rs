@@ -1,7 +1,10 @@
 // OxideMiner/crates/oxide-core/src/worker.rs
 
 use anyhow::Result;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 
@@ -33,7 +36,7 @@ pub fn spawn_workers(
     hash_counter: Arc<AtomicU64>,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     #[cfg(feature = "randomx")]
-    engine::set_large_pages(large_pages);
+    let _ = engine::set_large_pages(large_pages);
     let core_ids = if affinity {
         core_affinity::get_core_ids()
     } else {
@@ -81,7 +84,7 @@ pub fn spawn_workers(
 
 #[cfg(feature = "randomx")]
 mod engine {
-    use crate::system;
+    use crate::system::{self, RANDOMX_DATASET_BYTES};
     use anyhow::Result;
     use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
     use std::{
@@ -115,8 +118,56 @@ mod engine {
     // randomx-rs exposes FLAG_* constants.
     static LARGE_PAGES: AtomicBool = AtomicBool::new(false);
 
-    pub fn set_large_pages(enable: bool) {
-        LARGE_PAGES.store(enable, Ordering::Relaxed);
+    pub fn set_large_pages(enable: bool) -> bool {
+        if !enable {
+            LARGE_PAGES.store(false, Ordering::Relaxed);
+            return false;
+        }
+
+        let mut status = system::huge_page_status();
+        if !status.supported {
+            tracing::warn!("Large pages requested but the operating system does not report support; continuing without them");
+            LARGE_PAGES.store(false, Ordering::Relaxed);
+            return false;
+        }
+
+        if !status.has_privilege {
+            if !system::enable_large_page_privilege() {
+                tracing::warn!("Large pages requested but unable to enable required privileges; continuing without large pages");
+                LARGE_PAGES.store(false, Ordering::Relaxed);
+                return false;
+            }
+            status = system::huge_page_status();
+        }
+
+        if !status.enabled() {
+            let free = status.free_bytes.unwrap_or(0);
+            tracing::warn!(
+                free_bytes = free,
+                "Large pages requested but none are currently available; continuing without large pages",
+            );
+            LARGE_PAGES.store(false, Ordering::Relaxed);
+            return false;
+        }
+
+        if !status.dataset_fits(RANDOMX_DATASET_BYTES) {
+            let free = status.free_bytes.unwrap_or(0);
+            tracing::warn!(
+                free_bytes = free,
+                required_bytes = RANDOMX_DATASET_BYTES,
+                "Large pages requested but available huge pages cannot accommodate the RandomX dataset; continuing without large pages",
+            );
+            LARGE_PAGES.store(false, Ordering::Relaxed);
+            return false;
+        }
+
+        LARGE_PAGES.store(true, Ordering::Relaxed);
+        if let Some(page) = status.page_size_bytes {
+            tracing::info!(page_size_bytes = page, "RandomX large pages enabled",);
+        } else {
+            tracing::info!("RandomX large pages enabled");
+        }
+        true
     }
 
     fn default_flags() -> RandomXFlag {
@@ -444,15 +495,24 @@ fn meets_target(hash: &[u8; 32], job: &PoolJob) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{atomic::AtomicU64, Arc};
     use tokio::sync::{broadcast, mpsc};
-    use std::sync::{Arc, atomic::AtomicU64};
 
     #[tokio::test]
     async fn spawns_correct_number_of_workers() {
         let (jobs_tx, _jobs_rx) = broadcast::channel(1);
         let (shares_tx, _shares_rx) = mpsc::unbounded_channel();
         let hash_counter = Arc::new(AtomicU64::new(0));
-        let handles = spawn_workers(3, jobs_tx, shares_tx, false, false, 10_000, true, hash_counter);
+        let handles = spawn_workers(
+            3,
+            jobs_tx,
+            shares_tx,
+            false,
+            false,
+            10_000,
+            true,
+            hash_counter,
+        );
         assert_eq!(handles.len(), 3);
         for h in handles {
             h.abort();
