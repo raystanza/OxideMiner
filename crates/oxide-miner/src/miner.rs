@@ -12,7 +12,38 @@ use oxide_core::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{atomic::Ordering, Arc};
+use tokio::time::Instant;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+const DEV_RETRY_INITIAL_MS: u64 = 5_000;
+const DEV_RETRY_MAX_MS: u64 = 60_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActivePool {
+    User,
+    Dev,
+}
+
+impl ActivePool {
+    #[inline]
+    fn is_dev(self) -> bool {
+        matches!(self, ActivePool::Dev)
+    }
+
+    #[inline]
+    fn as_str(self) -> &'static str {
+        match self {
+            ActivePool::User => "user",
+            ActivePool::Dev => "devfee",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PendingShare {
+    is_devfee: bool,
+    job_id: String,
+}
 
 pub async fn run(args: Args) -> Result<()> {
     // Prefer RUST_LOG if set; otherwise use --debug to bump verbosity.
@@ -235,18 +266,25 @@ pub async fn run(args: Args) -> Result<()> {
                 // Track seen nonces per job to prevent duplicates.
                 let mut seen_nonces: HashMap<String, HashSet<u32>> = HashMap::new();
 
-                if let Some(job) = initial_job {
+                let mut dev_scheduler = DevFeeScheduler::new();
+                let mut active_pool = ActivePool::User;
+                let mut pending_shares: HashMap<u64, PendingShare> = HashMap::new();
+                let mut dev_share_in_flight = false;
+                let mut next_dev_attempt: Option<Instant> = None;
+                let mut dev_retry_ms = DEV_RETRY_INITIAL_MS;
+
+                if let Some(mut job) = initial_job {
+                    job.cache_target();
                     let id = job.job_id.clone();
+                    if enable_devfee {
+                        let _ = dev_scheduler.record_job(false);
+                    }
                     let _ = jobs_tx.send(WorkItem {
                         job,
                         is_devfee: false,
                     });
-                    // Seed valid job ids with the login job
                     valid_job_ids.insert(id);
                 }
-
-                let mut devfee = DevFeeScheduler::new();
-                let mut using_dev = false;
 
                 loop {
                     tokio::select! {
@@ -255,19 +293,16 @@ pub async fn run(args: Args) -> Result<()> {
                         maybe_share = shares_rx.recv() => {
                             match maybe_share {
                                 Some(share) => {
-                                    // Drop stale shares whose job_id is no longer valid for this session.
                                     if !valid_job_ids.contains(&share.job_id) {
                                         tracing::debug!(job_id = %share.job_id, "dropping stale share (invalid job_id for current session)");
                                         continue;
                                     }
-                                    // Drop duplicates for the same (job_id, nonce)
                                     let entry = seen_nonces.entry(share.job_id.clone()).or_default();
                                     if !entry.insert(share.nonce) {
                                         tracing::debug!(job_id = %share.job_id, nonce = share.nonce, "dropping duplicate share (already submitted)");
                                         continue;
                                     }
-                                    // Submit LE nonce (8 hex) and LE result (64 hex)
-                                    let nonce_hex  = hex::encode(share.nonce.to_le_bytes());
+                                    let nonce_hex = hex::encode(share.nonce.to_le_bytes());
                                     let result_hex = hex::encode(share.result);
 
                                     tracing::debug!(
@@ -278,37 +313,32 @@ pub async fn run(args: Args) -> Result<()> {
                                         "submit_share"
                                     );
 
-                                    if let Err(e) = client.submit_share(&share.job_id, &nonce_hex, &result_hex).await {
-                                        tracing::error!("submit_share error: {e}");
-                                    }
-
-                                    // After dev fee share, reconnect with user wallet
-                                    if share.is_devfee && using_dev {
-                                        match StratumClient::connect_and_login(&main_pool, &user_wallet, &pass, &agent, tls).await {
-                                            Ok((nc, job_opt)) => {
-                                                client = nc;
-                                                using_dev = false;
-                                                // New session: reset valid job ids and dedupe state
-                                                valid_job_ids.clear();
-                                                seen_nonces.clear();
-                                                if let Some(job) = job_opt {
-                                                    let id = job.job_id.clone();
-                                                    let _ = jobs_tx.send(WorkItem { job, is_devfee: false });
-                                                    valid_job_ids.insert(id);
-                                                }
+                                    match client.submit_share(&share.job_id, &nonce_hex, &result_hex).await {
+                                        Ok(req_id) => {
+                                            pending_shares.insert(req_id, PendingShare {
+                                                is_devfee: share.is_devfee,
+                                                job_id: share.job_id.clone(),
+                                            });
+                                            if share.is_devfee {
+                                                dev_share_in_flight = true;
+                                                tracing::info!(
+                                                    job_id = %share.job_id,
+                                                    request_id = req_id,
+                                                    "devfee share submitted"
+                                                );
                                             }
-                                            Err(e) => {
-                                                tracing::warn!("reconnect failed (devfee -> user): {e}");
-                                                sleep(Duration::from_millis(tiny_jitter_ms())).await;
-                                                stats.pool_connected.store(false, Ordering::Relaxed);
-                                                break; // break inner loop -> reconnect
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("submit_share error: {e}");
+                                            if share.is_devfee {
+                                                dev_share_in_flight = false;
                                             }
                                         }
                                     }
                                 }
                                 None => {
                                     tracing::warn!("shares channel closed (no workers alive); stopping pool task to avoid reconnect storm");
-                                    return; // end the pool task instead of reconnecting
+                                    return;
                                 }
                             }
                         }
@@ -317,70 +347,173 @@ pub async fn run(args: Args) -> Result<()> {
                         msg = client.read_json() => {
                             match msg {
                                 Ok(v) => {
-                                    if v.get("method").and_then(|m| m.as_str()) == Some("job") {
-                                        // dev fee scheduling: occasionally reconnect with dev wallet
-                                        if enable_devfee && !using_dev && devfee.should_donate() {
-                                            match StratumClient::connect_and_login(&main_pool, DEV_WALLET_ADDRESS, &pass, &agent, tls).await {
-                                                Ok((dc, job_opt)) => {
-                                                    client = dc;
-                                                    using_dev = true;
-                                                    // New session: reset valid job ids and dedupe state
-                                                    valid_job_ids.clear();
-                                                    seen_nonces.clear();
-                                                    if let Some(job) = job_opt {
-                                                        let id = job.job_id.clone();
-                                                        let _ = jobs_tx.send(WorkItem { job, is_devfee: true });
-                                                        valid_job_ids.insert(id);
+                                    if let Some(id) = v.get("id").and_then(|x| x.as_u64()) {
+                                        if let Some(pending) = pending_shares.remove(&id) {
+                                            let accepted = v.get("result")
+                                                .map(|res| res.get("status").and_then(|s| s.as_str()) == Some("OK")
+                                                    || res.as_bool() == Some(true))
+                                                .unwrap_or(false);
+                                            if accepted {
+                                                if pending.is_devfee {
+                                                    let total = stats.dev_accepted.fetch_add(1, Ordering::Relaxed) + 1;
+                                                    tracing::info!(
+                                                        job_id = %pending.job_id,
+                                                        total_dev = total,
+                                                        "devfee share accepted"
+                                                    );
+                                                } else {
+                                                    let total = stats.accepted.fetch_add(1, Ordering::Relaxed) + 1;
+                                                    tracing::info!(
+                                                        job_id = %pending.job_id,
+                                                        total_user = total,
+                                                        "share accepted"
+                                                    );
+                                                }
+                                            } else if let Some(err) = v.get("error") {
+                                                if pending.is_devfee {
+                                                    let total = stats.dev_rejected.fetch_add(1, Ordering::Relaxed) + 1;
+                                                    tracing::warn!(
+                                                        job_id = %pending.job_id,
+                                                        total_dev = total,
+                                                        error = %err,
+                                                        "devfee share rejected"
+                                                    );
+                                                } else {
+                                                    let total = stats.rejected.fetch_add(1, Ordering::Relaxed) + 1;
+                                                    tracing::warn!(
+                                                        job_id = %pending.job_id,
+                                                        total_user = total,
+                                                        error = %err,
+                                                        "share rejected"
+                                                    );
+                                                }
+                                            }
+
+                                            if pending.is_devfee {
+                                                dev_share_in_flight = false;
+                                                pending_shares.clear();
+                                                let reconnect = StratumClient::connect_and_login(
+                                                    &main_pool,
+                                                    &user_wallet,
+                                                    &pass,
+                                                    &agent,
+                                                    tls,
+                                                ).await;
+                                                match reconnect {
+                                                    Ok((nc, job_opt)) => {
+                                                        client = nc;
+                                                        active_pool = ActivePool::User;
+                                                        stats.pool_connected.store(true, Ordering::Relaxed);
+                                                        valid_job_ids.clear();
+                                                        seen_nonces.clear();
+                                                        dev_retry_ms = DEV_RETRY_INITIAL_MS;
+                                                        next_dev_attempt = None;
+
+                                                        if let Some(mut job) = job_opt {
+                                                            job.cache_target();
+                                                            let id = job.job_id.clone();
+                                                            if enable_devfee {
+                                                                let _ = dev_scheduler.record_job(false);
+                                                            }
+                                                            let _ = jobs_tx.send(WorkItem { job, is_devfee: false });
+                                                            valid_job_ids.insert(id);
+                                                        }
+                                                        tracing::info!("returned to user pool after devfee share");
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!("reconnect failed (devfee -> user): {e}");
+                                                        stats.pool_connected.store(false, Ordering::Relaxed);
+                                                        sleep(Duration::from_millis(tiny_jitter_ms())).await;
+                                                        break;
                                                     }
                                                 }
-                                                Err(e) => tracing::warn!("devfee connect failed: {e}"),
                                             }
-                                        } else if let Some(params) = v.get("params") {
+
+                                            continue;
+                                        }
+                                    }
+
+                                    if v.get("method").and_then(|m| m.as_str()) == Some("job") {
+                                        if let Some(params) = v.get("params") {
                                             if let Ok(mut job) = serde_json::from_value::<oxide_core::stratum::PoolJob>(params.clone()) {
                                                 job.cache_target();
-                                                // Update valid job ids set: when clean_jobs=true, replace; else, add.
                                                 let clean = params.get("clean_jobs").and_then(|x| x.as_bool()).unwrap_or(true);
+                                                let is_dev_session = active_pool.is_dev();
+                                                let donation_due = if enable_devfee {
+                                                    dev_scheduler.record_job(is_dev_session)
+                                                } else {
+                                                    false
+                                                };
+                                                let jobs_since_last = dev_scheduler.jobs_since_last();
+
+                                                let mut switched = false;
+                                                if donation_due && enable_devfee && !is_dev_session && !dev_share_in_flight && pending_shares.is_empty() {
+                                                    let now = Instant::now();
+                                                    if next_dev_attempt.map_or(true, |when| now >= when) {
+                                                        tracing::debug!(
+                                                            job_id = %job.job_id,
+                                                            jobs_since_last,
+                                                            "devfee threshold reached; attempting switch"
+                                                        );
+                                                        match StratumClient::connect_and_login(&main_pool, DEV_WALLET_ADDRESS, &pass, &agent, tls).await {
+                                                            Ok((dc, job_opt)) => {
+                                                                tracing::info!(
+                                                                    job_id = %job.job_id,
+                                                                    jobs_since_last,
+                                                                    "devfee activated; switching pools"
+                                                                );
+                                                                client = dc;
+                                                                active_pool = ActivePool::Dev;
+                                                                dev_scheduler.mark_donation_started();
+                                                                dev_share_in_flight = false;
+                                                                dev_retry_ms = DEV_RETRY_INITIAL_MS;
+                                                                next_dev_attempt = None;
+                                                                valid_job_ids.clear();
+                                                                seen_nonces.clear();
+                                                                pending_shares.clear();
+
+                                                                if let Some(mut dev_job) = job_opt {
+                                                                    dev_job.cache_target();
+                                                                    let id = dev_job.job_id.clone();
+                                                                    if enable_devfee {
+                                                                        let _ = dev_scheduler.record_job(true);
+                                                                    }
+                                                                    let _ = jobs_tx.send(WorkItem { job: dev_job, is_devfee: true });
+                                                                    valid_job_ids.insert(id.clone());
+                                                                    tracing::info!(job_id = %id, "devfee activated for job");
+                                                                }
+                                                                switched = true;
+                                                            }
+                                                            Err(e) => {
+                                                                tracing::warn!("devfee connect failed: {e}");
+                                                                let backoff = Duration::from_millis(dev_retry_ms);
+                                                                next_dev_attempt = Some(now + backoff);
+                                                                dev_retry_ms = (dev_retry_ms.saturating_mul(2)).min(DEV_RETRY_MAX_MS);
+                                                            }
+                                                        }
+                                                    } else {
+                                                        tracing::debug!("devfee activation deferred due to retry backoff");
+                                                    }
+                                                }
+
+                                                if switched {
+                                                    continue;
+                                                }
+
                                                 if clean {
                                                     valid_job_ids.clear();
                                                     seen_nonces.clear();
                                                 }
-                                                valid_job_ids.insert(job.job_id.clone());
-                                                let _ = jobs_tx.send(WorkItem { job, is_devfee: using_dev });
+                                                let id = job.job_id.clone();
+                                                valid_job_ids.insert(id.clone());
+                                                let is_dev_job = active_pool.is_dev();
+                                                if enable_devfee && is_dev_job {
+                                                    let _ = dev_scheduler.record_job(true);
+                                                }
+                                                let _ = jobs_tx.send(WorkItem { job, is_devfee: is_dev_job });
+                                                tracing::debug!(job_id = %id, pool = active_pool.as_str(), clean, "job broadcast");
                                             }
                                         }
-                                        continue;
-                                    }
-
-                                    // Submit responses
-                                    if let Some(res) = v.get("result") {
-                                        let ok = res.get("status").and_then(|s| s.as_str()) == Some("OK")
-                                            || res.as_bool() == Some(true);
-                                        if ok {
-                                            if using_dev {
-                                                stats.dev_accepted.fetch_add(1, Ordering::Relaxed);
-                                            } else {
-                                                stats.accepted.fetch_add(1, Ordering::Relaxed);
-                                            }
-                                            tracing::info!(
-                                                accepted = stats.accepted.load(Ordering::Relaxed),
-                                                rejected = stats.rejected.load(Ordering::Relaxed),
-                                                "share accepted"
-                                            );
-                                            continue;
-                                        }
-                                    }
-                                    if let Some(err) = v.get("error") {
-                                        if using_dev {
-                                            stats.dev_rejected.fetch_add(1, Ordering::Relaxed);
-                                        } else {
-                                        stats.rejected.fetch_add(1, Ordering::Relaxed);
-                                        }
-                                        tracing::warn!(
-                                            accepted = stats.accepted.load(Ordering::Relaxed),
-                                            rejected = stats.rejected.load(Ordering::Relaxed),
-                                            error = %err,
-                                            "share rejected"
-                                        );
                                         continue;
                                     }
                                 }
@@ -388,7 +521,7 @@ pub async fn run(args: Args) -> Result<()> {
                                     tracing::error!("pool read error: {e}; reconnecting");
                                     sleep(Duration::from_millis(tiny_jitter_ms())).await;
                                     stats.pool_connected.store(false, Ordering::Relaxed);
-                                    break; // break inner loop -> reconnect
+                                    break;
                                 }
                             }
                         }
