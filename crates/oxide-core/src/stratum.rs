@@ -196,7 +196,7 @@ impl StratumClient {
         job_id: &str,
         nonce_hex: &str,
         result_hex: &str,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let sid = self
             .session_id
             .clone()
@@ -208,6 +208,7 @@ impl StratumClient {
             job_id = job_id,
             nonce_hex = nonce_hex,
             result_hex = result_hex,
+            req_id,
             "submit_share"
         );
 
@@ -224,7 +225,7 @@ impl StratumClient {
         });
 
         self.send_line(submit.to_string()).await?;
-        Ok(())
+        Ok(req_id)
     }
 
     fn take_req_id(&mut self) -> u64 {
