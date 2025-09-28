@@ -1,11 +1,12 @@
 // OxideMiner/crates/oxide-core/src/worker.rs
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::stratum::PoolJob;
@@ -372,6 +373,30 @@ mod engine {
 pub use engine::{create_vm_for_dataset, ensure_fullmem_dataset, hash, set_large_pages};
 
 #[cfg(feature = "randomx")]
+enum WorkSignal {
+    None,
+    New(WorkItem),
+    Resync,
+}
+
+#[cfg(feature = "randomx")]
+fn poll_for_work(rx: &mut broadcast::Receiver<WorkItem>, worker_id: usize) -> Result<WorkSignal> {
+    match rx.try_recv() {
+        Ok(item) => Ok(WorkSignal::New(item)),
+        Err(TryRecvError::Empty) => Ok(WorkSignal::None),
+        Err(TryRecvError::Lagged(skipped)) => {
+            tracing::warn!(
+                worker = worker_id,
+                skipped,
+                "worker lagged behind job broadcasts; resyncing to latest job"
+            );
+            Ok(WorkSignal::Resync)
+        }
+        Err(TryRecvError::Closed) => Err(anyhow!("job channel closed")),
+    }
+}
+
+#[cfg(feature = "randomx")]
 async fn randomx_worker_loop(
     worker_id: usize,
     worker_count: usize,
@@ -445,16 +470,36 @@ async fn randomx_worker_loop(
                 % 0xFFFF_0000);
 
         'mine: loop {
-            if let Ok(next) = rx.try_recv() {
-                work = Some(next);
-                break 'mine;
+            match poll_for_work(rx, worker_id)? {
+                WorkSignal::New(next) => {
+                    work = Some(next);
+                    break 'mine;
+                }
+                WorkSignal::Resync => {
+                    work = None;
+                    break 'mine;
+                }
+                WorkSignal::None => {}
             }
             let vm_ref = vm.as_ref().expect("vm initialized");
             let mut need_yield = false;
+            let mut job_switch: Option<WorkItem> = None;
+            let mut resync_requested = false;
             {
                 let vm = vm_ref;
                 let mut local_hashes: u64 = 0;
                 for i in 0..batch_size {
+                    match poll_for_work(rx, worker_id)? {
+                        WorkSignal::New(next) => {
+                            job_switch = Some(next);
+                            break;
+                        }
+                        WorkSignal::Resync => {
+                            resync_requested = true;
+                            break;
+                        }
+                        WorkSignal::None => {}
+                    }
                     put_u32_le(&mut blob, 39, nonce);
                     let digest = hash(vm, &blob);
                     local_hashes += 1;
@@ -493,6 +538,14 @@ async fn randomx_worker_loop(
                     }
                 }
                 hash_counter.fetch_add(local_hashes, Ordering::Relaxed);
+            }
+            if resync_requested {
+                work = None;
+                break 'mine;
+            }
+            if let Some(next) = job_switch {
+                work = Some(next);
+                break 'mine;
             }
             if need_yield || yield_between_batches {
                 tokio::task::yield_now().await;
