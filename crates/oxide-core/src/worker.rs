@@ -1,6 +1,6 @@
 // OxideMiner/crates/oxide-core/src/worker.rs
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -382,6 +382,7 @@ async fn randomx_worker_loop(
     hash_counter: Arc<AtomicU64>,
 ) -> Result<()> {
     use engine::*;
+    use tokio::sync::broadcast::error::TryRecvError;
 
     let mut work: Option<WorkItem> = None;
 
@@ -445,16 +446,38 @@ async fn randomx_worker_loop(
                 % 0xFFFF_0000);
 
         'mine: loop {
-            if let Ok(next) = rx.try_recv() {
-                work = Some(next);
-                break 'mine;
-            }
             let vm_ref = vm.as_ref().expect("vm initialized");
             let mut need_yield = false;
+            let mut local_hashes: u64 = 0;
+
+            enum SwitchAction {
+                Latest(WorkItem),
+                AwaitLatest,
+            }
+
+            let mut switch_action: Option<SwitchAction> = None;
+
             {
                 let vm = vm_ref;
-                let mut local_hashes: u64 = 0;
                 for i in 0..batch_size {
+                    match rx.try_recv() {
+                        Ok(mut next) => {
+                            while let Ok(more) = rx.try_recv() {
+                                next = more;
+                            }
+                            switch_action = Some(SwitchAction::Latest(next));
+                            need_yield = true;
+                            break;
+                        }
+                        Err(TryRecvError::Lagged(_)) => {
+                            switch_action = Some(SwitchAction::AwaitLatest);
+                            need_yield = true;
+                            break;
+                        }
+                        Err(TryRecvError::Closed) => return Err(anyhow!("job channel closed")),
+                        Err(TryRecvError::Empty) => {}
+                    }
+
                     put_u32_le(&mut blob, 39, nonce);
                     let digest = hash(vm, &blob);
                     local_hashes += 1;
@@ -483,17 +506,38 @@ async fn randomx_worker_loop(
                         // After finding a share, request a cooperative yield
                         // (performed after this borrow scope to keep the future Send).
                         need_yield = true;
-                        break; // exit early to yield outside borrow scope
+                        break;
                     }
                     nonce = nonce.wrapping_add(worker_count as u32);
                     // Request a cooperative yield roughly every 1024 hashes when enabled.
                     if yield_between_batches && (i % 1024 == 1023) {
                         need_yield = true;
-                        break; // exit early to yield outside borrow scope
+                        break;
                     }
                 }
-                hash_counter.fetch_add(local_hashes, Ordering::Relaxed);
             }
+
+            hash_counter.fetch_add(local_hashes, Ordering::Relaxed);
+
+            if let Some(action) = switch_action {
+                let next = match action {
+                    SwitchAction::Latest(item) => item,
+                    SwitchAction::AwaitLatest => {
+                        let mut item =
+                            rx.recv().await.map_err(|_| anyhow!("job channel closed"))?;
+                        while let Ok(more) = rx.try_recv() {
+                            item = more;
+                        }
+                        item
+                    }
+                };
+                work = Some(next);
+                if need_yield || yield_between_batches {
+                    tokio::task::yield_now().await;
+                }
+                break 'mine;
+            }
+
             if need_yield || yield_between_batches {
                 tokio::task::yield_now().await;
             }
