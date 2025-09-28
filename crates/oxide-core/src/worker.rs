@@ -445,9 +445,24 @@ async fn randomx_worker_loop(
                 % 0xFFFF_0000);
 
         'mine: loop {
-            if let Ok(next) = rx.try_recv() {
-                work = Some(next);
-                break 'mine;
+            match rx.try_recv() {
+                Ok(next) => {
+                    work = Some(next);
+                    break 'mine;
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    return Err(anyhow::anyhow!("job channel closed"));
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        worker = worker_id,
+                        skipped,
+                        "job channel lagged; resyncing to latest job"
+                    );
+                    work = None;
+                    break 'mine;
+                }
             }
             let vm_ref = vm.as_ref().expect("vm initialized");
             let mut need_yield = false;
