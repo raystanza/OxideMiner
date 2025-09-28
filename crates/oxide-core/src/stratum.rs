@@ -254,6 +254,7 @@ impl StratumClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 
     #[test]
@@ -312,6 +313,241 @@ mod tests {
         };
         let v = client.read_json().await.unwrap();
         assert_eq!(v.get("a").and_then(|x| x.as_u64()), Some(1));
+    }
+
+    #[tokio::test]
+    async fn read_json_eof_errors() {
+        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> = BufReader::with_capacity(
+            4096,
+            Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>,
+        );
+        let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(io::sink());
+        let mut client = StratumClient {
+            reader,
+            writer,
+            session_id: None,
+            next_req_id: 1,
+        };
+        let err = client.read_json().await.unwrap_err();
+        assert!(err.to_string().contains("pool closed"));
+    }
+
+    #[tokio::test]
+    async fn next_job_parses_notify() {
+        let (read_side, mut write_side) = io::duplex(256);
+        tokio::spawn(async move {
+            let msg = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "job",
+                "params": {
+                    "job_id": "job-123",
+                    "blob": "00",
+                    "target": "0a0b0c0d",
+                    "seed_hash": null,
+                    "height": null,
+                    "algo": null
+                }
+            })
+            .to_string();
+            write_side.write_all(msg.as_bytes()).await.unwrap();
+            write_side.write_all(b"\n").await.unwrap();
+        });
+        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> = BufReader::with_capacity(
+            4096,
+            Box::new(read_side) as Box<dyn io::AsyncRead + Unpin + Send>,
+        );
+        let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(io::sink());
+        let mut client = StratumClient {
+            reader,
+            writer,
+            session_id: None,
+            next_req_id: 1,
+        };
+        let job = client.next_job().await.expect("job parsed");
+        assert_eq!(job.job_id, "job-123");
+        assert_eq!(job.target_u32, Some(0x0d0c0b0a));
+    }
+
+    #[tokio::test]
+    async fn submit_share_requires_login() {
+        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> = BufReader::with_capacity(
+            4096,
+            Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>,
+        );
+        let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(io::sink());
+        let mut client = StratumClient {
+            reader,
+            writer,
+            session_id: None,
+            next_req_id: 7,
+        };
+        let err = client
+            .submit_share(
+                "job",
+                "00000000",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("session id"));
+    }
+
+    #[tokio::test]
+    async fn submit_share_writes_request() {
+        let (write_half, mut read_half) = io::duplex(512);
+        let reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>> = BufReader::with_capacity(
+            4096,
+            Box::new(io::empty()) as Box<dyn io::AsyncRead + Unpin + Send>,
+        );
+        let writer: Box<dyn io::AsyncWrite + Unpin + Send> = Box::new(write_half);
+        let mut client = StratumClient {
+            reader,
+            writer,
+            session_id: Some("sess-1".into()),
+            next_req_id: 42,
+        };
+        let req_id = client
+            .submit_share(
+                "job-1",
+                "0a0b0c0d",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            )
+            .await
+            .expect("submit ok");
+        assert_eq!(req_id, 42);
+
+        let mut buf = vec![0u8; 256];
+        let n = read_half.read(&mut buf).await.unwrap();
+        let line = String::from_utf8(buf[..n].to_vec()).unwrap();
+        let value: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(value["id"].as_u64(), Some(42));
+        assert_eq!(value["method"].as_str(), Some("submit"));
+        assert_eq!(value["params"]["id"].as_str(), Some("sess-1"));
+        assert_eq!(value["params"]["job_id"].as_str(), Some("job-1"));
+    }
+
+    #[test]
+    fn cache_target_resets_on_invalid_hex() {
+        let mut job = PoolJob {
+            job_id: "job".into(),
+            blob: String::new(),
+            target: "00000010".into(),
+            seed_hash: None,
+            height: None,
+            algo: None,
+            target_u32: None,
+        };
+        job.cache_target();
+        assert_eq!(job.target_u32, Some(0x10000000));
+        job.target = "zz".into();
+        job.cache_target();
+        assert_eq!(job.target_u32, None);
+    }
+
+    #[test]
+    fn cache_target_handles_truncation_and_padding() {
+        let mut job = PoolJob {
+            job_id: String::new(),
+            blob: String::new(),
+            target: "abcd123456".into(),
+            seed_hash: None,
+            height: None,
+            algo: None,
+            target_u32: Some(1),
+        };
+        job.cache_target();
+        assert_eq!(job.target_u32, None);
+
+        job.target = "1a2b".into();
+        job.cache_target();
+        assert_eq!(job.target_u32, Some(0x00002b1a));
+    }
+
+    #[tokio::test]
+    async fn connect_and_login_returns_initial_job_from_result() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            socket.read_buf(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf);
+            assert!(request.contains("\"login\""));
+            let response = serde_json::json!({
+                "jsonrpc": "2.0",
+                "result": {
+                    "id": "session-1",
+                    "job": {
+                        "job_id": "job",
+                        "blob": "00",
+                        "target": "7f",
+                        "seed_hash": null,
+                        "height": 1,
+                        "algo": "rx/0"
+                    }
+                }
+            })
+            .to_string();
+            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.write_all(b"\n").await.unwrap();
+        });
+
+        let (client, job) =
+            StratumClient::connect_and_login(&addr.to_string(), "wallet", "pass", "agent", false)
+                .await
+                .expect("login succeeds");
+        assert!(job.is_some());
+        assert_eq!(job.unwrap().target_u32, Some(0x7f));
+        drop(client);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_and_login_waits_for_job_notify() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            socket.read_buf(&mut buf).await.unwrap();
+            assert!(String::from_utf8_lossy(&buf).contains("\"login\""));
+            let login_resp = serde_json::json!({
+                "jsonrpc": "2.0",
+                "result": {"id": "session-2"}
+            })
+            .to_string();
+            socket.write_all(login_resp.as_bytes()).await.unwrap();
+            socket.write_all(b"\n").await.unwrap();
+            let job_notify = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "job",
+                "params": {
+                    "job_id": "notify",
+                    "blob": "00",
+                    "target": "01000000",
+                    "seed_hash": null,
+                    "height": null,
+                    "algo": null
+                }
+            })
+            .to_string();
+            socket.write_all(job_notify.as_bytes()).await.unwrap();
+            socket.write_all(b"\n").await.unwrap();
+        });
+
+        let (client, job) =
+            StratumClient::connect_and_login(&addr.to_string(), "wallet", "pass", "agent", false)
+                .await
+                .expect("login succeeds");
+        assert!(job.is_some());
+        assert_eq!(job.as_ref().unwrap().job_id, "notify");
+        assert_eq!(client.session_id, Some("session-2".into()));
+        drop(client);
+        server.await.unwrap();
     }
 
     #[test]

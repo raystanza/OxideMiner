@@ -121,3 +121,20 @@ pub async fn run_benchmark(
 ) -> Result<f64> {
     Err(anyhow!("built without RandomX support"))
 }
+
+#[cfg(all(test, not(feature = "randomx")))]
+mod tests {
+    use super::run_benchmark;
+
+    #[tokio::test]
+    async fn benchmark_without_randomx_feature_errors() {
+        let err = run_benchmark(1, 1, false, 1, false).await.unwrap_err();
+        assert!(err.to_string().contains("RandomX"));
+    }
+
+    #[tokio::test]
+    async fn benchmark_zero_inputs_short_circuits() {
+        let result = run_benchmark(0, 0, false, 0, false).await;
+        assert!(result.is_err());
+    }
+}
