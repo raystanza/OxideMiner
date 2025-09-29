@@ -435,4 +435,48 @@ mod tests {
         let _ = huge_pages_enabled();
         let _ = huge_page_status();
     }
+
+    #[test]
+    fn huge_page_status_enabled_logic() {
+        let mut status = HugePageStatus {
+            supported: false,
+            has_privilege: true,
+            page_size_bytes: Some(2048),
+            total_bytes: Some(4096),
+            free_bytes: Some(4096),
+        };
+        assert!(!status.enabled());
+        status.supported = true;
+        assert!(status.enabled());
+        status.has_privilege = false;
+        assert!(!status.enabled());
+        status.has_privilege = true;
+        status.free_bytes = Some(0);
+        assert!(!status.enabled());
+    }
+
+    #[test]
+    fn dataset_fits_respects_alignment() {
+        let mut status = HugePageStatus {
+            supported: true,
+            has_privilege: true,
+            page_size_bytes: Some(1024),
+            total_bytes: Some(8192),
+            free_bytes: Some(4096),
+        };
+        assert!(status.dataset_fits(2048));
+        assert!(!status.dataset_fits(3000));
+        status.free_bytes = Some(1024);
+        assert!(!status.dataset_fits(2048));
+        status.free_bytes = None;
+        assert!(status.dataset_fits(2048));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_meminfo_value_extracts_numbers() {
+        let meminfo = "HugePages_Total:       8 kB\nOther: 123";
+        assert_eq!(parse_meminfo_value(meminfo, "HugePages_Total:"), Some(8));
+        assert_eq!(parse_meminfo_value(meminfo, "Missing:"), None);
+    }
 }
