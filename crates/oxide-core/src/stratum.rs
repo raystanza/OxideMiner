@@ -470,11 +470,13 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = Vec::new();
-            socket.read_buf(&mut buf).await.unwrap();
-            let request = String::from_utf8_lossy(&buf);
-            assert!(request.contains("\"login\""));
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(socket);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap(); // read one JSON line
+            assert!(line.contains("\"login\""));
+            let mut socket = reader.into_inner();
             let response = serde_json::json!({
                 "jsonrpc": "2.0",
                 "result": {
@@ -511,10 +513,13 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = Vec::new();
-            socket.read_buf(&mut buf).await.unwrap();
-            assert!(String::from_utf8_lossy(&buf).contains("\"login\""));
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(socket);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            assert!(line.contains("\"login\""));
+            let mut socket = reader.into_inner();
             let login_resp = serde_json::json!({
                 "jsonrpc": "2.0",
                 "result": {"id": "session-2"}
