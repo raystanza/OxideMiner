@@ -37,6 +37,9 @@ h1 {
 }
 
 .value {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.2;
     font-size: 1.4rem;
-    margin-top: 10px;
+    margin-top: 8px;
 }
