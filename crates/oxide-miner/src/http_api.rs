@@ -13,7 +13,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{atomic::Ordering, Arc};
 use tokio::{fs, net::TcpListener};
-
 use sysinfo::System;
 
 // Embed the dashboard assets at compile time so the binary is self-contained.

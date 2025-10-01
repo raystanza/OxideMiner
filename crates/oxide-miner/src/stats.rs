@@ -93,4 +93,13 @@ mod tests {
         };
         assert_eq!(manual.hashrate(), 0.0);
     }
+
+    #[test]
+    fn mining_duration_tracks_elapsed_time() {
+        let stats = Stats::new("pool".into(), false);
+        std::thread::sleep(Duration::from_millis(5));
+        let elapsed = stats.mining_duration();
+        assert!(elapsed >= Duration::from_millis(5));
+        assert!(elapsed.as_secs_f64() >= 0.0);
+    }
 }
