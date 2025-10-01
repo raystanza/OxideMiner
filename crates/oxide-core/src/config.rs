@@ -16,6 +16,10 @@ pub struct Config {
     pub enable_devfee: bool,
     /// enable TLS when connecting to the stratum pool
     pub tls: bool,
+    /// optional PEM bundle with additional trusted roots for TLS
+    pub tls_ca_cert: Option<String>,
+    /// optional SHA-256 fingerprint for pinning misconfigured TLS certs
+    pub tls_cert_fingerprint: Option<String>,
     /// optional HTTP API port for metrics (None disables)
     pub api_port: Option<u16>,
     /// pin worker threads to specific CPU cores
@@ -38,6 +42,8 @@ impl Default for Config {
             threads: None,
             enable_devfee: true,
             tls: false,
+            tls_ca_cert: None,
+            tls_cert_fingerprint: None,
             api_port: None,
             affinity: false,
             huge_pages: false,
@@ -60,6 +66,8 @@ mod tests {
         assert_eq!(cfg.pass.as_deref(), Some("x"));
         assert!(cfg.enable_devfee);
         assert!(!cfg.tls);
+        assert_eq!(cfg.tls_ca_cert, None);
+        assert_eq!(cfg.tls_cert_fingerprint, None);
         assert_eq!(cfg.api_port, None);
         assert!(!cfg.affinity);
         assert!(!cfg.huge_pages);

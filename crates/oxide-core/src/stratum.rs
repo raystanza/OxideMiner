@@ -1,14 +1,25 @@
 // OxideMiner/crates/oxide-core/src/stratum.rs
 
 use anyhow::{anyhow, Context, Result};
+use rustls_pemfile::certs;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::Arc;
+use sha2::{Digest, Sha256};
+use std::{io::Cursor, sync::Arc};
 use tokio::{
+    fs,
     io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
 };
-use tokio_rustls::{rustls, TlsConnector};
+use tokio_rustls::rustls::client::{ServerCertVerifier, WebPkiVerifier};
+use tokio_rustls::{
+    rustls::{
+        self, client::HandshakeSignatureValid, client::ServerCertVerified, Certificate,
+        ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
+    },
+    TlsConnector,
+};
+use webpki::Error as WebPkiError;
 use webpki_roots::TLS_SERVER_ROOTS;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +70,8 @@ impl StratumClient {
         pass: &str,
         agent: &str,
         use_tls: bool,
+        tls_ca_cert: Option<&str>,
+        tls_cert_fingerprint: Option<&str>,
     ) -> Result<(Self, Option<PoolJob>)> {
         let (reader, writer): (
             Box<dyn io::AsyncRead + Unpin + Send>,
@@ -71,7 +84,7 @@ impl StratumClient {
                 .split(':')
                 .next()
                 .ok_or_else(|| anyhow!("invalid host"))?;
-            let mut root_cert_store = rustls::RootCertStore::empty();
+            let mut root_cert_store = RootCertStore::empty();
             root_cert_store.add_trust_anchors(TLS_SERVER_ROOTS.iter().map(|ta| {
                 rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
                     ta.subject,
@@ -79,14 +92,37 @@ impl StratumClient {
                     ta.name_constraints,
                 )
             }));
-            let config = rustls::ClientConfig::builder()
+
+            if let Some(extra_ca) = tls_ca_cert {
+                load_additional_roots(extra_ca, &mut root_cert_store).await?;
+            }
+
+            let fingerprint = if let Some(fp) = tls_cert_fingerprint {
+                Some(parse_fingerprint(fp)?)
+            } else {
+                None
+            };
+
+            let root_cert_store = Arc::new(root_cert_store);
+            let base_verifier = Arc::new(WebPkiVerifier::new(root_cert_store.clone(), None));
+            let verifier: Arc<dyn ServerCertVerifier> = if let Some(pin) = fingerprint {
+                Arc::new(FingerprintOrWebPkiVerifier::new(base_verifier.clone(), pin))
+            } else {
+                base_verifier
+            };
+
+            let config = ClientConfig::builder()
                 .with_safe_defaults()
-                .with_root_certificates(root_cert_store)
+                .with_custom_certificate_verifier(verifier)
                 .with_no_client_auth();
+
             let connector = TlsConnector::from(Arc::new(config));
             let server_name =
                 rustls::ServerName::try_from(host).map_err(|_| anyhow!("invalid server name"))?;
-            let tls = connector.connect(server_name, stream).await?;
+            let tls = connector
+                .connect(server_name, stream)
+                .await
+                .map_err(|err| map_tls_error(err, tls_cert_fingerprint.is_some()))?;
             let (r, w) = io::split(tls);
             (Box::new(r), Box::new(w))
         } else {
@@ -248,6 +284,148 @@ impl StratumClient {
         } else {
             Ok(buf)
         }
+    }
+}
+
+struct FingerprintOrWebPkiVerifier {
+    inner: Arc<dyn ServerCertVerifier>,
+    fingerprint: [u8; 32],
+}
+
+impl FingerprintOrWebPkiVerifier {
+    fn new(inner: Arc<dyn ServerCertVerifier>, fingerprint: [u8; 32]) -> Self {
+        Self { inner, fingerprint }
+    }
+}
+
+impl ServerCertVerifier for FingerprintOrWebPkiVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &Certificate,
+        intermediates: &[Certificate],
+        server_name: &rustls::client::ServerName,
+        scts: &mut dyn Iterator<Item = &[u8]>,
+        ocsp_response: &[u8],
+        now: std::time::SystemTime,
+    ) -> std::result::Result<ServerCertVerified, TlsError> {
+        match self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            scts,
+            ocsp_response,
+            now,
+        ) {
+            Ok(verified) => Ok(verified),
+            Err(err) => {
+                if tls_error_is_ca_as_leaf(&err) {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&end_entity.0);
+                    let digest = hasher.finalize();
+                    if digest.as_slice() == self.fingerprint {
+                        tracing::warn!(
+                            "accepting TLS certificate via pinned fingerprint despite validation error: {}",
+                            err
+                        );
+                        return Ok(ServerCertVerified::assertion());
+                    }
+                }
+                Err(err)
+            }
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &Certificate,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, TlsError> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &Certificate,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, TlsError> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+
+    fn request_scts(&self) -> bool {
+        self.inner.request_scts()
+    }
+}
+
+async fn load_additional_roots(path: &str, store: &mut RootCertStore) -> Result<()> {
+    let data = fs::read(path)
+        .await
+        .with_context(|| format!("reading TLS CA bundle at {}", path))?;
+    let mut reader = Cursor::new(&data);
+    let certs = certs(&mut reader).context("parsing PEM certificates")?;
+    let mut added = 0usize;
+    for der in certs {
+        let (accepted, _) = store.add_parsable_certificates(&[der]);
+        added += accepted;
+    }
+    if added == 0 {
+        return Err(anyhow!("no valid certificates found in {}", path));
+    }
+    tracing::info!(path, added, "loaded additional TLS root certificates");
+    Ok(())
+}
+
+fn parse_fingerprint(input: &str) -> Result<[u8; 32]> {
+    let cleaned: String = input
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace() && *c != ':')
+        .collect();
+    if cleaned.len() != 64 {
+        return Err(anyhow!(
+            "TLS certificate fingerprint must be 64 hex characters (SHA-256)"
+        ));
+    }
+    let bytes = hex::decode(&cleaned).context("decoding fingerprint hex")?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow!("TLS fingerprint must decode to 32 bytes"))?;
+    Ok(arr)
+}
+
+fn map_tls_error(err: std::io::Error, has_pin: bool) -> anyhow::Error {
+    let mut hint = String::from("TLS handshake failed");
+    if let Some(rustls_err) = err
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<TlsError>())
+    {
+        if tls_error_is_ca_as_leaf(rustls_err) {
+            if has_pin {
+                hint.push_str(
+                    ": presented certificate is marked as a CA even though a fingerprint was supplied",
+                );
+            } else {
+                hint.push_str(
+                    ": pool presented a certificate marked as a CA. Provide --tls-cert-fingerprint <SHA256> to pin the current certificate or --tls-ca-cert <PATH> to trust the pool's CA bundle.",
+                );
+            }
+        }
+    }
+    Err::<(), _>(err).context(hint).unwrap_err()
+}
+
+fn tls_error_is_ca_as_leaf(err: &TlsError) -> bool {
+    match err {
+        TlsError::InvalidCertificate(rustls::CertificateError::Other(other)) => {
+            other.downcast_ref::<WebPkiError>().map_or(false, |inner| {
+                matches!(*inner, WebPkiError::CaUsedAsEndEntity)
+            })
+        }
+        _ => false,
     }
 }
 
@@ -496,10 +674,17 @@ mod tests {
             socket.write_all(b"\n").await.unwrap();
         });
 
-        let (client, job) =
-            StratumClient::connect_and_login(&addr.to_string(), "wallet", "pass", "agent", false)
-                .await
-                .expect("login succeeds");
+        let (client, job) = StratumClient::connect_and_login(
+            &addr.to_string(),
+            "wallet",
+            "pass",
+            "agent",
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("login succeeds");
         assert!(job.is_some());
         assert_eq!(job.unwrap().target_u32, Some(0x7f));
         drop(client);
@@ -544,10 +729,17 @@ mod tests {
             socket.write_all(b"\n").await.unwrap();
         });
 
-        let (client, job) =
-            StratumClient::connect_and_login(&addr.to_string(), "wallet", "pass", "agent", false)
-                .await
-                .expect("login succeeds");
+        let (client, job) = StratumClient::connect_and_login(
+            &addr.to_string(),
+            "wallet",
+            "pass",
+            "agent",
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("login succeeds");
         assert!(job.is_some());
         assert_eq!(job.as_ref().unwrap().job_id, "notify");
         assert_eq!(client.session_id, Some("session-2".into()));

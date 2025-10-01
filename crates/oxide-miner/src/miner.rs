@@ -120,6 +120,11 @@ pub async fn run(args: Args) -> Result<()> {
         threads: args.threads,
         enable_devfee: !args.no_devfee,
         tls: args.tls,
+        tls_ca_cert: args
+            .tls_ca_cert
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned()),
+        tls_cert_fingerprint: args.tls_cert_fingerprint.clone(),
         api_port: args.api_port,
         affinity: args.affinity,
         huge_pages: args.huge_pages,
@@ -242,6 +247,8 @@ pub async fn run(args: Args) -> Result<()> {
                     &pass,
                     &agent,
                     tls,
+                    cfg.tls_ca_cert.as_deref(),
+                    cfg.tls_cert_fingerprint.as_deref(),
                 )
                 .await
                 {
@@ -290,6 +297,8 @@ pub async fn run(args: Args) -> Result<()> {
                             &pass,
                             &agent,
                             tls,
+                            cfg.tls_ca_cert.as_deref(),
+                            cfg.tls_cert_fingerprint.as_deref(),
                             3,
                             "devfee",
                         )
@@ -310,6 +319,8 @@ pub async fn run(args: Args) -> Result<()> {
                                     &pass,
                                     &agent,
                                     tls,
+                                    cfg.tls_ca_cert.as_deref(),
+                                    cfg.tls_cert_fingerprint.as_deref(),
                                     &jobs_tx,
                                     dev_scheduler.as_mut(),
                                 )
@@ -376,6 +387,8 @@ pub async fn run(args: Args) -> Result<()> {
                                         &pass,
                                         &agent,
                                         tls,
+                                        cfg.tls_ca_cert.as_deref(),
+                                        cfg.tls_cert_fingerprint.as_deref(),
                                         &jobs_tx,
                                         dev_scheduler.as_mut(),
                                     )
@@ -433,6 +446,8 @@ pub async fn run(args: Args) -> Result<()> {
                                                 &pass,
                                                 &agent,
                                                 tls,
+                                                cfg.tls_ca_cert.as_deref(),
+                                                cfg.tls_cert_fingerprint.as_deref(),
                                                 3,
                                                 "devfee",
                                             ).await {
@@ -451,6 +466,8 @@ pub async fn run(args: Args) -> Result<()> {
                                                         &pass,
                                                         &agent,
                                                         tls,
+                                                        cfg.tls_ca_cert.as_deref(),
+                                                        cfg.tls_cert_fingerprint.as_deref(),
                                                         &jobs_tx,
                                                         dev_scheduler.as_mut(),
                                                     )
@@ -580,6 +597,8 @@ pub async fn run(args: Args) -> Result<()> {
                                                     &pass,
                                                     &agent,
                                                     tls,
+                                                    cfg.tls_ca_cert.as_deref(),
+                                                    cfg.tls_cert_fingerprint.as_deref(),
                                                     &jobs_tx,
                                                     &mut valid_job_ids,
                                                     &mut seen_nonces,
@@ -722,6 +741,8 @@ async fn handle_shares(
     pass: &str,
     agent: &str,
     tls: bool,
+    tls_ca_cert: Option<&str>,
+    tls_cert_fingerprint: Option<&str>,
     jobs_tx: &tokio::sync::broadcast::Sender<WorkItem>,
     dev_scheduler: Option<&mut DevFeeScheduler>,
 ) -> Result<()> {
@@ -771,6 +792,8 @@ async fn handle_shares(
             pass,
             agent,
             tls,
+            tls_ca_cert,
+            tls_cert_fingerprint,
             jobs_tx,
             valid_job_ids,
             seen_nonces,
@@ -861,6 +884,8 @@ async fn reconnect_user_pool(
     pass: &str,
     agent: &str,
     tls: bool,
+    tls_ca_cert: Option<&str>,
+    tls_cert_fingerprint: Option<&str>,
     jobs_tx: &tokio::sync::broadcast::Sender<WorkItem>,
     valid_job_ids: &mut HashSet<String>,
     seen_nonces: &mut HashMap<String, HashSet<u32>>,
@@ -868,8 +893,18 @@ async fn reconnect_user_pool(
     stats: &Arc<Stats>,
     dev_scheduler: Option<&mut DevFeeScheduler>,
 ) -> Result<()> {
-    let (new_client, job_opt) =
-        connect_with_retries(main_pool, user_wallet, pass, agent, tls, 5, "user").await?;
+    let (new_client, job_opt) = connect_with_retries(
+        main_pool,
+        user_wallet,
+        pass,
+        agent,
+        tls,
+        tls_ca_cert,
+        tls_cert_fingerprint,
+        5,
+        "user",
+    )
+    .await?;
 
     *client = new_client;
     *active_pool = ActivePool::User;
@@ -890,6 +925,8 @@ async fn connect_with_retries(
     pass: &str,
     agent: &str,
     tls: bool,
+    tls_ca_cert: Option<&str>,
+    tls_cert_fingerprint: Option<&str>,
     attempts: usize,
     purpose: &str,
 ) -> Result<(StratumClient, Option<PoolJob>)> {
@@ -899,7 +936,17 @@ async fn connect_with_retries(
 
     while attempt < attempts {
         attempt += 1;
-        match StratumClient::connect_and_login(pool, wallet, pass, agent, tls).await {
+        match StratumClient::connect_and_login(
+            pool,
+            wallet,
+            pass,
+            agent,
+            tls,
+            tls_ca_cert,
+            tls_cert_fingerprint,
+        )
+        .await
+        {
             Ok(conn) => return Ok(conn),
             Err(e) => {
                 last_err = Some(e);

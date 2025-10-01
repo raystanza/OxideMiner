@@ -34,6 +34,14 @@ pub struct Args {
     #[arg(long = "tls")]
     pub tls: bool,
 
+    /// Additional PEM file containing trusted CA certificates for TLS
+    #[arg(long = "tls-ca-cert", requires = "tls")]
+    pub tls_ca_cert: Option<PathBuf>,
+
+    /// Pin the pool's leaf certificate by SHA-256 fingerprint (hex)
+    #[arg(long = "tls-cert-fingerprint", requires = "tls")]
+    pub tls_cert_fingerprint: Option<String>,
+
     /// Expose a simple HTTP API on this port
     #[arg(long = "api-port")]
     pub api_port: Option<u16>,
