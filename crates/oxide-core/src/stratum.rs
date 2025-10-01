@@ -1,15 +1,24 @@
 // OxideMiner/crates/oxide-core/src/stratum.rs
 
 use anyhow::{anyhow, Context, Result};
+use ring::digest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::{fs, io::Cursor, path::Path, sync::Arc};
 use tokio::{
     io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
 };
-use tokio_rustls::{rustls, TlsConnector};
+use tokio_rustls::{
+    rustls::{self, client::WebPkiVerifier},
+    TlsConnector,
+};
 use webpki_roots::TLS_SERVER_ROOTS;
+
+use rustls::client::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::{CertificateError, SignatureScheme};
+use rustls_pemfile::certs;
+use rustls_webpki::Error as WebPkiError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolJob {
@@ -44,6 +53,83 @@ impl PoolJob {
     }
 }
 
+struct PinnedCertVerifier {
+    inner: WebPkiVerifier,
+    pinned: [u8; 32],
+    fingerprint_hex: String,
+}
+
+impl PinnedCertVerifier {
+    fn new(inner: WebPkiVerifier, pinned: [u8; 32]) -> Self {
+        let fingerprint_hex = hex::encode(pinned);
+        Self {
+            inner,
+            pinned,
+            fingerprint_hex,
+        }
+    }
+}
+
+impl ServerCertVerifier for PinnedCertVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::Certificate,
+        intermediates: &[rustls::Certificate],
+        server_name: &rustls::ServerName,
+        scts: &mut dyn Iterator<Item = &[u8]>,
+        ocsp_response: &[u8],
+        now: std::time::SystemTime,
+    ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+        match self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            scts,
+            ocsp_response,
+            now,
+        ) {
+            Ok(verified) => Ok(verified),
+            Err(rustls::Error::InvalidCertificate(ref cert_err))
+                if is_ca_used_as_end_entity(cert_err) =>
+            {
+                let actual = digest::digest(&digest::SHA256, end_entity.as_ref());
+                if actual.as_ref() == self.pinned {
+                    tracing::info!(
+                        fingerprint = %self.fingerprint_hex,
+                        "accepting pinned TLS certificate despite CAUsedAsEndEntity"
+                    );
+                    Ok(ServerCertVerified::assertion())
+                } else {
+                    Err(rustls::Error::InvalidCertificate(cert_err.clone()))
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::Certificate,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::Certificate,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
 pub struct StratumClient {
     reader: BufReader<Box<dyn io::AsyncRead + Unpin + Send>>,
     writer: Box<dyn io::AsyncWrite + Unpin + Send>,
@@ -59,6 +145,8 @@ impl StratumClient {
         pass: &str,
         agent: &str,
         use_tls: bool,
+        custom_ca_path: Option<&Path>,
+        pinned_cert_sha256: Option<&[u8; 32]>,
     ) -> Result<(Self, Option<PoolJob>)> {
         let (reader, writer): (
             Box<dyn io::AsyncRead + Unpin + Send>,
@@ -79,14 +167,63 @@ impl StratumClient {
                     ta.name_constraints,
                 )
             }));
-            let config = rustls::ClientConfig::builder()
+            if let Some(path) = custom_ca_path {
+                let data = fs::read(path).with_context(|| {
+                    format!("read custom TLS CA certificate at {}", path.display())
+                })?;
+                let mut cursor = Cursor::new(&data);
+                match certs(&mut cursor) {
+                    Ok(pem_certs) if !pem_certs.is_empty() => {
+                        let mut added = 0usize;
+                        for cert in pem_certs {
+                            let certificate = rustls::Certificate(cert);
+                            root_cert_store.add(&certificate).with_context(|| {
+                                format!("add custom TLS CA certificate from {}", path.display())
+                            })?;
+                            added += 1;
+                        }
+                        tracing::debug!(
+                            path = %path.display(),
+                            added,
+                            "loaded custom TLS CA certificate(s)"
+                        );
+                    }
+                    Ok(_) => {
+                        let certificate = rustls::Certificate(data.clone());
+                        root_cert_store.add(&certificate).with_context(|| {
+                            format!("add custom TLS CA certificate from {}", path.display())
+                        })?;
+                        tracing::debug!(
+                            path = %path.display(),
+                            "loaded custom TLS CA certificate (DER)"
+                        );
+                    }
+                    Err(err) => {
+                        return Err(anyhow!(err).context(format!(
+                            "parse custom TLS CA certificate at {}",
+                            path.display()
+                        )));
+                    }
+                }
+            }
+            let mut config = rustls::ClientConfig::builder()
                 .with_safe_defaults()
-                .with_root_certificates(root_cert_store)
+                .with_root_certificates(root_cert_store.clone())
                 .with_no_client_auth();
+            if let Some(pin) = pinned_cert_sha256 {
+                let verifier = Arc::new(PinnedCertVerifier::new(
+                    WebPkiVerifier::new(root_cert_store, None),
+                    *pin,
+                ));
+                config.dangerous().set_certificate_verifier(verifier);
+            }
             let connector = TlsConnector::from(Arc::new(config));
             let server_name =
                 rustls::ServerName::try_from(host).map_err(|_| anyhow!("invalid server name"))?;
-            let tls = connector.connect(server_name, stream).await?;
+            let tls = connector
+                .connect(server_name, stream)
+                .await
+                .map_err(|err| map_tls_io_error(err, host, pinned_cert_sha256.is_some()))?;
             let (r, w) = io::split(tls);
             (Box::new(r), Box::new(w))
         } else {
@@ -248,6 +385,58 @@ impl StratumClient {
         } else {
             Ok(buf)
         }
+    }
+}
+
+fn tls_handshake_error(err: &rustls::Error, host: &str, pinned_configured: bool) -> anyhow::Error {
+    if !pinned_configured {
+        if let rustls::Error::InvalidCertificate(cert_err) = err {
+            if is_ca_used_as_end_entity(cert_err) {
+                return anyhow!(
+                    "invalid TLS certificate presented by {host}: the pool served a CA certificate as the end-entity. \
+                     Supply --tls-cert-sha256 with the server certificate's SHA-256 fingerprint to pin it explicitly."
+                );
+            }
+        }
+    }
+    anyhow!(err.to_string())
+}
+
+fn map_tls_io_error(err: std::io::Error, host: &str, pinned_configured: bool) -> anyhow::Error {
+    if let Some(rustls_err) = err
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+    {
+        return tls_handshake_error(rustls_err, host, pinned_configured);
+    }
+
+    let err_display = err.to_string();
+
+    if let Some(inner) = err.into_inner() {
+        match inner.downcast::<rustls::Error>() {
+            Ok(rustls_err) => {
+                return tls_handshake_error(&rustls_err, host, pinned_configured);
+            }
+            Err(other) => {
+                return anyhow!(other);
+            }
+        }
+    }
+
+    anyhow!(err_display)
+}
+
+fn is_ca_used_as_end_entity(error: &CertificateError) -> bool {
+    match error {
+        CertificateError::Other(inner) => {
+            inner
+                .downcast_ref::<WebPkiError>()
+                .map_or(false, |webpki_err| {
+                    matches!(webpki_err, WebPkiError::CaUsedAsEndEntity)
+                })
+                || inner.to_string().contains("CaUsedAsEndEntity")
+        }
+        _ => false,
     }
 }
 
@@ -496,10 +685,17 @@ mod tests {
             socket.write_all(b"\n").await.unwrap();
         });
 
-        let (client, job) =
-            StratumClient::connect_and_login(&addr.to_string(), "wallet", "pass", "agent", false)
-                .await
-                .expect("login succeeds");
+        let (client, job) = StratumClient::connect_and_login(
+            &addr.to_string(),
+            "wallet",
+            "pass",
+            "agent",
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("login succeeds");
         assert!(job.is_some());
         assert_eq!(job.unwrap().target_u32, Some(0x7f));
         drop(client);
@@ -544,10 +740,17 @@ mod tests {
             socket.write_all(b"\n").await.unwrap();
         });
 
-        let (client, job) =
-            StratumClient::connect_and_login(&addr.to_string(), "wallet", "pass", "agent", false)
-                .await
-                .expect("login succeeds");
+        let (client, job) = StratumClient::connect_and_login(
+            &addr.to_string(),
+            "wallet",
+            "pass",
+            "agent",
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("login succeeds");
         assert!(job.is_some());
         assert_eq!(job.as_ref().unwrap().job_id, "notify");
         assert_eq!(client.session_id, Some("session-2".into()));
