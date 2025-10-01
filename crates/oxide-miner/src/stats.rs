@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Shared miner statistics updated across tasks and exposed via the HTTP API.
 pub struct Stats {
@@ -41,6 +41,11 @@ impl Stats {
         } else {
             0.0
         }
+    }
+
+    /// Total time the miner has been running.
+    pub fn mining_duration(&self) -> Duration {
+        self.start.elapsed()
     }
 }
 

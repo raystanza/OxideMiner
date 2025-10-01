@@ -14,10 +14,16 @@ use std::path::PathBuf;
 use std::sync::{atomic::Ordering, Arc};
 use tokio::{fs, net::TcpListener};
 
+use sysinfo::System;
+
 // Embed the dashboard assets at compile time so the binary is self-contained.
 const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
 const DASHBOARD_CSS: &str = include_str!("../assets/dashboard.css");
 const DASHBOARD_JS: &str = include_str!("../assets/dashboard.js");
+
+fn system_uptime_seconds() -> u64 {
+    System::uptime()
+}
 
 pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<PathBuf>) {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -86,6 +92,8 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             let dev_rej = s.dev_rejected.load(Ordering::Relaxed);
                             let hashes = s.hashes.load(Ordering::Relaxed);
                             let hashrate = s.hashrate();
+                            let mining_duration = s.mining_duration();
+                            let system_uptime = system_uptime_seconds();
                             let resp_body = json!({
                                 "hashrate": hashrate,
                                 "hashes_total": hashes,
@@ -97,6 +105,10 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                                     "rejected": rejected,
                                     "dev_accepted": dev_acc,
                                     "dev_rejected": dev_rej,
+                                },
+                                "timing": {
+                                    "mining_time_seconds": mining_duration.as_secs(),
+                                    "system_uptime_seconds": system_uptime,
                                 }
                             })
                             .to_string();
@@ -236,6 +248,8 @@ mod tests {
         assert_eq!(body["shares"]["accepted"], 5);
         assert_eq!(body["shares"]["rejected"], 2);
         assert_eq!(body["shares"]["dev_accepted"], 1);
+        assert!(body["timing"]["mining_time_seconds"].as_u64().is_some());
+        assert!(body["timing"]["system_uptime_seconds"].as_u64().unwrap() > 0);
 
         let url = format!("http://127.0.0.1:{}/metrics", port);
         let resp = client.get(url).send().await.unwrap();
