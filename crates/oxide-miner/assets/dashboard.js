@@ -12,6 +12,24 @@ function formatHashrate(hps) {
 
 const intFmt = new Intl.NumberFormat('en-US');
 
+function formatDuration(seconds) {
+    if (!Number.isFinite(seconds)) return '-';
+    const totalSeconds = Math.max(0, Math.floor(seconds));
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
+
+    const parts = [];
+    if (days > 0) {
+        parts.push(days + 'd');
+    }
+    parts.push(String(hours).padStart(2, '0') + 'h');
+    parts.push(String(minutes).padStart(2, '0') + 'm');
+    parts.push(String(secs).padStart(2, '0') + 's');
+    return parts.join(' ');
+}
+
 async function fetchStats() {
     try {
         const response = await fetch('/api/stats');
@@ -28,6 +46,11 @@ async function fetchStats() {
 
         document.getElementById('connected').textContent = data.connected ? 'Yes' : 'No';
         document.getElementById('tls').textContent = data.tls ? 'Yes' : 'No';
+        const timing = data.timing || {};
+        document.getElementById('system_uptime').textContent =
+            formatDuration(Number(timing.system_uptime_seconds));
+        document.getElementById('mining_time').textContent =
+            formatDuration(Number(timing.mining_time_seconds));
     } catch (e) {
         console.error('Failed to fetch stats', e);
     }

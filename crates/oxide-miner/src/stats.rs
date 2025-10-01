@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Shared miner statistics updated across tasks and exposed via the HTTP API.
 pub struct Stats {
@@ -41,6 +41,11 @@ impl Stats {
         } else {
             0.0
         }
+    }
+
+    /// Total time the miner has been running.
+    pub fn mining_duration(&self) -> Duration {
+        self.start.elapsed()
     }
 }
 
@@ -87,5 +92,14 @@ mod tests {
             pool: String::new(),
         };
         assert_eq!(manual.hashrate(), 0.0);
+    }
+
+    #[test]
+    fn mining_duration_tracks_elapsed_time() {
+        let stats = Stats::new("pool".into(), false);
+        std::thread::sleep(Duration::from_millis(5));
+        let elapsed = stats.mining_duration();
+        assert!(elapsed >= Duration::from_millis(5));
+        assert!(elapsed.as_secs_f64() >= 0.0);
     }
 }
