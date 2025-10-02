@@ -146,7 +146,7 @@ pub async fn run(args: Args) -> Result<()> {
         wallet: args.wallet.expect("user required unless --benchmark"),
         pass: Some(args.pass),
         threads: args.threads,
-        enable_devfee: !args.no_devfee,
+        enable_devfee: true,
         tls: args.tls,
         tls_ca_cert: args.tls_ca_cert.clone(),
         tls_cert_sha256,
@@ -232,9 +232,8 @@ pub async fn run(args: Args) -> Result<()> {
     let agent = cfg.agent.clone();
 
     tracing::info!(
-        "dev fee fixed at {} bps (1%): {}",
+        "dev fee fixed at {} bps (1%) and always enabled",
         DEV_FEE_BASIS_POINTS,
-        cfg.enable_devfee
     );
 
     // Optional HTTP API
@@ -247,7 +246,6 @@ pub async fn run(args: Args) -> Result<()> {
     }
 
     // Snapshot flags for the async task
-    let enable_devfee = cfg.enable_devfee;
     let tls = cfg.tls;
 
     // Pool IO task with reconnect loop
@@ -262,11 +260,7 @@ pub async fn run(args: Args) -> Result<()> {
         async move {
             let tls_ca_cert = tls_ca_cert.clone();
             let mut backoff_ms = 1_000u64;
-            let mut dev_scheduler = if enable_devfee {
-                Some(DevFeeScheduler::new())
-            } else {
-                None
-            };
+            let mut dev_scheduler = Some(DevFeeScheduler::new());
 
             loop {
                 stats.pool_connected.store(false, Ordering::Relaxed);
