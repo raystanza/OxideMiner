@@ -26,10 +26,6 @@ pub struct Args {
     #[arg(short = 't', long = "threads")]
     pub threads: Option<usize>,
 
-    /// Disable dev fee (testing builds only)
-    #[arg(long = "no-devfee")]
-    pub no_devfee: bool,
-
     /// Enable TLS for pool connection
     #[arg(long = "tls")]
     pub tls: bool,

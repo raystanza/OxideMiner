@@ -146,7 +146,7 @@ pub async fn run(args: Args) -> Result<()> {
         wallet: args.wallet.expect("user required unless --benchmark"),
         pass: Some(args.pass),
         threads: args.threads,
-        enable_devfee: !args.no_devfee,
+        enable_devfee: true,
         tls: args.tls,
         tls_ca_cert: args.tls_ca_cert.clone(),
         tls_cert_sha256,
@@ -232,9 +232,8 @@ pub async fn run(args: Args) -> Result<()> {
     let agent = cfg.agent.clone();
 
     tracing::info!(
-        "dev fee fixed at {} bps (1%): {}",
-        DEV_FEE_BASIS_POINTS,
-        cfg.enable_devfee
+        "dev fee fixed at {} bps (1%) and always enabled",
+        DEV_FEE_BASIS_POINTS
     );
 
     // Optional HTTP API
@@ -247,7 +246,6 @@ pub async fn run(args: Args) -> Result<()> {
     }
 
     // Snapshot flags for the async task
-    let enable_devfee = cfg.enable_devfee;
     let tls = cfg.tls;
 
     // Pool IO task with reconnect loop
@@ -262,11 +260,7 @@ pub async fn run(args: Args) -> Result<()> {
         async move {
             let tls_ca_cert = tls_ca_cert.clone();
             let mut backoff_ms = 1_000u64;
-            let mut dev_scheduler = if enable_devfee {
-                Some(DevFeeScheduler::new())
-            } else {
-                None
-            };
+            let mut dev_scheduler = DevFeeScheduler::new();
 
             loop {
                 stats.pool_connected.store(false, Ordering::Relaxed);
@@ -311,9 +305,9 @@ pub async fn run(args: Args) -> Result<()> {
                         &mut valid_job_ids,
                         &mut seen_nonces,
                     );
-                    if scheduler_tick(dev_scheduler.as_mut(), &job_id, active_pool) {
-                        let counter = dev_scheduler.as_ref().map(|s| s.counter()).unwrap_or(0);
-                        let interval = dev_scheduler.as_ref().map(|s| s.interval()).unwrap_or(0);
+                    if scheduler_tick(&mut dev_scheduler, &job_id, active_pool) {
+                        let counter = dev_scheduler.counter();
+                        let interval = dev_scheduler.interval();
                         tracing::info!(
                             job_id = %job_id,
                             counter,
@@ -351,7 +345,7 @@ pub async fn run(args: Args) -> Result<()> {
                                     tls_ca_cert.as_ref(),
                                     tls_cert_sha256.as_ref(),
                                     &jobs_tx,
-                                    dev_scheduler.as_mut(),
+                                    &mut dev_scheduler,
                                 )
                                 .await
                                 {
@@ -377,20 +371,14 @@ pub async fn run(args: Args) -> Result<()> {
                                         &mut seen_nonces,
                                     );
                                     tracing::info!(job_id = %dev_job_id, "devfee activated for job");
-                                    let _ = scheduler_tick(
-                                        dev_scheduler.as_mut(),
-                                        &dev_job_id,
-                                        active_pool,
-                                    );
+                                    let _ = scheduler_tick(&mut dev_scheduler, &dev_job_id, active_pool);
                                 } else {
                                     tracing::debug!("devfee activated; awaiting first job");
                                 }
                             }
                             Err(e) => {
                                 tracing::warn!(error = %e, "devfee connect failed");
-                                if let Some(sched) = dev_scheduler.as_mut() {
-                                    sched.revert_last_job();
-                                }
+                                dev_scheduler.revert_last_job();
                             }
                         }
                     }
@@ -419,7 +407,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                 tls_ca_cert.as_ref(),
                                                 tls_cert_sha256.as_ref(),
                                                 &jobs_tx,
-                                                dev_scheduler.as_mut(),
+                                                &mut dev_scheduler,
                                             )
                                     .await
                                     {
@@ -453,7 +441,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                     &mut valid_job_ids,
                                                     &mut seen_nonces,
                                                 );
-                                                trigger_dev = scheduler_tick(dev_scheduler.as_mut(), &job_id, active_pool);
+                                                trigger_dev = scheduler_tick(&mut dev_scheduler, &job_id, active_pool);
                                                 if trigger_dev {
                                                     trigger_job_id = job_id;
                                                 }
@@ -461,8 +449,8 @@ pub async fn run(args: Args) -> Result<()> {
                                         }
 
                                         if trigger_dev {
-                                            let counter = dev_scheduler.as_ref().map(|s| s.counter()).unwrap_or(0);
-                                            let interval = dev_scheduler.as_ref().map(|s| s.interval()).unwrap_or(0);
+                                            let counter = dev_scheduler.counter();
+                                            let interval = dev_scheduler.interval();
                                             tracing::info!(
                                                 job_id = %trigger_job_id,
                                                 counter,
@@ -498,7 +486,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                         tls_ca_cert.as_ref(),
                                                         tls_cert_sha256.as_ref(),
                                                         &jobs_tx,
-                                                        dev_scheduler.as_mut(),
+                                                        &mut dev_scheduler,
                                                     )
                                                     .await
                                                     {
@@ -520,16 +508,14 @@ pub async fn run(args: Args) -> Result<()> {
                                                             &mut seen_nonces,
                                                         );
                                                         tracing::info!(job_id = %job_id, "devfee activated for job");
-                                                        let _ = scheduler_tick(dev_scheduler.as_mut(), &job_id, active_pool);
+                                                        let _ = scheduler_tick(&mut dev_scheduler, &job_id, active_pool);
                                                     } else {
                                                         tracing::debug!("devfee activated; awaiting first job");
                                                     }
                                                 }
                                                 Err(e) => {
                                                     tracing::warn!(error = %e, "devfee connect failed");
-                                                    if let Some(sched) = dev_scheduler.as_mut() {
-                                                        sched.revert_last_job();
-                                                    }
+                                                    dev_scheduler.revert_last_job();
                                                 }
                                             }
                                         }
@@ -633,7 +619,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                     &mut seen_nonces,
                                                     &mut pending_shares,
                                                     &stats,
-                                                    dev_scheduler.as_mut(),
+                                                    &mut dev_scheduler,
                                                 )
                                                 .await
                                                 {
@@ -726,24 +712,20 @@ fn broadcast_job(
 }
 
 fn scheduler_tick(
-    scheduler: Option<&mut DevFeeScheduler>,
+    scheduler: &mut DevFeeScheduler,
     job_id: &str,
     active_pool: ActivePool,
 ) -> bool {
-    if let Some(sched) = scheduler {
-        let donate = sched.should_donate();
-        tracing::debug!(
-            job_id = job_id,
-            pool = active_pool.label(),
-            counter = sched.counter(),
-            interval = sched.interval(),
-            donate,
-            "devfee scheduler tick"
-        );
-        donate && matches!(active_pool, ActivePool::User)
-    } else {
-        false
-    }
+    let donate = scheduler.should_donate();
+    tracing::debug!(
+        job_id = job_id,
+        pool = active_pool.label(),
+        counter = scheduler.counter(),
+        interval = scheduler.interval(),
+        donate,
+        "devfee scheduler tick"
+    );
+    donate && matches!(active_pool, ActivePool::User)
 }
 
 fn reset_session(
@@ -773,7 +755,7 @@ async fn handle_shares(
     tls_ca_cert: Option<&std::path::PathBuf>,
     tls_cert_sha256: Option<&[u8; 32]>,
     jobs_tx: &tokio::sync::broadcast::Sender<WorkItem>,
-    dev_scheduler: Option<&mut DevFeeScheduler>,
+    dev_scheduler: &mut DevFeeScheduler,
 ) -> Result<()> {
     let mut reconnect_user = false;
 
@@ -920,7 +902,7 @@ async fn reconnect_user_pool(
     seen_nonces: &mut HashMap<String, HashSet<u32>>,
     pending_shares: &mut HashMap<u64, PendingShare>,
     stats: &Arc<Stats>,
-    dev_scheduler: Option<&mut DevFeeScheduler>,
+    dev_scheduler: &mut DevFeeScheduler,
 ) -> Result<()> {
     let (new_client, job_opt) = connect_with_retries(
         main_pool,
