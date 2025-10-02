@@ -13,7 +13,7 @@ pub struct Config {
     pub pass: Option<String>,
     /// number of mining threads (None = auto decide later using CPU/cache heuristics)
     pub threads: Option<usize>,
-    /// fixed 1% dev fee (can allow --no-devfee for testing builds only)
+    /// fixed 1% dev fee
     pub enable_devfee: bool,
     /// enable TLS when connecting to the stratum pool
     pub tls: bool,
