@@ -34,6 +34,14 @@ pub struct Args {
     #[arg(long = "tls")]
     pub tls: bool,
 
+    /// Path to additional PEM/DER CA certificate to trust when using TLS
+    #[arg(long = "tls-ca-cert", value_name = "PATH")]
+    pub tls_ca_cert: Option<PathBuf>,
+
+    /// SHA-256 fingerprint of the expected TLS server certificate (hex)
+    #[arg(long = "tls-cert-sha256", value_name = "HEX")]
+    pub tls_cert_sha256: Option<String>,
+
     /// Expose a simple HTTP API on this port
     #[arg(long = "api-port")]
     pub api_port: Option<u16>,

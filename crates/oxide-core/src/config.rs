@@ -1,6 +1,7 @@
 // OxideMiner/crates/oxide-core/src/config.rs
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -16,6 +17,10 @@ pub struct Config {
     pub enable_devfee: bool,
     /// enable TLS when connecting to the stratum pool
     pub tls: bool,
+    /// optional custom CA certificate to add to the trust store when TLS is enabled
+    pub tls_ca_cert: Option<PathBuf>,
+    /// optional pinned server certificate fingerprint (SHA-256)
+    pub tls_cert_sha256: Option<[u8; 32]>,
     /// optional HTTP API port for metrics (None disables)
     pub api_port: Option<u16>,
     /// pin worker threads to specific CPU cores
@@ -38,6 +43,8 @@ impl Default for Config {
             threads: None,
             enable_devfee: true,
             tls: false,
+            tls_ca_cert: None,
+            tls_cert_sha256: None,
             api_port: None,
             affinity: false,
             huge_pages: false,
@@ -60,6 +67,8 @@ mod tests {
         assert_eq!(cfg.pass.as_deref(), Some("x"));
         assert!(cfg.enable_devfee);
         assert!(!cfg.tls);
+        assert!(cfg.tls_ca_cert.is_none());
+        assert!(cfg.tls_cert_sha256.is_none());
         assert_eq!(cfg.api_port, None);
         assert!(!cfg.affinity);
         assert!(!cfg.huge_pages);

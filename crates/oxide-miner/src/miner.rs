@@ -4,7 +4,7 @@ use crate::args::Args;
 use crate::http_api::run_http_api;
 use crate::stats::Stats;
 use crate::util::tiny_jitter_ms;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use oxide_core::stratum::PoolJob;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
@@ -113,6 +113,34 @@ pub async fn run(args: Args) -> Result<()> {
 
     let dashboard_dir = args.dashboard_dir.clone();
 
+    if !args.tls && (args.tls_ca_cert.is_some() || args.tls_cert_sha256.is_some()) {
+        return Err(anyhow!(
+            "--tls-ca-cert and --tls-cert-sha256 require --tls to be enabled"
+        ));
+    }
+
+    let tls_cert_sha256 = args
+        .tls_cert_sha256
+        .as_ref()
+        .map(|fp| {
+            let normalized: String = fp
+                .chars()
+                .filter(|c| !c.is_ascii_whitespace() && *c != ':')
+                .collect();
+            let bytes = hex::decode(&normalized).with_context(|| {
+                format!("invalid --tls-cert-sha256 value (expected 64 hex chars): {fp}")
+            })?;
+            if bytes.len() != 32 {
+                return Err(anyhow!(
+                    "--tls-cert-sha256 must decode to 32 bytes (64 hex characters)"
+                ));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Ok(arr)
+        })
+        .transpose()?;
+
     let cfg = Config {
         pool: args.pool.expect("pool required unless --benchmark"),
         wallet: args.wallet.expect("user required unless --benchmark"),
@@ -120,6 +148,8 @@ pub async fn run(args: Args) -> Result<()> {
         threads: args.threads,
         enable_devfee: !args.no_devfee,
         tls: args.tls,
+        tls_ca_cert: args.tls_ca_cert.clone(),
+        tls_cert_sha256,
         api_port: args.api_port,
         affinity: args.affinity,
         huge_pages: args.huge_pages,
@@ -182,6 +212,9 @@ pub async fn run(args: Args) -> Result<()> {
 
     let stats = Arc::new(Stats::new(cfg.pool.clone(), cfg.tls));
 
+    let tls_ca_cert = cfg.tls_ca_cert.clone();
+    let tls_cert_sha256 = cfg.tls_cert_sha256;
+
     let _workers = spawn_workers(
         n_workers,
         jobs_tx.clone(),
@@ -227,6 +260,7 @@ pub async fn run(args: Args) -> Result<()> {
         let agent = agent.clone();
 
         async move {
+            let tls_ca_cert = tls_ca_cert.clone();
             let mut backoff_ms = 1_000u64;
             let mut dev_scheduler = if enable_devfee {
                 Some(DevFeeScheduler::new())
@@ -242,6 +276,8 @@ pub async fn run(args: Args) -> Result<()> {
                     &pass,
                     &agent,
                     tls,
+                    tls_ca_cert.as_deref(),
+                    tls_cert_sha256.as_ref(),
                 )
                 .await
                 {
@@ -290,6 +326,8 @@ pub async fn run(args: Args) -> Result<()> {
                             &pass,
                             &agent,
                             tls,
+                            tls_ca_cert.as_ref(),
+                            tls_cert_sha256.as_ref(),
                             3,
                             "devfee",
                         )
@@ -310,6 +348,8 @@ pub async fn run(args: Args) -> Result<()> {
                                     &pass,
                                     &agent,
                                     tls,
+                                    tls_ca_cert.as_ref(),
+                                    tls_cert_sha256.as_ref(),
                                     &jobs_tx,
                                     dev_scheduler.as_mut(),
                                 )
@@ -371,14 +411,16 @@ pub async fn run(args: Args) -> Result<()> {
                                         &mut valid_job_ids,
                                         &mut seen_nonces,
                                         &mut pending_shares,
-                                        &main_pool,
-                                        &user_wallet,
-                                        &pass,
-                                        &agent,
-                                        tls,
-                                        &jobs_tx,
-                                        dev_scheduler.as_mut(),
-                                    )
+                                                &main_pool,
+                                                &user_wallet,
+                                                &pass,
+                                                &agent,
+                                                tls,
+                                                tls_ca_cert.as_ref(),
+                                                tls_cert_sha256.as_ref(),
+                                                &jobs_tx,
+                                                dev_scheduler.as_mut(),
+                                            )
                                     .await
                                     {
                                         tracing::warn!("reconnect failed (devfee -> user): {e}");
@@ -433,6 +475,8 @@ pub async fn run(args: Args) -> Result<()> {
                                                 &pass,
                                                 &agent,
                                                 tls,
+                                                tls_ca_cert.as_ref(),
+                                                tls_cert_sha256.as_ref(),
                                                 3,
                                                 "devfee",
                                             ).await {
@@ -451,6 +495,8 @@ pub async fn run(args: Args) -> Result<()> {
                                                         &pass,
                                                         &agent,
                                                         tls,
+                                                        tls_ca_cert.as_ref(),
+                                                        tls_cert_sha256.as_ref(),
                                                         &jobs_tx,
                                                         dev_scheduler.as_mut(),
                                                     )
@@ -580,6 +626,8 @@ pub async fn run(args: Args) -> Result<()> {
                                                     &pass,
                                                     &agent,
                                                     tls,
+                                                    tls_ca_cert.as_ref(),
+                                                    tls_cert_sha256.as_ref(),
                                                     &jobs_tx,
                                                     &mut valid_job_ids,
                                                     &mut seen_nonces,
@@ -722,6 +770,8 @@ async fn handle_shares(
     pass: &str,
     agent: &str,
     tls: bool,
+    tls_ca_cert: Option<&std::path::PathBuf>,
+    tls_cert_sha256: Option<&[u8; 32]>,
     jobs_tx: &tokio::sync::broadcast::Sender<WorkItem>,
     dev_scheduler: Option<&mut DevFeeScheduler>,
 ) -> Result<()> {
@@ -771,6 +821,8 @@ async fn handle_shares(
             pass,
             agent,
             tls,
+            tls_ca_cert,
+            tls_cert_sha256,
             jobs_tx,
             valid_job_ids,
             seen_nonces,
@@ -861,6 +913,8 @@ async fn reconnect_user_pool(
     pass: &str,
     agent: &str,
     tls: bool,
+    tls_ca_cert: Option<&std::path::PathBuf>,
+    tls_cert_sha256: Option<&[u8; 32]>,
     jobs_tx: &tokio::sync::broadcast::Sender<WorkItem>,
     valid_job_ids: &mut HashSet<String>,
     seen_nonces: &mut HashMap<String, HashSet<u32>>,
@@ -868,8 +922,18 @@ async fn reconnect_user_pool(
     stats: &Arc<Stats>,
     dev_scheduler: Option<&mut DevFeeScheduler>,
 ) -> Result<()> {
-    let (new_client, job_opt) =
-        connect_with_retries(main_pool, user_wallet, pass, agent, tls, 5, "user").await?;
+    let (new_client, job_opt) = connect_with_retries(
+        main_pool,
+        user_wallet,
+        pass,
+        agent,
+        tls,
+        tls_ca_cert,
+        tls_cert_sha256,
+        5,
+        "user",
+    )
+    .await?;
 
     *client = new_client;
     *active_pool = ActivePool::User;
@@ -890,6 +954,8 @@ async fn connect_with_retries(
     pass: &str,
     agent: &str,
     tls: bool,
+    tls_ca_cert: Option<&std::path::PathBuf>,
+    tls_cert_sha256: Option<&[u8; 32]>,
     attempts: usize,
     purpose: &str,
 ) -> Result<(StratumClient, Option<PoolJob>)> {
@@ -899,7 +965,17 @@ async fn connect_with_retries(
 
     while attempt < attempts {
         attempt += 1;
-        match StratumClient::connect_and_login(pool, wallet, pass, agent, tls).await {
+        match StratumClient::connect_and_login(
+            pool,
+            wallet,
+            pass,
+            agent,
+            tls,
+            tls_ca_cert.map(|p| p.as_path()),
+            tls_cert_sha256,
+        )
+        .await
+        {
             Ok(conn) => return Ok(conn),
             Err(e) => {
                 last_err = Some(e);

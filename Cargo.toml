@@ -37,6 +37,10 @@ windows-sys = { version = "0.61.0", features = [
     "Win32_System_SystemServices",
     "Win32_System_Threading",
 ] }
+rustls-pemfile = "1"
+ring = "0.17"
+rustls = { version = "0.21", features = ["dangerous_configuration"] }
+rustls_webpki = { package = "rustls-webpki", version = "0.101" }
 
 [profile.release]
 lto = true

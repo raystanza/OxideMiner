@@ -12,8 +12,8 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{atomic::Ordering, Arc};
-use tokio::{fs, net::TcpListener};
 use sysinfo::System;
+use tokio::{fs, net::TcpListener};
 
 // Embed the dashboard assets at compile time so the binary is self-contained.
 const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
