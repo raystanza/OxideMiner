@@ -232,7 +232,7 @@ pub async fn run(args: Args) -> Result<()> {
     let agent = cfg.agent.clone();
 
     tracing::info!(
-        "dev fee fixed at {} bps (1%) and always enabled",
+        "dev fee fixed at {} bps (1%)",
         DEV_FEE_BASIS_POINTS
     );
 
