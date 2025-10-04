@@ -5,11 +5,12 @@ use crate::http_api::run_http_api;
 use crate::stats::Stats;
 use crate::util::tiny_jitter_ms;
 use anyhow::{anyhow, Context, Result};
+use oxide_core::config::DEFAULT_BATCH_SIZE;
 use oxide_core::stratum::PoolJob;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
-    autotune_snapshot, cpu_has_aes, spawn_workers, Config, DevFeeScheduler, HugePageStatus,
-    StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
+    autotune_snapshot, spawn_workers, Config, DevFeeScheduler, HugePageStatus, StratumClient,
+    DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{atomic::Ordering, Arc};
@@ -56,8 +57,9 @@ pub async fn run(args: Args) -> Result<()> {
     // -------- Logging: console + (when --debug) file ----------
     // Build a layered subscriber so we can tee to stdout and to a file.
     let console_layer = fmt::layer()
-        .with_writer(std::io::stdout) // pretty ANSI for terminal
-        .with_target(true);
+        .with_writer(std::io::stdout)
+        .with_target(true)
+        .with_ansi(true); // pretty ANSI for terminal
 
     // Only create the file appender when --debug is set.
     let _file_guard; // keep in scope to flush asynchronously until process exit
@@ -91,23 +93,99 @@ pub async fn run(args: Args) -> Result<()> {
 
     if args.benchmark {
         let snap = autotune_snapshot();
+        let features = snap.cpu_features;
         let hp_status = snap.huge_page_status.clone();
-        if args.huge_pages && !hp_status.dataset_fits(snap.dataset_bytes) {
+
+        // Threads (auto vs custom)
+        let auto_threads = snap.suggested_threads;
+        let n_workers = args.threads.unwrap_or(auto_threads);
+        let thread_mode = if args.threads.is_some() { "custom" } else { "auto" };
+
+        // Batch size (auto vs custom)
+        let (batch_size, batch_mode) = match args.batch_size {
+            Some(n) => (n, "custom"),
+            None => (snap.recommended_batch_size, "auto"),
+        };
+
+        // Huge pages (intent vs capability)
+        let large_pages_supported = hp_status.enabled() && hp_status.dataset_fits(snap.dataset_bytes);
+        let large_pages = args.huge_pages && large_pages_supported;
+        if args.huge_pages && !large_pages_supported {
             warn_huge_page_limit(&hp_status, snap.dataset_bytes);
         }
-        let n_workers = args.threads.unwrap_or(snap.suggested_threads);
-        let large_pages = args.huge_pages && hp_status.dataset_fits(snap.dataset_bytes);
+
+        let yield_between_batches = !args.no_yield;
+
+        // Cache/NUMA/memory context
+        let l1_kib = snap.cache.l1_data.map(|lvl| (lvl.size_bytes as u64) / 1024);
+        let l2_kib = snap.cache.l2.map(|lvl| (lvl.size_bytes as u64) / 1024);
+        let l3_mib = snap.l3_bytes.map(|b| (b as u64) / (1024 * 1024));
+        let avail_mib = snap.available_bytes / (1024 * 1024);
+        let numa_known = snap.numa_nodes.is_some();
+        let numa_nodes = snap.numa_nodes.unwrap_or(1);
+
+        // Define benchmark duration
+        const BENCH_SECONDS: u32 = 20;
+
+        // Explanatory, multi-line summary for humans, with structured fields for tools.
         tracing::info!(
-            "benchmark: threads={} batch_size={} large_pages={} yield={}",
-            n_workers,
-            args.batch_size,
+            // Structured fields (easy to grep/parse)
+            cores = snap.physical_cores,
+            l1_kib = l1_kib.unwrap_or(0),
+            l2_kib = l2_kib.unwrap_or(0),
+            l3_mib = l3_mib.unwrap_or(0),
+            mem_avail_mib = avail_mib,
+            aes = features.aes_ni,
+            ssse3 = features.ssse3,
+            avx2 = features.avx2,
+            avx512f = features.avx512f,
+            prefetch = features.prefetch_sse,
+            numa_nodes,
+            numa_known,
             large_pages,
-            !args.no_yield
+            batch_size,
+            batch_mode,
+            recommended_batch = snap.recommended_batch_size,
+            auto_threads,
+            threads = n_workers,
+            thread_mode,
+            yield_between_batches,
+            "\nRandomX benchmark setup:\n\n\
+            • Benchmark duration: {} seconds (fixed).\n\
+            • Threads: {} ({}). Auto chooses ~L3-capacity-per-thread to avoid cache thrash.\n\
+            • Batch size: {} hashes ({}; recommended {}). Larger batches cut per-share overhead but can increase latency and memory pressure.\n\
+            • CPU features: AES-NI={}, SSSE3={}, AVX2={}, AVX-512F={}, Prefetch={}.\n\
+            • Cache (per core unless noted): L1={} KiB, L2={} KiB, L3={} MiB (shared). RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
+            • NUMA nodes: {} (known={}). On multi-socket systems, keeping threads/data local to a node reduces remote memory penalties.\n\
+            • Large pages: {}.\n\
+            • Yield between batches: {}.\n\
+            \n\n--- structured fields for tooling below ---\n",
+            BENCH_SECONDS,
+            n_workers, thread_mode,
+            batch_size, batch_mode, snap.recommended_batch_size,
+            features.aes_ni, features.ssse3, features.avx2, features.avx512f, features.prefetch_sse,
+            l1_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_mib.unwrap_or(0),
+            numa_nodes, numa_known,
+            large_pages,
+            yield_between_batches
         );
-        let hps =
-            oxide_core::run_benchmark(n_workers, 10, large_pages, args.batch_size, !args.no_yield)
-                .await?;
-        println!("RandomX benchmark: {:.2} H/s", hps);
+
+        // Run the benchmark
+        
+        let hps = oxide_core::run_benchmark(
+            n_workers,
+            BENCH_SECONDS.into(),
+            large_pages,
+            batch_size,
+            yield_between_batches
+        ).await?;
+
+        // Result: concise human line + structured fields
+        tracing::info!(
+            "RandomX benchmark result (approx.): {:.2} H/s over {}s",
+            hps, BENCH_SECONDS
+        );
+
         return Ok(());
     }
 
@@ -141,7 +219,7 @@ pub async fn run(args: Args) -> Result<()> {
         })
         .transpose()?;
 
-    let cfg = Config {
+    let mut cfg = Config {
         pool: args.pool.expect("pool required unless --benchmark"),
         wallet: args.wallet.expect("user required unless --benchmark"),
         pass: Some(args.pass),
@@ -153,52 +231,103 @@ pub async fn run(args: Args) -> Result<()> {
         api_port: args.api_port,
         affinity: args.affinity,
         huge_pages: args.huge_pages,
-        batch_size: args.batch_size,
+        // Keep a benign placeholder; we’ll finalize after autotune snapshot
+        // so we can decide between user-specified vs recommended.
+        // Using DEFAULT here keeps structure consistent before we set the final value.
+        batch_size: DEFAULT_BATCH_SIZE,
         yield_between_batches: !args.no_yield,
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
     };
 
-    // Take snapshot to log how auto-tune decided thread count
+    // Take snapshot to log how auto-tune decided thread count and batch recommendation.
     let snap = autotune_snapshot();
+    let features = snap.cpu_features;
     let hp_status = snap.huge_page_status.clone();
-    if !hp_status.enabled() {
-        warn_huge_page_limit(&hp_status, snap.dataset_bytes);
-    }
     let auto_threads = snap.suggested_threads;
     let n_workers = cfg.threads.unwrap_or(auto_threads);
 
     // One-line summary that's easy to read in logs
+    let l1_kib = snap.cache.l1_data.map(|lvl| (lvl.size_bytes as u64) / 1024);
+    let l2_kib = snap.cache.l2.map(|lvl| (lvl.size_bytes as u64) / 1024);
     let l3_mib = snap.l3_bytes.map(|b| (b as u64) / (1024 * 1024));
     let avail_mib = snap.available_bytes / (1024 * 1024);
-    let aes = cpu_has_aes();
+    let aes = features.aes_ni;
+    let ssse3 = features.ssse3;
+    let avx2 = features.avx2;
+    let avx512f = features.avx512f;
+    let prefetch = features.prefetch_sse;
+    let numa_known = snap.numa_nodes.is_some();
+    let numa_nodes = snap.numa_nodes.unwrap_or(1);
+
+    // Determine batch size & mode
+    // If the user provided --batch-size, that takes precedence; otherwise use the recommendation.
+    let user_batch = args.batch_size; // Option<usize>
+    let batch_overridden = user_batch.is_some();
+    cfg.batch_size = user_batch.unwrap_or(snap.recommended_batch_size);
+    let batch_mode = if batch_overridden { "custom" } else { "auto" };
 
     // If spawn call passes a 'large_pages' boolean, prefer user opt-in AND OS support
-    let large_pages = cfg.huge_pages && hp_status.dataset_fits(snap.dataset_bytes);
-    if cfg.huge_pages && !large_pages && hp_status.enabled() {
+    // Can we actually use huge pages? (OS enabled + dataset fits)
+    let large_pages_supported = hp_status.enabled() && hp_status.dataset_fits(snap.dataset_bytes);
+
+    // Will we use huge pages? (user asked AND supported)
+    let large_pages = cfg.huge_pages && large_pages_supported;
+
+    // Warn only if the user asked for huge pages but we can’t provide them.
+    if cfg.huge_pages && !large_pages_supported {
         warn_huge_page_limit(&hp_status, snap.dataset_bytes);
     }
 
+    // Thread mode: "custom" if user provided --threads, else "auto"
+    let thread_mode = if cfg.threads.is_some() { "custom" } else { "auto" };
+
+    // Explanatory, multi-line summary for humans, with structured fields for tools.
+    tracing::info!(
+        // Structured fields (easy to grep/parse)
+        cores = snap.physical_cores,
+        l1_kib = l1_kib.unwrap_or(0),
+        l2_kib = l2_kib.unwrap_or(0),
+        l3_mib = l3_mib.unwrap_or(0),
+        mem_avail_mib = avail_mib,
+        aes,
+        ssse3,
+        avx2,
+        avx512f,
+        prefetch,
+        numa_nodes,
+        numa_known,
+        large_pages,
+        batch_size = cfg.batch_size,
+        batch_mode,
+        recommended_batch = snap.recommended_batch_size,
+        auto_threads,
+        threads = n_workers,
+        thread_mode,
+        yield_between_batches = cfg.yield_between_batches,
+        "\nCPU tuning summary:\n\n\
+        • Threads: {} ({}). Auto chooses ~L3-capacity-per-thread to avoid cache thrash.\n\
+        • Batch size: {} hashes ({}; recommended {}). Larger batches cut per-share overhead but can increase latency and memory pressure.\n\
+        • CPU features: AES-NI={}, SSSE3={}, AVX2={}, AVX-512F={}, Prefetch={}.\n\
+        • Cache (per core unless noted): L1={} KiB, L2={} KiB, L3={} MiB (shared). RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
+        • NUMA nodes: {} (known={}). On multi-socket systems, keeping threads/data local to a node reduces remote memory penalties.\n\
+        • Large pages: {}. Reduces TLB misses for the RandomX dataset and can improve throughput when the dataset fits.\n\
+        • Yield between batches: {}. Keeps the miner friendly on shared machines.\n\
+        \n\n--- structured fields for tooling below ---\n",
+        n_workers, thread_mode,
+        cfg.batch_size, batch_mode, snap.recommended_batch_size,
+        aes, ssse3, avx2, avx512f, prefetch,
+        l1_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_mib.unwrap_or(0),
+        numa_nodes, numa_known,
+        large_pages,
+        cfg.yield_between_batches
+    );
+
+    // Optional explicit breadcrumbs, as you have:
     if let Some(user_t) = cfg.threads {
-        tracing::info!(
-            "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages={} -> threads={} (OVERRIDE; auto={})",
-            snap.physical_cores,
-            l3_mib.unwrap_or(0),
-            avail_mib,
-            aes,
-            large_pages,
-            user_t,
-            auto_threads
-        );
-    } else {
-        tracing::info!(
-            "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages={} -> threads={}",
-            snap.physical_cores,
-            l3_mib.unwrap_or(0),
-            avail_mib,
-            aes,
-            large_pages,
-            n_workers
-        );
+        tracing::info!("tuning override: user set threads={}", user_t);
+    }
+    if batch_overridden {
+        tracing::info!("tuning override: user set batch_size={}", cfg.batch_size);
     }
 
     // Broadcast: jobs -> workers
@@ -231,10 +360,7 @@ pub async fn run(args: Args) -> Result<()> {
     let pass = cfg.pass.clone().unwrap_or_else(|| "x".into());
     let agent = cfg.agent.clone();
 
-    tracing::info!(
-        "dev fee fixed at {} bps (1%)",
-        DEV_FEE_BASIS_POINTS
-    );
+    tracing::info!("dev fee fixed at {} bps (1%)", DEV_FEE_BASIS_POINTS);
 
     // Optional HTTP API
     if let Some(port) = cfg.api_port {
@@ -371,7 +497,11 @@ pub async fn run(args: Args) -> Result<()> {
                                         &mut seen_nonces,
                                     );
                                     tracing::info!(job_id = %dev_job_id, "devfee activated for job");
-                                    let _ = scheduler_tick(&mut dev_scheduler, &dev_job_id, active_pool);
+                                    let _ = scheduler_tick(
+                                        &mut dev_scheduler,
+                                        &dev_job_id,
+                                        active_pool,
+                                    );
                                 } else {
                                     tracing::debug!("devfee activated; awaiting first job");
                                 }
@@ -711,11 +841,7 @@ fn broadcast_job(
     job_id
 }
 
-fn scheduler_tick(
-    scheduler: &mut DevFeeScheduler,
-    job_id: &str,
-    active_pool: ActivePool,
-) -> bool {
+fn scheduler_tick(scheduler: &mut DevFeeScheduler, job_id: &str, active_pool: ActivePool) -> bool {
     let donate = scheduler.should_donate();
     tracing::debug!(
         job_id = job_id,

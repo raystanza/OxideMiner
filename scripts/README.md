@@ -70,7 +70,7 @@ cat /sys/kernel/mm/transparent_hugepage/enabled
 
 ### Windows
 
-* Open **Local Security Policy** → *Local Policies* → *User Rights Assignment* → **Lock pages in memory** → remove the user → `gpupdate /force`.
+* Open **Local Security Policy** -> *Local Policies* -> *User Rights Assignment* -> **Lock pages in memory** -> remove the user -> `gpupdate /force`.
 * Sign out/in.
 
 ### Debian
@@ -98,9 +98,9 @@ sudo systemctl daemon-reload
 
 RandomX intentionally hammers memory with **pseudo-random accesses** to a \~2 GiB dataset. This pattern punishes normal 4 KiB pages (lots of page-table walks and TLB misses). Enabling Huge/Large pages (2 MiB) helps by:
 
-* **Cutting TLB misses:** Fewer pages cover the same dataset → fewer page-table lookups, less latency.
+* **Cutting TLB misses:** Fewer pages cover the same dataset -> fewer page-table lookups, less latency.
 * **Smoother, higher hashrate:** Typically a **single-digit to low double-digit (%) gain** depending on CPU, RAM speed/timings, and BIOS settings.
-* **Lower CPU overhead & jitter:** Fewer kernel crossings and page faults → more stable per-thread performance.
+* **Lower CPU overhead & jitter:** Fewer kernel crossings and page faults -> more stable per-thread performance.
 * **Better efficiency:** More hashes per watt thanks to reduced memory-management overhead.
 * **Pinned memory (Windows “Lock pages”):** Prevents paging of the RandomX dataset, avoiding stalls.
 

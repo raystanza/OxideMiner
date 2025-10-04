@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub const DEFAULT_BATCH_SIZE: usize = 10_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// pool like "pool.example.com:3333"
@@ -48,7 +50,7 @@ impl Default for Config {
             api_port: None,
             affinity: false,
             huge_pages: false,
-            batch_size: 10_000,
+            batch_size: DEFAULT_BATCH_SIZE,
             yield_between_batches: true,
             agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
         }
@@ -72,7 +74,7 @@ mod tests {
         assert_eq!(cfg.api_port, None);
         assert!(!cfg.affinity);
         assert!(!cfg.huge_pages);
-        assert_eq!(cfg.batch_size, 10_000);
+        assert_eq!(cfg.batch_size, DEFAULT_BATCH_SIZE);
         assert!(cfg.yield_between_batches);
         assert!(cfg.agent.starts_with("OxideMiner/"));
     }

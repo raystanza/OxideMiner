@@ -1,6 +1,9 @@
 // OxideMiner/crates/oxide-miner/src/args.rs
 
-use clap::Parser;
+use clap::{
+    {Parser, ValueHint},
+    {builder::TypedValueParser}
+};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -23,7 +26,14 @@ pub struct Args {
     pub pass: String,
 
     /// Number of threads (omit for auto)
-    #[arg(short = 't', long = "threads")]
+    #[arg(
+        short = 't',
+        long  = "threads",
+        value_parser = clap::value_parser!(u64)
+            .range(1..)
+            .try_map(|n| usize::try_from(n)
+                .map_err(|_| String::from("threads too large for usize on this platform")))
+    )]
     pub threads: Option<usize>,
 
     /// Enable TLS for pool connection
@@ -31,19 +41,19 @@ pub struct Args {
     pub tls: bool,
 
     /// Path to additional PEM/DER CA certificate to trust when using TLS
-    #[arg(long = "tls-ca-cert", value_name = "PATH")]
+    #[arg(long = "tls-ca-cert", value_name = "PATH", requires = "tls")]
     pub tls_ca_cert: Option<PathBuf>,
 
     /// SHA-256 fingerprint of the expected TLS server certificate (hex)
-    #[arg(long = "tls-cert-sha256", value_name = "HEX")]
+    #[arg(long = "tls-cert-sha256", value_name = "HEX", requires = "tls")]
     pub tls_cert_sha256: Option<String>,
 
     /// Expose a simple HTTP API on this port
-    #[arg(long = "api-port")]
+    #[arg(long = "api-port", value_parser = clap::value_parser!(u16).range(1..=65535))]
     pub api_port: Option<u16>,
 
     /// Serve dashboard files from this directory instead of embedded assets
-    #[arg(long = "dashboard-dir")]
+    #[arg(long = "dashboard-dir", value_name = "DIR", value_hint = ValueHint::DirPath)]
     pub dashboard_dir: Option<PathBuf>,
 
     /// Pin worker threads to CPU cores
@@ -54,9 +64,17 @@ pub struct Args {
     #[arg(long = "huge-pages")]
     pub huge_pages: bool,
 
-    /// Number of hashes per batch in mining loop
-    #[arg(long = "batch-size", default_value_t = 10_000)]
-    pub batch_size: usize,
+    /// Number of hashes per batch in the mining loop.
+    /// Omit this flag to auto-tune based on your CPU/cache profile (recommended).
+    #[arg(
+        long = "batch-size",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64)
+            .range(1..)
+            .try_map(|n| usize::try_from(n)
+                .map_err(|_| String::from("batch-size too large for usize on this platform")))
+    )]
+    pub batch_size: Option<usize>,
 
     /// Disable cooperative yields between hash batches
     #[arg(long = "no-yield")]
@@ -92,4 +110,27 @@ mod tests {
         assert!(Args::try_parse_from(["test", "-o", "pool:5555"]).is_err());
         assert!(Args::try_parse_from(["test", "-u", "wallet"]).is_err());
     }
+
+    #[test]
+    fn batch_size_parses_as_some_when_flag_present() {
+        let args = Args::try_parse_from(["test", "--batch-size", "20000"]).unwrap();
+        assert_eq!(args.batch_size, Some(20_000));
+    }
+
+    #[test]
+    fn batch_size_is_none_when_flag_missing() {
+        let args = Args::try_parse_from(["test"]).unwrap();
+        assert_eq!(args.batch_size, None);
+    }
+
+    #[test]
+    fn threads_zero_rejected() {
+        assert!(Args::try_parse_from(["test", "--threads", "0"]).is_err());
+    }
+
+    #[test]
+    fn batch_size_zero_rejected() {
+        assert!(Args::try_parse_from(["test", "--batch-size", "0"]).is_err());
+    }
+
 }
