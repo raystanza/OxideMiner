@@ -54,9 +54,9 @@ pub struct Args {
     #[arg(long = "huge-pages")]
     pub huge_pages: bool,
 
-    /// Number of hashes per batch in mining loop
-    #[arg(long = "batch-size", default_value_t = 10_000)]
-    pub batch_size: usize,
+    /// Number of hashes per batch in mining loop (omit for auto)
+    #[arg(long = "batch-size", value_name = "N")]
+    pub batch_size: Option<usize>,
 
     /// Disable cooperative yields between hash batches
     #[arg(long = "no-yield")]

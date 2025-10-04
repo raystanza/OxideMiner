@@ -199,6 +199,16 @@ mod engine {
         }
         if system::cpu_has_aes() {
             flags |= RandomXFlag::FLAG_HARD_AES;
+        } else {
+            flags |= RandomXFlag::FLAG_SECURE;
+        }
+
+        if system::cpu_has_avx2() {
+            flags |= RandomXFlag::FLAG_ARGON2_AVX2;
+        } else if system::cpu_has_ssse3() {
+            flags |= RandomXFlag::FLAG_ARGON2_SSSE3;
+        } else {
+            flags |= RandomXFlag::FLAG_ARGON2;
         }
         flags
     }
