@@ -57,8 +57,9 @@ pub async fn run(args: Args) -> Result<()> {
     // -------- Logging: console + (when --debug) file ----------
     // Build a layered subscriber so we can tee to stdout and to a file.
     let console_layer = fmt::layer()
-        .with_writer(std::io::stdout) // pretty ANSI for terminal
-        .with_target(true);
+        .with_writer(std::io::stdout)
+        .with_target(true)
+        .with_ansi(true); // pretty ANSI for terminal
 
     // Only create the file appender when --debug is set.
     let _file_guard; // keep in scope to flush asynchronously until process exit
@@ -99,13 +100,10 @@ pub async fn run(args: Args) -> Result<()> {
         let n_workers = args.threads.unwrap_or(snap.suggested_threads);
         let large_pages = args.huge_pages && hp_status.dataset_fits(snap.dataset_bytes);
         let features = snap.cpu_features;
-        let batch_overridden = args.batch_size != DEFAULT_BATCH_SIZE;
-        let batch_size = if batch_overridden {
-            args.batch_size
-        } else {
-            snap.recommended_batch_size
+        let (batch_size, batch_mode) = match args.batch_size {
+            Some(n) => (n, "custom"),
+            None => (snap.recommended_batch_size, "auto"),
         };
-        let batch_mode = if batch_overridden { "user" } else { "auto" };
         tracing::info!(
             threads = n_workers,
             batch_size,
@@ -170,18 +168,18 @@ pub async fn run(args: Args) -> Result<()> {
         api_port: args.api_port,
         affinity: args.affinity,
         huge_pages: args.huge_pages,
-        batch_size: args.batch_size,
+        // Keep a benign placeholder; we’ll finalize after autotune snapshot
+        // so we can decide between user-specified vs recommended.
+        // Using DEFAULT here keeps structure consistent before we set the final value.
+        batch_size: DEFAULT_BATCH_SIZE,
         yield_between_batches: !args.no_yield,
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
     };
 
-    // Take snapshot to log how auto-tune decided thread count
+    // Take snapshot to log how auto-tune decided thread count and batch recommendation.
     let snap = autotune_snapshot();
     let features = snap.cpu_features;
     let hp_status = snap.huge_page_status.clone();
-    if !hp_status.enabled() {
-        warn_huge_page_limit(&hp_status, snap.dataset_bytes);
-    }
     let auto_threads = snap.suggested_threads;
     let n_workers = cfg.threads.unwrap_or(auto_threads);
 
@@ -198,61 +196,75 @@ pub async fn run(args: Args) -> Result<()> {
     let numa_known = snap.numa_nodes.is_some();
     let numa_nodes = snap.numa_nodes.unwrap_or(1);
 
-    let batch_overridden = cfg.batch_size != DEFAULT_BATCH_SIZE;
-    if !batch_overridden {
-        cfg.batch_size = snap.recommended_batch_size;
-    }
-    let batch_mode = if batch_overridden { "user" } else { "auto" };
+    // Determine batch size & mode
+    // If the user provided --batch-size, that takes precedence; otherwise use the recommendation.
+    let user_batch = args.batch_size; // Option<usize>
+    let batch_overridden = user_batch.is_some();
+    cfg.batch_size = user_batch.unwrap_or(snap.recommended_batch_size);
+    let batch_mode = if batch_overridden { "custom" } else { "auto" };
 
     // If spawn call passes a 'large_pages' boolean, prefer user opt-in AND OS support
-    let large_pages = cfg.huge_pages && hp_status.dataset_fits(snap.dataset_bytes);
-    if cfg.huge_pages && !large_pages && hp_status.enabled() {
+    // Can we actually use huge pages? (OS enabled + dataset fits)
+    let large_pages_supported = hp_status.enabled() && hp_status.dataset_fits(snap.dataset_bytes);
+
+    // Will we use huge pages? (user asked AND supported)
+    let large_pages = cfg.huge_pages && large_pages_supported;
+
+    // Warn only if the user asked for huge pages but we can’t provide them.
+    if cfg.huge_pages && !large_pages_supported {
         warn_huge_page_limit(&hp_status, snap.dataset_bytes);
     }
 
+    // Thread mode: "custom" if user provided --threads, else "auto"
+    let thread_mode = if cfg.threads.is_some() { "custom" } else { "auto" };
+
+    // Explanatory, multi-line summary for humans, with structured fields for tools.
+    tracing::info!(
+        // Structured fields (easy to grep/parse)
+        cores = snap.physical_cores,
+        l1_kib = l1_kib.unwrap_or(0),
+        l2_kib = l2_kib.unwrap_or(0),
+        l3_mib = l3_mib.unwrap_or(0),
+        mem_avail_mib = avail_mib,
+        aes,
+        ssse3,
+        avx2,
+        avx512f,
+        prefetch,
+        numa_nodes,
+        numa_known,
+        large_pages,
+        batch_size = cfg.batch_size,
+        batch_mode,
+        recommended_batch = snap.recommended_batch_size,
+        auto_threads,
+        threads = n_workers,
+        thread_mode,
+        yield_between_batches = cfg.yield_between_batches,
+        "CPU tuning summary:\n\
+        • Threads: {} ({}). Auto chooses ~L3-capacity-per-thread to avoid cache thrash.\n\
+        • Batch size: {} hashes ({}; recommended {}). Larger batches cut per-share overhead but can increase latency and memory pressure.\n\
+        • CPU features: AES-NI={}, SSSE3={}, AVX2={}, AVX-512F={}, Prefetch={}.\n\
+        • Cache (per core unless noted): L1={} KiB, L2={} KiB, L3={} MiB (shared). RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
+        • NUMA nodes: {} (known={}). On multi-socket systems, keeping threads/data local to a node reduces remote memory penalties.\n\
+        • Large pages: {}. Reduces TLB misses for the RandomX dataset and can improve throughput when the dataset fits.\n\
+        • Yield between batches: {}. Keeps the miner friendly on shared machines.\n\
+        --- structured fields for tooling below ---\n",
+        n_workers, thread_mode,
+        cfg.batch_size, batch_mode, snap.recommended_batch_size,
+        aes, ssse3, avx2, avx512f, prefetch,
+        l1_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_mib.unwrap_or(0),
+        numa_nodes, numa_known,
+        large_pages,
+        cfg.yield_between_batches
+    );
+
+    // Optional explicit breadcrumbs, as you have:
     if let Some(user_t) = cfg.threads {
-        tracing::info!(
-            cores = snap.physical_cores,
-            l1_kib = l1_kib.unwrap_or(0),
-            l2_kib = l2_kib.unwrap_or(0),
-            l3_mib = l3_mib.unwrap_or(0),
-            mem_avail_mib = avail_mib,
-            aes,
-            ssse3,
-            avx2,
-            avx512f,
-            prefetch,
-            numa_nodes,
-            numa_known,
-            large_pages,
-            batch_size = cfg.batch_size,
-            batch_mode,
-            recommended_batch = snap.recommended_batch_size,
-            auto_threads,
-            "tuning override: threads={}",
-            user_t
-        );
-    } else {
-        tracing::info!(
-            cores = snap.physical_cores,
-            l1_kib = l1_kib.unwrap_or(0),
-            l2_kib = l2_kib.unwrap_or(0),
-            l3_mib = l3_mib.unwrap_or(0),
-            mem_avail_mib = avail_mib,
-            aes,
-            ssse3,
-            avx2,
-            avx512f,
-            prefetch,
-            numa_nodes,
-            numa_known,
-            large_pages,
-            batch_size = cfg.batch_size,
-            batch_mode,
-            recommended_batch = snap.recommended_batch_size,
-            "tuning -> threads={}",
-            n_workers
-        );
+        tracing::info!("tuning override: user set threads={}", user_t);
+    }
+    if batch_overridden {
+        tracing::info!("tuning override: user set batch_size={}", cfg.batch_size);
     }
 
     // Broadcast: jobs -> workers

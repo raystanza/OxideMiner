@@ -20,8 +20,10 @@ hyper-util = { workspace = true }
 http-body-util = { workspace = true }
 tracing-appender = "0.2"
 sysinfo = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+ring = { workspace = true }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tempfile = "3"
-
