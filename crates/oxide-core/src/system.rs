@@ -5,7 +5,11 @@
 // - CPU feature probes (AES for RandomX HARD_AES)
 // - Heuristics for recommended thread count based on cores/L3/memory
 
+use crate::config::DEFAULT_BATCH_SIZE;
 use sysinfo::System;
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use raw_cpuid::{CacheType, CpuId};
 
 #[cfg(target_os = "windows")]
 use std::{mem, ptr, slice};
@@ -31,6 +35,42 @@ use windows_sys::Win32::{
 pub const RANDOMX_DATASET_BYTES: u64 = 2_u64 * 1024 * 1024 * 1024; // ~2 GiB
 /// Approximate per-thread scratchpad size required by RandomX.
 pub const RANDOMX_SCRATCHPAD_BYTES: u64 = 2_u64 * 1024 * 1024; // ~2 MiB
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CacheLevel {
+    pub size_bytes: usize,
+    pub line_size: usize,
+    pub shared_cores: usize,
+}
+
+impl CacheLevel {
+    pub fn per_thread_bytes(&self) -> usize {
+        let share = self.shared_cores.max(1);
+        let size = self.size_bytes.max(share);
+        size / share
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CacheHierarchy {
+    pub l1_data: Option<CacheLevel>,
+    pub l2: Option<CacheLevel>,
+    pub l3: Option<CacheLevel>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CpuFeatures {
+    pub aes_ni: bool,
+    pub ssse3: bool,
+    pub avx2: bool,
+    pub avx512f: bool,
+    pub sse2: bool,
+    pub prefetch_sse: bool,
+    pub fpu: bool,
+    pub out_of_order: bool,
+    pub branch_prediction: bool,
+    pub ilp: bool,
+}
 
 /// Information about the system's huge/large page configuration.
 #[derive(Debug, Clone, Default)]
@@ -295,53 +335,170 @@ fn has_lock_memory_privilege() -> bool {
     }
 }
 
-/// Determine whether the current CPU supports AES instructions (x86/x86_64).
-/// RandomX benefits from AES for the HARD_AES flag.
-pub fn cpu_has_aes() -> bool {
+pub fn cpu_features() -> CpuFeatures {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        std::is_x86_feature_detected!("aes")
+        CpuFeatures {
+            aes_ni: std::is_x86_feature_detected!("aes"),
+            ssse3: std::is_x86_feature_detected!("ssse3"),
+            avx2: std::is_x86_feature_detected!("avx2"),
+            avx512f: std::is_x86_feature_detected!("avx512f"),
+            sse2: std::is_x86_feature_detected!("sse2"),
+            prefetch_sse: std::is_x86_feature_detected!("sse"),
+            fpu: true,
+            out_of_order: true,
+            branch_prediction: true,
+            ilp: true,
+        }
     }
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     {
-        false
-    }
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-/// Return the size of the L3 cache in bytes if detectable via CPUID(0x4).
-fn l3_cache_bytes() -> Option<usize> {
-    let cpuid = raw_cpuid::CpuId::new();
-    if let Some(cparams) = cpuid.get_cache_parameters() {
-        for cache in cparams {
-            if cache.level() == 3 && matches!(cache.cache_type(), raw_cpuid::CacheType::Unified) {
-                // CPUID leaf 0x4 size formula:
-                // size = associativity * partitions * line_size * sets
-                let ways = cache.associativity() as usize;
-                let parts = cache.physical_line_partitions() as usize;
-                let line = cache.coherency_line_size() as usize;
-                let sets = cache.sets() as usize;
-                return Some(ways * parts * line * sets);
-            }
+        CpuFeatures {
+            fpu: true,
+            out_of_order: true,
+            branch_prediction: true,
+            ilp: true,
+            ..CpuFeatures::default()
         }
     }
-    None
 }
 
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn l3_cache_bytes() -> Option<usize> {
-    None
+/// Determine whether the current CPU supports AES instructions (x86/x86_64).
+/// RandomX benefits from AES for the HARD_AES flag.
+pub fn cpu_has_aes() -> bool {
+    cpu_features().aes_ni
+}
+
+pub fn cpu_has_ssse3() -> bool {
+    cpu_features().ssse3
+}
+
+pub fn cpu_has_avx2() -> bool {
+    cpu_features().avx2
+}
+
+pub fn cpu_has_avx512f() -> bool {
+    cpu_features().avx512f
+}
+
+pub fn cache_hierarchy() -> CacheHierarchy {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        let cpuid = CpuId::new();
+        let mut info = CacheHierarchy::default();
+        if let Some(cparams) = cpuid.get_cache_parameters() {
+            for cache in cparams {
+                let size = cache.associativity()
+                    * cache.physical_line_partitions()
+                    * cache.coherency_line_size()
+                    * cache.sets();
+                if size == 0 {
+                    continue;
+                }
+                let level = CacheLevel {
+                    size_bytes: size,
+                    line_size: cache.coherency_line_size(),
+                    shared_cores: cache.max_cores_for_cache().max(1),
+                };
+                match cache.level() {
+                    1 if matches!(cache.cache_type(), CacheType::Data | CacheType::Unified) => {
+                        if info
+                            .l1_data
+                            .map(|existing| existing.size_bytes < level.size_bytes)
+                            .unwrap_or(true)
+                        {
+                            info.l1_data = Some(level);
+                        }
+                    }
+                    2 if matches!(cache.cache_type(), CacheType::Data | CacheType::Unified) => {
+                        if info
+                            .l2
+                            .map(|existing| existing.size_bytes < level.size_bytes)
+                            .unwrap_or(true)
+                        {
+                            info.l2 = Some(level);
+                        }
+                    }
+                    3 if matches!(cache.cache_type(), CacheType::Unified) => {
+                        if info
+                            .l3
+                            .map(|existing| existing.size_bytes < level.size_bytes)
+                            .unwrap_or(true)
+                        {
+                            info.l3 = Some(level);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        info
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        CacheHierarchy::default()
+    }
+}
+
+pub fn numa_nodes() -> Option<usize> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_numa_nodes()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_numa_nodes() -> Option<usize> {
+    let data = std::fs::read_to_string("/sys/devices/system/node/online").ok()?;
+    parse_numa_nodes(&data)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_numa_nodes(spec: &str) -> Option<usize> {
+    let mut total = 0usize;
+    let mut saw_entry = false;
+    for part in spec.trim().split(',') {
+        let token = part.trim();
+        if token.is_empty() {
+            continue;
+        }
+        saw_entry = true;
+        if let Some((start, end)) = token.split_once('-') {
+            let start: usize = start.parse().ok()?;
+            let end: usize = end.parse().ok()?;
+            if end < start {
+                return None;
+            }
+            total = total.checked_add(end - start + 1)?;
+        } else {
+            token.parse::<usize>().ok()?;
+            total = total.checked_add(1)?;
+        }
+    }
+    if !saw_entry {
+        None
+    } else {
+        Some(total.max(1))
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct AutoTuneSnapshot {
     pub physical_cores: usize,
+    pub cache: CacheHierarchy,
     pub l3_bytes: Option<usize>,
     pub available_bytes: u64,
     pub dataset_bytes: u64,
     pub scratch_per_thread_bytes: u64,
     pub huge_page_status: HugePageStatus,
+    pub cpu_features: CpuFeatures,
+    pub numa_nodes: Option<usize>,
     pub suggested_threads: usize,
+    pub recommended_batch_size: usize,
 }
 
 /// Compute a snapshot of system resources and the suggested mining thread count.
@@ -355,7 +512,10 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
     sys.refresh_memory();
 
     let physical = num_cpus::get_physical().max(1);
-    let l3 = l3_cache_bytes();
+    let cache = cache_hierarchy();
+    let l3 = cache.l3.map(|lvl| lvl.size_bytes);
+    let features = cpu_features();
+    let numa = numa_nodes();
     let avail_bytes = sys.available_memory();
 
     // RandomX "fast" dataset and per-thread scratchpad estimates
@@ -384,20 +544,47 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
         threads = 1;
     }
 
+    let recommended_batch_size = recommended_batch_size_from_cache(&cache);
+
     AutoTuneSnapshot {
         physical_cores: physical,
+        cache,
         l3_bytes: l3,
         available_bytes: avail_bytes,
         dataset_bytes: dataset,
         scratch_per_thread_bytes: scratch,
         huge_page_status: huge_pages,
+        cpu_features: features,
+        numa_nodes: numa,
         suggested_threads: threads.max(1),
+        recommended_batch_size,
     }
 }
 
 /// Legacy helper used elsewhere; delegates to the snapshot.
 pub fn recommended_thread_count() -> usize {
     autotune_snapshot().suggested_threads
+}
+
+fn recommended_batch_size_from_cache(cache: &CacheHierarchy) -> usize {
+    const MIN_BATCH: usize = 2_048;
+    const MAX_BATCH: usize = 65_536;
+
+    let mut recommended = DEFAULT_BATCH_SIZE;
+
+    if let Some(l1) = cache.l1_data {
+        let per_thread = l1.per_thread_bytes();
+        let l1_hashes = (per_thread.max(64) / 64).clamp(MIN_BATCH, MAX_BATCH);
+        recommended = l1_hashes;
+    }
+
+    if let Some(l2) = cache.l2 {
+        let per_thread = l2.per_thread_bytes();
+        let l2_hashes = (per_thread.max(128) / 128).clamp(MIN_BATCH, MAX_BATCH);
+        recommended = recommended.max(l2_hashes);
+    }
+
+    recommended
 }
 
 #[cfg(test)]
@@ -431,9 +618,24 @@ mod tests {
 
     #[test]
     fn feature_checks_do_not_panic() {
+        let _ = cpu_features();
+        let _ = cache_hierarchy();
         let _ = cpu_has_aes();
+        let _ = cpu_has_ssse3();
+        let _ = cpu_has_avx2();
+        let _ = cpu_has_avx512f();
+        let _ = numa_nodes();
         let _ = huge_pages_enabled();
         let _ = huge_page_status();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_numa_ranges() {
+        assert_eq!(parse_numa_nodes("0"), Some(1));
+        assert_eq!(parse_numa_nodes("0-1"), Some(2));
+        assert_eq!(parse_numa_nodes("0,2,4"), Some(3));
+        assert!(parse_numa_nodes("2-1").is_none());
     }
 
     #[test]
