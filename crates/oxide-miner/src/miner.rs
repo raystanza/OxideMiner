@@ -93,36 +93,99 @@ pub async fn run(args: Args) -> Result<()> {
 
     if args.benchmark {
         let snap = autotune_snapshot();
-        let hp_status = snap.huge_page_status.clone();
-        if args.huge_pages && !hp_status.dataset_fits(snap.dataset_bytes) {
-            warn_huge_page_limit(&hp_status, snap.dataset_bytes);
-        }
-        let n_workers = args.threads.unwrap_or(snap.suggested_threads);
-        let large_pages = args.huge_pages && hp_status.dataset_fits(snap.dataset_bytes);
         let features = snap.cpu_features;
+        let hp_status = snap.huge_page_status.clone();
+
+        // Threads (auto vs custom)
+        let auto_threads = snap.suggested_threads;
+        let n_workers = args.threads.unwrap_or(auto_threads);
+        let thread_mode = if args.threads.is_some() { "custom" } else { "auto" };
+
+        // Batch size (auto vs custom)
         let (batch_size, batch_mode) = match args.batch_size {
             Some(n) => (n, "custom"),
             None => (snap.recommended_batch_size, "auto"),
         };
+
+        // Huge pages (intent vs capability)
+        let large_pages_supported = hp_status.enabled() && hp_status.dataset_fits(snap.dataset_bytes);
+        let large_pages = args.huge_pages && large_pages_supported;
+        if args.huge_pages && !large_pages_supported {
+            warn_huge_page_limit(&hp_status, snap.dataset_bytes);
+        }
+
+        let yield_between_batches = !args.no_yield;
+
+        // Cache/NUMA/memory context
+        let l1_kib = snap.cache.l1_data.map(|lvl| (lvl.size_bytes as u64) / 1024);
+        let l2_kib = snap.cache.l2.map(|lvl| (lvl.size_bytes as u64) / 1024);
+        let l3_mib = snap.l3_bytes.map(|b| (b as u64) / (1024 * 1024));
+        let avail_mib = snap.available_bytes / (1024 * 1024);
+        let numa_known = snap.numa_nodes.is_some();
+        let numa_nodes = snap.numa_nodes.unwrap_or(1);
+
+        // Define benchmark duration
+        const BENCH_SECONDS: u32 = 20;
+
+        // Explanatory, multi-line summary for humans, with structured fields for tools.
         tracing::info!(
-            threads = n_workers,
-            batch_size,
-            batch_mode,
-            recommended_batch = snap.recommended_batch_size,
-            large_pages,
-            yield_between_batches = !args.no_yield,
-            aes_ni = features.aes_ni,
+            // Structured fields (easy to grep/parse)
+            cores = snap.physical_cores,
+            l1_kib = l1_kib.unwrap_or(0),
+            l2_kib = l2_kib.unwrap_or(0),
+            l3_mib = l3_mib.unwrap_or(0),
+            mem_avail_mib = avail_mib,
+            aes = features.aes_ni,
             ssse3 = features.ssse3,
             avx2 = features.avx2,
             avx512f = features.avx512f,
             prefetch = features.prefetch_sse,
-            numa_nodes = snap.numa_nodes.unwrap_or(1),
-            numa_known = snap.numa_nodes.is_some(),
-            "benchmark configuration"
+            numa_nodes,
+            numa_known,
+            large_pages,
+            batch_size,
+            batch_mode,
+            recommended_batch = snap.recommended_batch_size,
+            auto_threads,
+            threads = n_workers,
+            thread_mode,
+            yield_between_batches,
+            "\nRandomX benchmark setup:\n\n\
+            • Benchmark duration: {} seconds (fixed).\n\
+            • Threads: {} ({}). Auto chooses ~L3-capacity-per-thread to avoid cache thrash.\n\
+            • Batch size: {} hashes ({}; recommended {}). Larger batches cut per-share overhead but can increase latency and memory pressure.\n\
+            • CPU features: AES-NI={}, SSSE3={}, AVX2={}, AVX-512F={}, Prefetch={}.\n\
+            • Cache (per core unless noted): L1={} KiB, L2={} KiB, L3={} MiB (shared). RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
+            • NUMA nodes: {} (known={}). On multi-socket systems, keeping threads/data local to a node reduces remote memory penalties.\n\
+            • Large pages: {}.\n\
+            • Yield between batches: {}.\n\
+            \n\n--- structured fields for tooling below ---\n",
+            BENCH_SECONDS,
+            n_workers, thread_mode,
+            batch_size, batch_mode, snap.recommended_batch_size,
+            features.aes_ni, features.ssse3, features.avx2, features.avx512f, features.prefetch_sse,
+            l1_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_mib.unwrap_or(0),
+            numa_nodes, numa_known,
+            large_pages,
+            yield_between_batches
         );
-        let hps = oxide_core::run_benchmark(n_workers, 10, large_pages, batch_size, !args.no_yield)
-            .await?;
-        println!("RandomX benchmark: {:.2} H/s", hps);
+
+        // Run the benchmark
+        
+        let hps = oxide_core::run_benchmark(
+            n_workers,
+            BENCH_SECONDS.into(),
+            large_pages,
+            batch_size,
+            yield_between_batches
+        ).await?;
+
+        // Result: concise human line + structured fields
+        tracing::info!(
+            "RandomX benchmark result (approx.): {:.2} H/s over {}s",
+            hps, BENCH_SECONDS
+        );
+
         return Ok(());
     }
 
@@ -241,7 +304,7 @@ pub async fn run(args: Args) -> Result<()> {
         threads = n_workers,
         thread_mode,
         yield_between_batches = cfg.yield_between_batches,
-        "CPU tuning summary:\n\
+        "\nCPU tuning summary:\n\n\
         • Threads: {} ({}). Auto chooses ~L3-capacity-per-thread to avoid cache thrash.\n\
         • Batch size: {} hashes ({}; recommended {}). Larger batches cut per-share overhead but can increase latency and memory pressure.\n\
         • CPU features: AES-NI={}, SSSE3={}, AVX2={}, AVX-512F={}, Prefetch={}.\n\
@@ -249,7 +312,7 @@ pub async fn run(args: Args) -> Result<()> {
         • NUMA nodes: {} (known={}). On multi-socket systems, keeping threads/data local to a node reduces remote memory penalties.\n\
         • Large pages: {}. Reduces TLB misses for the RandomX dataset and can improve throughput when the dataset fits.\n\
         • Yield between batches: {}. Keeps the miner friendly on shared machines.\n\
-        --- structured fields for tooling below ---\n",
+        \n\n--- structured fields for tooling below ---\n",
         n_workers, thread_mode,
         cfg.batch_size, batch_mode, snap.recommended_batch_size,
         aes, ssse3, avx2, avx512f, prefetch,
