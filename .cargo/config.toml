@@ -4,7 +4,7 @@
 RUST_BACKTRACE = "full"
 CMAKE_GENERATOR = "Ninja"
 CMAKE_EXPORT_COMPILE_COMMANDS = "1"
-CMAKE_BUILD_PARALLEL_LEVEL = "12" # num_cpus::get()
+CMAKE_BUILD_PARALLEL_LEVEL = num_cpus::get()
 CMAKE_MAKE_PROGRAM = "ninja"
 CMAKE_BUILD_TYPE = "RelWithDebInfo"
 CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreadedDLL"   # /MD (release CRT), not /MDd
