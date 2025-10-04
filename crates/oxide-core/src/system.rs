@@ -5,7 +5,10 @@
 // - CPU feature probes (AES for RandomX HARD_AES)
 // - Heuristics for recommended thread count based on cores/L3/memory
 
+use once_cell::sync::Lazy;
 use sysinfo::System;
+
+use std::path::Path;
 
 #[cfg(target_os = "windows")]
 use std::{mem, ptr, slice};
@@ -31,6 +34,120 @@ use windows_sys::Win32::{
 pub const RANDOMX_DATASET_BYTES: u64 = 2_u64 * 1024 * 1024 * 1024; // ~2 GiB
 /// Approximate per-thread scratchpad size required by RandomX.
 pub const RANDOMX_SCRATCHPAD_BYTES: u64 = 2_u64 * 1024 * 1024; // ~2 MiB
+
+/// CPU feature information relevant for RandomX tuning.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CpuFeatures {
+    pub aes: bool,
+    pub avx2: bool,
+    pub avx512f: bool,
+    pub ssse3: bool,
+    pub sse2: bool,
+}
+
+impl CpuFeatures {
+    pub fn hardware_aes(self) -> bool {
+        self.aes
+    }
+
+    pub fn uses_simd(self) -> bool {
+        self.avx2 || self.ssse3 || self.sse2
+    }
+}
+
+/// Cache hierarchy information derived from CPUID when available.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CacheHierarchy {
+    pub l1_data_bytes: Option<usize>,
+    pub l1_instruction_bytes: Option<usize>,
+    pub l2_bytes: Option<usize>,
+    pub l3_bytes: Option<usize>,
+}
+
+static CPU_FEATURES: Lazy<CpuFeatures> = Lazy::new(detect_cpu_features);
+static CACHE_HIERARCHY: Lazy<CacheHierarchy> = Lazy::new(detect_cache_hierarchy);
+
+pub fn cpu_features() -> CpuFeatures {
+    *CPU_FEATURES
+}
+
+pub fn cpu_cache_hierarchy() -> CacheHierarchy {
+    *CACHE_HIERARCHY
+}
+
+fn detect_cpu_features() -> CpuFeatures {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        CpuFeatures {
+            aes: std::is_x86_feature_detected!("aes"),
+            avx2: std::is_x86_feature_detected!("avx2"),
+            avx512f: std::is_x86_feature_detected!("avx512f"),
+            ssse3: std::is_x86_feature_detected!("ssse3"),
+            sse2: std::is_x86_feature_detected!("sse2"),
+        }
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        CpuFeatures::default()
+    }
+}
+
+fn detect_cache_hierarchy() -> CacheHierarchy {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        use raw_cpuid::CacheType;
+
+        let cpuid = raw_cpuid::CpuId::new();
+        let mut hierarchy = CacheHierarchy::default();
+
+        if let Some(params) = cpuid.get_cache_parameters() {
+            for cache in params {
+                let cache_type = cache.cache_type();
+                if matches!(cache_type, CacheType::Null) {
+                    continue;
+                }
+
+                let size = (cache.associativity() as usize)
+                    * (cache.physical_line_partitions() as usize)
+                    * (cache.coherency_line_size() as usize)
+                    * (cache.sets() as usize);
+
+                match (cache.level(), cache_type) {
+                    (1, CacheType::Data) => assign_cache_size(&mut hierarchy.l1_data_bytes, size),
+                    (1, CacheType::Instruction) => {
+                        assign_cache_size(&mut hierarchy.l1_instruction_bytes, size)
+                    }
+                    (1, CacheType::Unified) => {
+                        assign_cache_size(&mut hierarchy.l1_data_bytes, size);
+                        assign_cache_size(&mut hierarchy.l1_instruction_bytes, size);
+                    }
+                    (2, CacheType::Unified | CacheType::Data) => {
+                        assign_cache_size(&mut hierarchy.l2_bytes, size)
+                    }
+                    (3, CacheType::Unified) => assign_cache_size(&mut hierarchy.l3_bytes, size),
+                    _ => {}
+                }
+            }
+        }
+
+        hierarchy
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        CacheHierarchy::default()
+    }
+}
+
+fn assign_cache_size(slot: &mut Option<usize>, size: usize) {
+    match slot {
+        Some(existing) => {
+            if size > *existing {
+                *existing = size;
+            }
+        }
+        None => *slot = Some(size),
+    }
+}
 
 /// Information about the system's huge/large page configuration.
 #[derive(Debug, Clone, Default)]
@@ -298,50 +415,23 @@ fn has_lock_memory_privilege() -> bool {
 /// Determine whether the current CPU supports AES instructions (x86/x86_64).
 /// RandomX benefits from AES for the HARD_AES flag.
 pub fn cpu_has_aes() -> bool {
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    {
-        std::is_x86_feature_detected!("aes")
-    }
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-    {
-        false
-    }
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-/// Return the size of the L3 cache in bytes if detectable via CPUID(0x4).
-fn l3_cache_bytes() -> Option<usize> {
-    let cpuid = raw_cpuid::CpuId::new();
-    if let Some(cparams) = cpuid.get_cache_parameters() {
-        for cache in cparams {
-            if cache.level() == 3 && matches!(cache.cache_type(), raw_cpuid::CacheType::Unified) {
-                // CPUID leaf 0x4 size formula:
-                // size = associativity * partitions * line_size * sets
-                let ways = cache.associativity() as usize;
-                let parts = cache.physical_line_partitions() as usize;
-                let line = cache.coherency_line_size() as usize;
-                let sets = cache.sets() as usize;
-                return Some(ways * parts * line * sets);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn l3_cache_bytes() -> Option<usize> {
-    None
+    cpu_features().hardware_aes()
 }
 
 #[derive(Debug, Clone)]
 pub struct AutoTuneSnapshot {
     pub physical_cores: usize,
+    pub l1_data_bytes: Option<usize>,
+    pub l2_bytes: Option<usize>,
     pub l3_bytes: Option<usize>,
     pub available_bytes: u64,
     pub dataset_bytes: u64,
     pub scratch_per_thread_bytes: u64,
     pub huge_page_status: HugePageStatus,
     pub suggested_threads: usize,
+    pub numa_nodes: Option<usize>,
+    pub features: CpuFeatures,
+    pub recommended_batch_size: usize,
 }
 
 /// Compute a snapshot of system resources and the suggested mining thread count.
@@ -355,7 +445,11 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
     sys.refresh_memory();
 
     let physical = num_cpus::get_physical().max(1);
-    let l3 = l3_cache_bytes();
+    let features = cpu_features();
+    let caches = cpu_cache_hierarchy();
+    let l3 = caches.l3_bytes;
+    let numa_nodes = detect_numa_nodes();
+    let recommended_batch_size = recommended_batch_size_from_cache(&caches);
     let avail_bytes = sys.available_memory();
 
     // RandomX "fast" dataset and per-thread scratchpad estimates
@@ -386,18 +480,99 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
 
     AutoTuneSnapshot {
         physical_cores: physical,
+        l1_data_bytes: caches.l1_data_bytes,
+        l2_bytes: caches.l2_bytes,
         l3_bytes: l3,
         available_bytes: avail_bytes,
         dataset_bytes: dataset,
         scratch_per_thread_bytes: scratch,
         huge_page_status: huge_pages,
         suggested_threads: threads.max(1),
+        numa_nodes,
+        features,
+        recommended_batch_size,
     }
 }
 
 /// Legacy helper used elsewhere; delegates to the snapshot.
 pub fn recommended_thread_count() -> usize {
     autotune_snapshot().suggested_threads
+}
+
+fn detect_numa_nodes() -> Option<usize> {
+    #[cfg(target_os = "linux")]
+    {
+        let node_path = Path::new("/sys/devices/system/node");
+        if let Ok(entries) = std::fs::read_dir(node_path) {
+            let mut count = 0usize;
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if let Some(name) = name.to_str() {
+                    if let Some(index) = name.strip_prefix("node") {
+                        if !index.is_empty() && index.chars().all(|c| c.is_ascii_digit()) {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            if count > 0 {
+                Some(count)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+fn recommended_batch_size_from_cache(cache: &CacheHierarchy) -> usize {
+    const DEFAULT_BATCH: usize = 10_000;
+    const MIN_BATCH: usize = 256;
+    const MAX_BATCH: usize = 8_192;
+
+    let mut batch = DEFAULT_BATCH;
+    let mut tuned = false;
+
+    if let Some(l1d) = cache.l1_data_bytes {
+        let mut l1_based = l1d / 64;
+        if l1_based == 0 {
+            l1_based = 1;
+        }
+        if l1_based < MIN_BATCH {
+            l1_based = MIN_BATCH;
+        }
+        if l1_based > MAX_BATCH {
+            l1_based = MAX_BATCH;
+        }
+        batch = batch.min(l1_based);
+        tuned = true;
+    }
+
+    if let Some(l2) = cache.l2_bytes {
+        let mut l2_based = l2 / 128;
+        if l2_based == 0 {
+            l2_based = 1;
+        }
+        if l2_based < MIN_BATCH {
+            l2_based = MIN_BATCH;
+        }
+        if l2_based > MAX_BATCH {
+            l2_based = MAX_BATCH;
+        }
+        batch = batch.min(l2_based);
+        tuned = true;
+    }
+
+    if tuned {
+        batch
+    } else {
+        DEFAULT_BATCH
+    }
 }
 
 #[cfg(test)]
@@ -432,6 +607,8 @@ mod tests {
     #[test]
     fn feature_checks_do_not_panic() {
         let _ = cpu_has_aes();
+        let _ = cpu_features();
+        let _ = cpu_cache_hierarchy();
         let _ = huge_pages_enabled();
         let _ = huge_page_status();
     }

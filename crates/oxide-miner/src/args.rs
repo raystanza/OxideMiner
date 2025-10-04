@@ -3,6 +3,8 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+pub const DEFAULT_BATCH_SIZE: usize = 10_000;
+
 #[derive(Parser, Debug)]
 #[command(
     author,
@@ -55,7 +57,7 @@ pub struct Args {
     pub huge_pages: bool,
 
     /// Number of hashes per batch in mining loop
-    #[arg(long = "batch-size", default_value_t = 10_000)]
+    #[arg(long = "batch-size", default_value_t = DEFAULT_BATCH_SIZE)]
     pub batch_size: usize,
 
     /// Disable cooperative yields between hash batches

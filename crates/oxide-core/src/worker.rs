@@ -197,8 +197,18 @@ mod engine {
         if LARGE_PAGES.load(Ordering::Relaxed) {
             flags |= RandomXFlag::FLAG_LARGE_PAGES;
         }
-        if system::cpu_has_aes() {
+        let features = system::cpu_features();
+        if features.hardware_aes() {
             flags |= RandomXFlag::FLAG_HARD_AES;
+        } else {
+            flags |= RandomXFlag::FLAG_SECURE;
+        }
+
+        flags |= RandomXFlag::FLAG_ARGON2;
+        if features.avx2 {
+            flags |= RandomXFlag::FLAG_ARGON2_AVX2;
+        } else if features.ssse3 {
+            flags |= RandomXFlag::FLAG_ARGON2_SSSE3;
         }
         flags
     }

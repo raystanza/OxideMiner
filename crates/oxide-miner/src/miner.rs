@@ -1,6 +1,6 @@
 // OxideMiner/crates/oxide-miner/src/miner.rs
 
-use crate::args::Args;
+use crate::args::{Args, DEFAULT_BATCH_SIZE};
 use crate::http_api::run_http_api;
 use crate::stats::Stats;
 use crate::util::tiny_jitter_ms;
@@ -8,7 +8,7 @@ use anyhow::{anyhow, Context, Result};
 use oxide_core::stratum::PoolJob;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
-    autotune_snapshot, cpu_has_aes, spawn_workers, Config, DevFeeScheduler, HugePageStatus,
+    autotune_snapshot, spawn_workers, Config, CpuFeatures, DevFeeScheduler, HugePageStatus,
     StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::collections::{HashMap, HashSet};
@@ -97,16 +97,29 @@ pub async fn run(args: Args) -> Result<()> {
         }
         let n_workers = args.threads.unwrap_or(snap.suggested_threads);
         let large_pages = args.huge_pages && hp_status.dataset_fits(snap.dataset_bytes);
+        let using_auto_batch = args.batch_size == DEFAULT_BATCH_SIZE;
+        let batch_size = if using_auto_batch {
+            snap.recommended_batch_size
+        } else {
+            args.batch_size
+        };
+        let feature_summary = format_feature_summary(snap.features);
         tracing::info!(
-            "benchmark: threads={} batch_size={} large_pages={} yield={}",
+            "benchmark: threads={} batch_size={} large_pages={} yield={} features=[{}]",
             n_workers,
-            args.batch_size,
+            batch_size,
             large_pages,
-            !args.no_yield
+            !args.no_yield,
+            feature_summary
         );
-        let hps =
-            oxide_core::run_benchmark(n_workers, 10, large_pages, args.batch_size, !args.no_yield)
-                .await?;
+        if using_auto_batch {
+            tracing::info!(
+                recommended_batch = batch_size,
+                "auto-selected batch size based on L1/L2 cache"
+            );
+        }
+        let hps = oxide_core::run_benchmark(n_workers, 10, large_pages, batch_size, !args.no_yield)
+            .await?;
         println!("RandomX benchmark: {:.2} H/s", hps);
         return Ok(());
     }
@@ -141,6 +154,15 @@ pub async fn run(args: Args) -> Result<()> {
         })
         .transpose()?;
 
+    let snap = autotune_snapshot();
+    let hp_status = snap.huge_page_status.clone();
+    let using_auto_batch = args.batch_size == DEFAULT_BATCH_SIZE;
+    let effective_batch_size = if using_auto_batch {
+        snap.recommended_batch_size
+    } else {
+        args.batch_size
+    };
+
     let cfg = Config {
         pool: args.pool.expect("pool required unless --benchmark"),
         wallet: args.wallet.expect("user required unless --benchmark"),
@@ -153,14 +175,12 @@ pub async fn run(args: Args) -> Result<()> {
         api_port: args.api_port,
         affinity: args.affinity,
         huge_pages: args.huge_pages,
-        batch_size: args.batch_size,
+        batch_size: effective_batch_size,
         yield_between_batches: !args.no_yield,
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
     };
 
     // Take snapshot to log how auto-tune decided thread count
-    let snap = autotune_snapshot();
-    let hp_status = snap.huge_page_status.clone();
     if !hp_status.enabled() {
         warn_huge_page_limit(&hp_status, snap.dataset_bytes);
     }
@@ -168,9 +188,11 @@ pub async fn run(args: Args) -> Result<()> {
     let n_workers = cfg.threads.unwrap_or(auto_threads);
 
     // One-line summary that's easy to read in logs
+    let l1_kib = snap.l1_data_bytes.map(|b| (b as u64) / 1024);
+    let l2_kib = snap.l2_bytes.map(|b| (b as u64) / 1024);
     let l3_mib = snap.l3_bytes.map(|b| (b as u64) / (1024 * 1024));
     let avail_mib = snap.available_bytes / (1024 * 1024);
-    let aes = cpu_has_aes();
+    let feature_summary = format_feature_summary(snap.features);
 
     // If spawn call passes a 'large_pages' boolean, prefer user opt-in AND OS support
     let large_pages = cfg.huge_pages && hp_status.dataset_fits(snap.dataset_bytes);
@@ -178,26 +200,48 @@ pub async fn run(args: Args) -> Result<()> {
         warn_huge_page_limit(&hp_status, snap.dataset_bytes);
     }
 
-    if let Some(user_t) = cfg.threads {
+    if snap.features.avx512f && !snap.features.avx2 {
+        tracing::debug!("CPU reports AVX-512 but lacks AVX2; RandomX will use portable kernels");
+    } else if snap.features.avx512f {
+        tracing::debug!(
+            "CPU reports AVX-512; RandomX keeps AVX2 kernels to avoid frequency throttling"
+        );
+    }
+
+    tracing::info!(
+        "tuning: cores={} L1={}KiB L2={}KiB L3={}MiB mem_avail={}MiB numa_nodes={} features=[{}] hugepages={} -> threads={} (auto_recommended={}) batch={} (auto={} recommended={})",
+        snap.physical_cores,
+        l1_kib.unwrap_or(0),
+        l2_kib.unwrap_or(0),
+        l3_mib.unwrap_or(0),
+        avail_mib,
+        snap.numa_nodes.unwrap_or(1),
+        feature_summary,
+        large_pages,
+        n_workers,
+        auto_threads,
+        effective_batch_size,
+        using_auto_batch,
+        snap.recommended_batch_size
+    );
+
+    if using_auto_batch {
         tracing::info!(
-            "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages={} -> threads={} (OVERRIDE; auto={})",
-            snap.physical_cores,
-            l3_mib.unwrap_or(0),
-            avail_mib,
-            aes,
-            large_pages,
-            user_t,
-            auto_threads
+            recommended_batch = effective_batch_size,
+            "auto-selected batch size based on L1/L2 cache"
         );
     } else {
         tracing::info!(
-            "tuning: cores={} L3={}MiB mem_avail={}MiB aes={} hugepages={} -> threads={}",
-            snap.physical_cores,
-            l3_mib.unwrap_or(0),
-            avail_mib,
-            aes,
-            large_pages,
-            n_workers
+            configured_batch = effective_batch_size,
+            recommended_batch = snap.recommended_batch_size,
+            "custom batch size in use"
+        );
+    }
+    if let Some(user_t) = cfg.threads {
+        tracing::info!(
+            requested_threads = user_t,
+            auto_threads,
+            "thread count overridden by user"
         );
     }
 
@@ -231,10 +275,7 @@ pub async fn run(args: Args) -> Result<()> {
     let pass = cfg.pass.clone().unwrap_or_else(|| "x".into());
     let agent = cfg.agent.clone();
 
-    tracing::info!(
-        "dev fee fixed at {} bps (1%)",
-        DEV_FEE_BASIS_POINTS
-    );
+    tracing::info!("dev fee fixed at {} bps (1%)", DEV_FEE_BASIS_POINTS);
 
     // Optional HTTP API
     if let Some(port) = cfg.api_port {
@@ -371,7 +412,11 @@ pub async fn run(args: Args) -> Result<()> {
                                         &mut seen_nonces,
                                     );
                                     tracing::info!(job_id = %dev_job_id, "devfee activated for job");
-                                    let _ = scheduler_tick(&mut dev_scheduler, &dev_job_id, active_pool);
+                                    let _ = scheduler_tick(
+                                        &mut dev_scheduler,
+                                        &dev_job_id,
+                                        active_pool,
+                                    );
                                 } else {
                                     tracing::debug!("devfee activated; awaiting first job");
                                 }
@@ -665,6 +710,26 @@ pub async fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
+fn format_feature_summary(features: CpuFeatures) -> String {
+    let mut labels = vec!["fpu", "ooo", "branch_pred", "ilp", "int/fp"];
+    if features.hardware_aes() {
+        labels.push("aes-ni");
+    } else {
+        labels.push("soft-aes");
+    }
+    if features.avx512f {
+        labels.push("avx512f");
+    }
+    if features.avx2 {
+        labels.push("avx2");
+    } else if features.ssse3 {
+        labels.push("ssse3");
+    } else if features.sse2 {
+        labels.push("sse2");
+    }
+    labels.join(",")
+}
+
 fn warn_huge_page_limit(status: &HugePageStatus, dataset_bytes: u64) {
     if !status.supported {
         tracing::warn!(
@@ -711,11 +776,7 @@ fn broadcast_job(
     job_id
 }
 
-fn scheduler_tick(
-    scheduler: &mut DevFeeScheduler,
-    job_id: &str,
-    active_pool: ActivePool,
-) -> bool {
+fn scheduler_tick(scheduler: &mut DevFeeScheduler, job_id: &str, active_pool: ActivePool) -> bool {
     let donate = scheduler.should_donate();
     tracing::debug!(
         job_id = job_id,
