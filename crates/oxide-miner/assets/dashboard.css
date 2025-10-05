@@ -22,6 +22,7 @@ body[data-theme="dark"] {
 }
 
 body[data-theme="monero"] {
+  /* Monero */
   --monero-orange: #F26822;
   --monero-gray: #4C4C4C;
 
