@@ -167,7 +167,3 @@ h1 {
 .footer a:focus {
   text-decoration: underline;
 }
-
-.footer .license {
-  opacity: .8;
-}
