@@ -49,6 +49,7 @@ async function fetchStats() {
             formatDuration(Number(timing.system_uptime_seconds));
         document.getElementById('mining_time').textContent =
             formatDuration(Number(timing.mining_time_seconds));
+        updateFooter(data);
     } catch (e) {
         console.error('Failed to fetch stats', e);
     }
@@ -83,3 +84,13 @@ fetchStats();
         select.addEventListener('change', () => applyTheme(select.value));
     }
 })();
+
+function updateFooter(data) {
+  // try common fields; harmless if absent
+  const version = data.version || data.pkg_version || data.pkg || null;
+  const vEl = document.getElementById('version');
+  const tEl = document.getElementById('last-updated');
+
+  if (vEl) vEl.textContent = version ? `v${version}` : '';
+  if (tEl) tEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+}

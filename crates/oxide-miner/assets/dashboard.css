@@ -44,7 +44,7 @@ body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     display: flex;
     justify-content: center;
-    padding: 40px;
+    padding: 20px;
     margin: 0;
     transition: background 0.2s ease, color 0.2s ease;
 }
@@ -58,8 +58,8 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 24px;
+    gap: 8px;
+    margin-bottom: 20px;
 }
 
 h1 {
@@ -115,4 +115,59 @@ h1 {
     line-height: 1.2;
     font-size: 1.4rem;
     margin-top: 8px;
+}
+
+/* Footer */
+.footer {
+  margin-top: 20px;
+  padding: 16px 20px;
+  background: var(--card);
+  color: var(--label);
+  border-radius: 16px;
+  box-shadow: 9px 9px 16px var(--shadow-dark), -9px -9px 16px var(--shadow-light);
+  transition: background 0.2s ease, box-shadow 0.2s ease, color 0.2s ease;
+  font-size: 0.95rem;
+}
+
+.footer-grid {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.footer-brand {
+  color: var(--text);
+}
+
+.footer-brand #version {
+  margin-left: .35rem;
+  opacity: .85;
+}
+
+.footer .sep {
+  margin: 0 .45rem;
+  opacity: .4;
+}
+
+.footer-links {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.footer a:hover,
+.footer a:focus {
+  text-decoration: underline;
+}
+
+.footer .license {
+  opacity: .8;
 }
