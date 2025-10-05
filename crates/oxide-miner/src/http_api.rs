@@ -77,6 +77,11 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             writeln!(body, "oxide_devfee_shares_rejected_total {}", dev_rej).ok();
                             writeln!(body, "oxide_pool_connected {}", connected).ok();
                             writeln!(body, "oxide_tls_enabled {}", tls).ok();
+                            writeln!(body, "version {}", env!("CARGO_PKG_VERSION")).ok();
+                            writeln!(body, "commit_hash {}", option_env!("OXIDE_GIT_COMMIT").unwrap_or("")).ok();
+                            writeln!(body, "commit_hash_short {}", option_env!("OXIDE_GIT_COMMIT_SHORT").unwrap_or("")).ok();
+                            writeln!(body, "commit_timestamp {}", option_env!("OXIDE_GIT_COMMIT_TIMESTAMP").unwrap_or("")).ok();
+                            writeln!(body, "build_timestamp {}", option_env!("OXIDE_BUILD_TIMESTAMP").unwrap_or("")).ok();
                             let mut resp = Response::new(Full::new(Bytes::from(body)));
                             resp.headers_mut().insert(
                                 header::CONTENT_TYPE,
