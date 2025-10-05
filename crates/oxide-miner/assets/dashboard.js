@@ -1,58 +1,54 @@
 function formatHashrate(hps) {
-    // hps = hashes per second (Number)
-    if (!Number.isFinite(hps)) return '-';
-    if (hps >= 1e9) { // 1,000,000,000 H/s -> GH/s
-        return (hps / 1e9).toFixed(3) + ' GH/s';
-    }
-    if (hps >= 1e3) { // 1,000 H/s -> KH/s
-        return (hps / 1e3).toFixed(3) + ' KH/s';
-    }
-    return hps.toFixed(2) + ' H/s';
+  // hps = hashes per second (Number)
+  if (!Number.isFinite(hps)) return '-';
+  if (hps >= 1e9) { return (hps / 1e9).toFixed(3) + ' GH/s'; }
+  if (hps >= 1e3) { return (hps / 1e3).toFixed(3) + ' KH/s'; }
+  return hps.toFixed(2) + ' H/s';
 }
 
 const intFmt = new Intl.NumberFormat('en-US');
 
 function formatDuration(seconds) {
-    if (!Number.isFinite(seconds)) return '-';
-    const totalSeconds = Math.max(0, Math.floor(seconds));
-    const days = Math.floor(totalSeconds / 86400);
-    const hours = Math.floor((totalSeconds % 86400) / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const secs = totalSeconds % 60;
+  if (!Number.isFinite(seconds)) return '-';
+  const totalSeconds = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const secs = totalSeconds % 60;
 
-    const parts = [];
-    if (days > 0) parts.push(days + 'd');
-    parts.push(String(hours).padStart(2, '0') + 'h');
-    parts.push(String(minutes).padStart(2, '0') + 'm');
-    parts.push(String(secs).padStart(2, '0') + 's');
-    return parts.join(' ');
+  const parts = [];
+  if (days > 0) parts.push(days + 'd');
+  parts.push(String(hours).padStart(2, '0') + 'h');
+  parts.push(String(minutes).padStart(2, '0') + 'm');
+  parts.push(String(secs).padStart(2, '0') + 's');
+  return parts.join(' ');
 }
 
 async function fetchStats() {
-    try {
-        const response = await fetch('/api/stats');
-        const data = await response.json();
-        document.getElementById('hashrate').textContent = formatHashrate(Number(data.hashrate));
-        document.getElementById('hashes').textContent = intFmt.format(Number(data.hashes_total));
-        document.getElementById('accepted').textContent = data.shares.accepted;
-        document.getElementById('rejected').textContent = data.shares.rejected;
-        document.getElementById('dev_accepted').textContent = data.shares.dev_accepted;
-        document.getElementById('dev_rejected').textContent = data.shares.dev_rejected;
-        const poolEl = document.getElementById('pool');
-        poolEl.textContent = data.pool || '-';
-        poolEl.title = data.pool || '';
+  try {
+    const response = await fetch('/api/stats');
+    const data = await response.json();
+    document.getElementById('hashrate').textContent = formatHashrate(Number(data.hashrate));
+    document.getElementById('hashes').textContent = intFmt.format(Number(data.hashes_total));
+    document.getElementById('accepted').textContent = data.shares.accepted;
+    document.getElementById('rejected').textContent = data.shares.rejected;
+    document.getElementById('dev_accepted').textContent = data.shares.dev_accepted;
+    document.getElementById('dev_rejected').textContent = data.shares.dev_rejected;
+    const poolEl = document.getElementById('pool');
+    poolEl.textContent = data.pool || '-';
+    poolEl.title = data.pool || '';
 
-        document.getElementById('connected').textContent = data.connected ? 'Yes' : 'No';
-        document.getElementById('tls').textContent = data.tls ? 'Yes' : 'No';
-        const timing = data.timing || {};
-        document.getElementById('system_uptime').textContent =
-            formatDuration(Number(timing.system_uptime_seconds));
-        document.getElementById('mining_time').textContent =
-            formatDuration(Number(timing.mining_time_seconds));
-        updateFooter(data);
-    } catch (e) {
-        console.error('Failed to fetch stats', e);
-    }
+    document.getElementById('connected').textContent = data.connected ? 'Yes' : 'No';
+    document.getElementById('tls').textContent = data.tls ? 'Yes' : 'No';
+    const timing = data.timing || {};
+    document.getElementById('system_uptime').textContent =
+      formatDuration(Number(timing.system_uptime_seconds));
+    document.getElementById('mining_time').textContent =
+      formatDuration(Number(timing.mining_time_seconds));
+    updateFooter(data);
+  } catch (e) {
+    console.error('Failed to fetch stats', e);
+  }
 }
 
 /* Refresh/polling interval handling */
@@ -102,28 +98,28 @@ async function fetchStats() {
 /* Theme handling */
 
 (function initTheme() {
-    const THEME_KEY = 'oxide_theme';
-    const body = document.body;
-    const select = document.getElementById('theme-select');
+  const THEME_KEY = 'oxide_theme';
+  const body = document.body;
+  const select = document.getElementById('theme-select');
 
-    function applyTheme(theme) {
-        const allowed = ['light', 'dark', 'monero'];
-        const t = allowed.includes(theme) ? theme : 'light';
-        body.setAttribute('data-theme', t);
-        if (select && select.value !== t) select.value = t;
-        try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
-    }
+  function applyTheme(theme) {
+    const allowed = ['light', 'dark', 'monero'];
+    const t = allowed.includes(theme) ? theme : 'light';
+    body.setAttribute('data-theme', t);
+    if (select && select.value !== t) select.value = t;
+    try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
+  }
 
-    // Initial theme (persisted or default "light")
-    const saved = (() => {
-        try { return localStorage.getItem(THEME_KEY); } catch (_) { return null; }
-    })();
-    applyTheme(saved || 'light');
+  // Initial theme (persisted or default "light")
+  const saved = (() => {
+    try { return localStorage.getItem(THEME_KEY); } catch (_) { return null; }
+  })();
+  applyTheme(saved || 'light');
 
-    // Hook up selector
-    if (select) {
-        select.addEventListener('change', () => applyTheme(select.value));
-    }
+  // Hook up selector
+  if (select) {
+    select.addEventListener('change', () => applyTheme(select.value));
+  }
 })();
 
 function updateFooter(data) {
