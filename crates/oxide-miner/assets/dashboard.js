@@ -21,9 +21,7 @@ function formatDuration(seconds) {
     const secs = totalSeconds % 60;
 
     const parts = [];
-    if (days > 0) {
-        parts.push(days + 'd');
-    }
+    if (days > 0) parts.push(days + 'd');
     parts.push(String(hours).padStart(2, '0') + 'h');
     parts.push(String(minutes).padStart(2, '0') + 'm');
     parts.push(String(secs).padStart(2, '0') + 's');
@@ -58,3 +56,30 @@ async function fetchStats() {
 
 setInterval(fetchStats, 1000);
 fetchStats();
+
+/* Theme handling */
+
+(function initTheme() {
+    const THEME_KEY = 'oxide_theme';
+    const body = document.body;
+    const select = document.getElementById('theme-select');
+
+    function applyTheme(theme) {
+        const allowed = ['light', 'dark', 'monero'];
+        const t = allowed.includes(theme) ? theme : 'light';
+        body.setAttribute('data-theme', t);
+        if (select && select.value !== t) select.value = t;
+        try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
+    }
+
+    // Initial theme (persisted or default "light")
+    const saved = (() => {
+        try { return localStorage.getItem(THEME_KEY); } catch (_) { return null; }
+    })();
+    applyTheme(saved || 'light');
+
+    // Hook up selector
+    if (select) {
+        select.addEventListener('change', () => applyTheme(select.value));
+    }
+})();

@@ -6,9 +6,20 @@
     <title>OxideMiner Dashboard</title>
     <link rel="stylesheet" href="/dashboard.css" />
 </head>
-<body>
+<body data-theme="light">
     <div class="container">
-        <h1>OxideMiner Dashboard</h1>
+        <header class="toolbar">
+            <h1>OxideMiner Dashboard</h1>
+            <label class="theme-picker">
+                <span>Theme</span>
+                <select id="theme-select" aria-label="Theme">
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                    <option value="monero">Monero</option>
+                </select>
+            </label>
+        </header>
+
         <div class="grid">
             <div class="card">
                 <div class="label">Hashrate</div>
