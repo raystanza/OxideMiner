@@ -62,6 +62,12 @@ body {
     margin-bottom: 20px;
 }
 
+.toolbar-controls {
+  display: inline-flex;
+  gap: 12px;
+  align-items: center;
+}
+
 h1 {
     margin: 0;
     color: var(--accent);
@@ -138,6 +144,10 @@ h1 {
 }
 
 .footer-brand {
+  color: var(--label);
+}
+
+.footer-brand #last-updated {
   color: var(--text);
 }
 

@@ -10,15 +10,29 @@
     <div class="container">
         <header class="toolbar">
             <h1>OxideMiner Dashboard</h1>
-            <label class="theme-picker">
+
+            <div class="toolbar-controls">
+                <label class="theme-picker">
                 <span>Theme</span>
                 <select id="theme-select" aria-label="Theme">
                     <option value="light">Light</option>
                     <option value="dark">Dark</option>
                     <option value="monero">Monero</option>
                 </select>
-            </label>
-        </header>
+                </label>
+
+                <label class="theme-picker">
+                <span>Refresh</span>
+                <select id="polling-select" aria-label="Refresh interval">
+                    <option value="1000">1s</option>
+                    <option value="5000">5s</option>
+                    <option value="10000">10s</option>
+                    <option value="30000">30s</option>
+                    <option value="60000">60s</option>
+                </select>
+                </label>
+            </div>
+            </header>
 
         <div class="grid">
             <div class="card">

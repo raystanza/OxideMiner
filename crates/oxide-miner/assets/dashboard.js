@@ -55,8 +55,49 @@ async function fetchStats() {
     }
 }
 
-setInterval(fetchStats, 1000);
-fetchStats();
+/* Refresh/polling interval handling */
+(function initPolling() {
+  const POLL_KEY = 'oxide_poll_ms';
+  const select = document.getElementById('polling-select');
+  const allowed = [1000, 5000, 10000, 30000, 60000];
+  let pollTimer = null;
+
+  function normalize(ms) {
+    const n = parseInt(ms, 10);
+    return allowed.includes(n) ? n : 1000;
+  }
+
+  function apply(ms) {
+    const n = normalize(ms);
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(fetchStats, n);
+    if (select && select.value !== String(n)) select.value = String(n);
+    try { localStorage.setItem(POLL_KEY, String(n)); } catch (_) {}
+  }
+
+  // Initial value (persisted or default 1s)
+  const saved = (() => {
+    try { return parseInt(localStorage.getItem(POLL_KEY), 10); } catch (_) { return NaN; }
+  })();
+  apply(saved);
+
+  if (select) {
+    select.addEventListener('change', () => {
+      apply(select.value);
+      fetchStats(); // immediate refresh on change
+    });
+  }
+
+  // Optional: pause when tab not visible to save cycles
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (pollTimer) clearInterval(pollTimer);
+    } else {
+      apply(select ? select.value : saved);
+      fetchStats();
+    }
+  });
+})();
 
 /* Theme handling */
 
@@ -94,3 +135,5 @@ function updateFooter(data) {
   if (vEl) vEl.textContent = version ? `v${version}` : '';
   if (tEl) tEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
 }
+
+fetchStats();
