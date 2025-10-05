@@ -1,65 +1,67 @@
 /*  Theme variables  */
 :root {
-    /* Light (default) */
-    --bg: #e0e0e0;
-    --text: #333333;
-    --label: #555555;
-    --card: #e0e0e0;
-    --shadow-dark: #bebebe;
-    --shadow-light: #ffffff;
-    --accent: #333333;
+  /* Light (default) */
+  --bg: #e0e0e0;
+  --text: #333333;
+  --label: #555555;
+  --card: #e0e0e0;
+  --shadow-dark: #bebebe;
+  --shadow-light: #ffffff;
+  --accent: #333333;
 }
 
 body[data-theme="dark"] {
-    /* Dark */
-    --bg: #1f1f1f;
-    --text: #e6e6e6;
-    --label: #b8b8b8;
-    --card: #1f1f1f;
-    --shadow-dark: #141414;
-    --shadow-light: #2a2a2a;
-    --accent: #e6e6e6;
+  /* Dark */
+  --bg: #1f1f1f;
+  --text: #e6e6e6;
+  --label: #b8b8b8;
+  --card: #1f1f1f;
+  --shadow-dark: #141414;
+  --shadow-light: #2a2a2a;
+  --accent: #e6e6e6;
 }
 
-body[data-theme="monero"]{
-  --monero-orange:#F26822;
-  --monero-gray:#4C4C4C;
+body[data-theme="monero"] {
+  --monero-orange: #F26822;
+  --monero-gray: #4C4C4C;
 
-  --bg:#3b3b3b;
-  --card:#3b3b3b;
-  --shadow-dark:#262626;
-  --shadow-light:#4a4a4a;
+  --bg: #3b3b3b;
+  --card: #3b3b3b;
+  --shadow-dark: #262626;
+  --shadow-light: #4a4a4a;
 
-  --text:#e6e6e6;
-  --label:#F26822;
-  --accent:var(--monero-orange);
+  --text: #e6e6e6;
+  --label: #F26822;
+  --accent: var(--monero-orange);
 }
 
 /* Base layout */
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    display: flex;
-    justify-content: center;
-    padding: 20px;
-    margin: 0;
-    transition: background 0.2s ease, color 0.2s ease;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  display: flex;
+  justify-content: center;
+  padding: 20px;
+  margin: 0;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
 .container {
-    width: 100%;
+  width: 100%;
 }
 
 /* Header / Theme picker */
 .toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 20px;
 }
 
 .toolbar-controls {
@@ -69,58 +71,58 @@ body {
 }
 
 h1 {
-    margin: 0;
-    color: var(--accent);
-    text-align: left;
+  margin: 0;
+  color: var(--accent);
+  text-align: left;
 }
 
 .theme-picker {
-    display: inline-flex;
-    gap: 8px;
-    align-items: center;
-    font-size: 0.95rem;
-    color: var(--label);
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.95rem;
+  color: var(--label);
 }
 
 .theme-picker select {
-    appearance: none;
-    border: none;
-    padding: 8px 12px;
-    border-radius: 14px;
-    background: var(--card);
-    color: var(--text);
-    box-shadow: 9px 9px 16px var(--shadow-dark), -9px -9px 16px var(--shadow-light);
-    outline: none;
-    cursor: pointer;
-    transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  appearance: none;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 9px 9px 16px var(--shadow-dark), -9px -9px 16px var(--shadow-light);
+  outline: none;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 }
 
 /* Cards */
 .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 20px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 20px;
 }
 
 .card {
-    background: var(--card);
-    border-radius: 20px;
-    padding: 20px;
-    box-shadow: 9px 9px 16px var(--shadow-dark), -9px -9px 16px var(--shadow-light);
-    transition: background 0.2s ease, box-shadow 0.2s ease;
+  background: var(--card);
+  border-radius: 20px;
+  padding: 20px;
+  box-shadow: 9px 9px 16px var(--shadow-dark), -9px -9px 16px var(--shadow-light);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .label {
-    font-size: 0.9rem;
-    color: var(--label);
+  font-size: 0.9rem;
+  color: var(--label);
 }
 
 .value {
-    overflow-wrap: anywhere;
-    word-break: break-word;
-    line-height: 1.2;
-    font-size: 1.4rem;
-    margin-top: 8px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.2;
+  font-size: 1.4rem;
+  margin-top: 8px;
 }
 
 /* Footer */
