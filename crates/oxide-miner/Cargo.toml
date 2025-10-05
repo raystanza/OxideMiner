@@ -27,3 +27,6 @@ ring = { workspace = true }
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tempfile = "3"
+
+[build-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

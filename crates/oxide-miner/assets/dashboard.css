@@ -149,7 +149,8 @@ h1 {
   color: var(--label);
 }
 
-.footer-brand #last-updated {
+.footer-brand #build-details {
+  font-size: 0.9rem;
   color: var(--text);
 }
 

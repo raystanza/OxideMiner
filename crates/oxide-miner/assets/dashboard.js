@@ -24,6 +24,12 @@ function formatDuration(seconds) {
   return parts.join(' ');
 }
 
+function formatIsoLocal(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return isNaN(d) ? null : d.toLocaleString();
+}
+
 async function fetchStats() {
   try {
     const response = await fetch('/api/stats');
@@ -84,7 +90,7 @@ async function fetchStats() {
     });
   }
 
-  // Optional: pause when tab not visible to save cycles
+  // Pause when tab not visible to save cycles
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       if (pollTimer) clearInterval(pollTimer);
@@ -123,13 +129,30 @@ async function fetchStats() {
 })();
 
 function updateFooter(data) {
-  // try common fields; harmless if absent
-  const version = data.version || data.pkg_version || data.pkg || null;
-  const vEl = document.getElementById('version');
-  const tEl = document.getElementById('last-updated');
+  const el = document.getElementById('build-details');
+  if (!el) return;
 
-  if (vEl) vEl.textContent = version ? `v${version}` : '';
-  if (tEl) tEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  const build = data.build || {};
+  const version = data.version || build.version || data.pkg_version || data.pkg;
+  const fullHash = build.commit_hash || null;
+  const shortHash = build.commit_hash_short || (fullHash ? fullHash.slice(0, 7) : null);
+  const commitTime = formatIsoLocal(build.commit_timestamp);
+  const buildTime  = formatIsoLocal(build.build_timestamp);
+  const parts = [];
+  if (version) parts.push(`v${version}`);
+  if (shortHash) {
+    if (fullHash) {
+      const url = `https://github.com/raystanza/OxideMiner/commit/${fullHash}`;
+      parts.push(`commit <a href="${url}" target="_blank" rel="noopener noreferrer">${shortHash}</a>`);
+    } else {
+      parts.push(`commit ${shortHash}`);
+    }
+  }
+  parts.push(`updated ${new Date().toLocaleTimeString()}`);
+  //if (commitTime) parts.push(`committed ${commitTime}`);
+  //if (buildTime)  parts.push(`built ${buildTime}`);
+
+  el.innerHTML = parts.join(' <span class="sep">•</span> ');
 }
 
 fetchStats();
