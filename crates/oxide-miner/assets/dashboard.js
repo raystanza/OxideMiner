@@ -36,10 +36,20 @@ async function fetchStats() {
     const data = await response.json();
     document.getElementById('hashrate').textContent = formatHashrate(Number(data.hashrate));
     document.getElementById('hashes').textContent = intFmt.format(Number(data.hashes_total));
-    document.getElementById('accepted').textContent = data.shares.accepted;
-    document.getElementById('rejected').textContent = data.shares.rejected;
-    document.getElementById('dev_accepted').textContent = data.shares.dev_accepted;
-    document.getElementById('dev_rejected').textContent = data.shares.dev_rejected;
+    const shares = data.shares || {};
+    const sharesEl = document.getElementById('shares');
+    if (sharesEl) {
+      const accepted = Number.isFinite(Number(shares.accepted)) ? shares.accepted : '-';
+      const rejected = Number.isFinite(Number(shares.rejected)) ? shares.rejected : '-';
+      sharesEl.textContent = `${accepted} / ${rejected}`;
+    }
+
+    const devSharesEl = document.getElementById('dev_shares');
+    if (devSharesEl) {
+      const devAccepted = Number.isFinite(Number(shares.dev_accepted)) ? shares.dev_accepted : '-';
+      const devRejected = Number.isFinite(Number(shares.dev_rejected)) ? shares.dev_rejected : '-';
+      devSharesEl.textContent = `${devAccepted} / ${devRejected}`;
+    }
     const poolEl = document.getElementById('pool');
     poolEl.textContent = data.pool || '-';
     poolEl.title = data.pool || '';
