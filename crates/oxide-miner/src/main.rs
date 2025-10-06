@@ -7,11 +7,10 @@ mod stats;
 mod util;
 
 use anyhow::Result;
-use args::Args;
-use clap::Parser;
+use args::load_args;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let args = load_args();
     miner::run(args).await
 }
