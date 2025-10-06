@@ -1,0 +1,65 @@
+# OxideMiner configuration (TOML)
+# Save as ./config.toml next to the oxide-miner binary. You can also point to a different file with --config PATH.
+# Any CLI flag can still override these values. Omit a key to use the built-in default / auto behavior.
+#
+# Minimal example (uncomment & edit the next 3 lines to get started):
+# pool = "pool.supportxmr.com:5555"    # Your pool host:port
+# wallet = "<YOUR_XMR_ADDRESS>"        # Your primary XMR wallet address
+# pass = "x"                           # Pool password / miner name (many pools accept 'x')
+
+# --- Connection ---
+
+# Pool like "pool.example.com:3333"
+#pool = "pool.example.com:3333"
+
+# Monero wallet address (primary)
+#wallet = "<YOUR_XMR_ADDRESS>"
+
+# Optional password / miner name
+#pass = "x"
+
+# Number of mining threads.
+# Omit this key to auto-tune based on CPU/cache heuristics (recommended).
+# For maximum performace set this to the total number of threads your cpu(s) have.
+# threads = 8
+
+# Enable TLS for the pool connection. If true, you may also specify a CA bundle/cert
+# or pin the pool's leaf/server certificate by its SHA-256 fingerprint.
+# tls = true
+
+# Path to a PEM bundle or CA certificate file to trust (only used when tls = true).
+# tls_ca_cert = "/etc/ssl/certs/ca-certificates.crt"
+
+# Hex-encoded SHA-256 fingerprint of the expected **leaf** certificate (64 hex chars).
+# If set, the connection will be pinned to this certificate. Use with care.
+# tls_cert_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+# --- HTTP API & Dashboard ---
+
+# Expose a simple HTTP API on this TCP port (e.g., /metrics and /api/stats endpoints).
+# api_port = 8080
+
+# Serve dashboard files from this directory instead of the embedded assets.
+# Useful for local development of the UI.
+# dashboard_dir = "./crates/oxide-miner/assets"
+
+# --- Performance & Scheduling ---
+
+# Pin worker threads to CPU cores (reduces OS scheduling jitter). Off by default.
+# affinity = true
+
+# Request huge/large pages for the RandomX dataset. This often improves hashrate,
+# but requires OS configuration/privileges (Linux hugepages, Windows SeLockMemoryPrivilege).
+# huge_pages = true
+
+# Number of hashes per batch in the mining loop. Higher = fewer yields, less overhead,
+# but increased latency to respond to new jobs. Defaults to 10000.
+# batch_size = 10000
+
+# Disable cooperative yields between hash batches. Keep this **false** to be nice
+# to other processes. (Internally this maps to yield_between_batches = true.)
+no_yield = false
+
+# Enable verbose debug logs. When enabled, logs are also written to ./logs/
+# with daily rotation.
+debug = false
