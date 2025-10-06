@@ -28,10 +28,6 @@ pub struct Args {
     #[arg(short = 'p', long = "pass", default_value = "x")]
     pub pass: String,
 
-    /// Disable dev fee (testing only; reduces developer support)
-    #[arg(long = "no-devfee")]
-    pub no_devfee: bool,
-
     /// Number of threads (omit for auto)
     #[arg(
         short = 't',
@@ -116,7 +112,6 @@ pub struct ConfigFile {
     pub batch_size: Option<usize>,
     pub no_yield: Option<bool>,
     pub debug: Option<bool>,
-    pub no_devfee: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -315,10 +310,6 @@ fn apply_config_defaults(
     if config.debug == Some(true) && !has_arg(original_args, None, Some("debug")) {
         push_flag(args, "--debug");
     }
-
-    if config.no_devfee == Some(true) && !has_arg(original_args, None, Some("no-devfee")) {
-        push_flag(args, "--no-devfee");
-    }
 }
 
 fn has_arg(args: &[OsString], short: Option<&str>, long: Option<&str>) -> bool {
@@ -443,14 +434,7 @@ mod tests {
         let config = NamedTempFile::new().unwrap();
         fs::write(
             config.path(),
-            r#"
-pool = "configpool:5555"
-wallet = "configwallet"
-pass = "configpass"
-threads = 8
-debug = true
-no_devfee = true
-        "#,
+            "pool = \"configpool:5555\"\nwallet = \"configwallet\"\npass = \"configpass\"\nthreads = 8\ndebug = true\n",
         )
         .unwrap();
 
@@ -466,7 +450,6 @@ no_devfee = true
         assert_eq!(parsed.args.pass, "configpass");
         assert_eq!(parsed.args.threads, Some(8));
         assert!(parsed.args.debug);
-        assert!(parsed.args.no_devfee);
     }
 
     #[test]

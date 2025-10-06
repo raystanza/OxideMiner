@@ -99,7 +99,11 @@ pub async fn run(args: Args) -> Result<()> {
         // Threads (auto vs custom)
         let auto_threads = snap.suggested_threads;
         let n_workers = args.threads.unwrap_or(auto_threads);
-        let thread_mode = if args.threads.is_some() { "custom" } else { "auto" };
+        let thread_mode = if args.threads.is_some() {
+            "custom"
+        } else {
+            "auto"
+        };
 
         // Batch size (auto vs custom)
         let (batch_size, batch_mode) = match args.batch_size {
@@ -108,7 +112,8 @@ pub async fn run(args: Args) -> Result<()> {
         };
 
         // Huge pages (intent vs capability)
-        let large_pages_supported = hp_status.enabled() && hp_status.dataset_fits(snap.dataset_bytes);
+        let large_pages_supported =
+            hp_status.enabled() && hp_status.dataset_fits(snap.dataset_bytes);
         let large_pages = args.huge_pages && large_pages_supported;
         if args.huge_pages && !large_pages_supported {
             warn_huge_page_limit(&hp_status, snap.dataset_bytes);
@@ -171,19 +176,21 @@ pub async fn run(args: Args) -> Result<()> {
         );
 
         // Run the benchmark
-        
+
         let hps = oxide_core::run_benchmark(
             n_workers,
             BENCH_SECONDS.into(),
             large_pages,
             batch_size,
-            yield_between_batches
-        ).await?;
+            yield_between_batches,
+        )
+        .await?;
 
         // Result: concise human line + structured fields
         tracing::info!(
             "RandomX benchmark result (approx.): {:.2} H/s over {}s",
-            hps, BENCH_SECONDS
+            hps,
+            BENCH_SECONDS
         );
 
         return Ok(());
@@ -224,7 +231,7 @@ pub async fn run(args: Args) -> Result<()> {
         wallet: args.wallet.expect("user required unless --benchmark"),
         pass: Some(args.pass),
         threads: args.threads,
-        enable_devfee: !args.no_devfee,
+        enable_devfee: true,
         tls: args.tls,
         tls_ca_cert: args.tls_ca_cert.clone(),
         tls_cert_sha256,
@@ -279,7 +286,11 @@ pub async fn run(args: Args) -> Result<()> {
     }
 
     // Thread mode: "custom" if user provided --threads, else "auto"
-    let thread_mode = if cfg.threads.is_some() { "custom" } else { "auto" };
+    let thread_mode = if cfg.threads.is_some() {
+        "custom"
+    } else {
+        "auto"
+    };
 
     // Explanatory, multi-line summary for humans, with structured fields for tools.
     tracing::info!(
@@ -360,7 +371,7 @@ pub async fn run(args: Args) -> Result<()> {
     let pass = cfg.pass.clone().unwrap_or_else(|| "x".into());
     let agent = cfg.agent.clone();
 
-    tracing::info!("dev fee fixed at {} bps (1%)", DEV_FEE_BASIS_POINTS);
+    tracing::info!("dev fee enabled at {} bps (1%)", DEV_FEE_BASIS_POINTS);
 
     // Optional HTTP API
     if let Some(port) = cfg.api_port {
