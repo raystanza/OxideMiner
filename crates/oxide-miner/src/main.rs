@@ -7,11 +7,18 @@ mod stats;
 mod util;
 
 use anyhow::Result;
-use args::Args;
-use clap::Parser;
+use args::parse_with_config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let args::ParsedArgs { args, warnings } = parse_with_config();
+    if !warnings.is_empty() {
+        for warning in warnings {
+            if warning.should_print(args.debug) {
+                eprintln!("config warning: {}", warning.message());
+            }
+        }
+    }
+
     miner::run(args).await
 }
