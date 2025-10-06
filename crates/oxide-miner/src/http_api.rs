@@ -20,6 +20,70 @@ const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
 const DASHBOARD_CSS: &str = include_str!("../assets/dashboard.css");
 const DASHBOARD_JS: &str = include_str!("../assets/dashboard.js");
 
+/// Metadata for an embedded dashboard image asset.
+struct EmbeddedImage {
+    name: &'static str,
+    bytes: &'static [u8],
+    content_type: &'static str,
+}
+
+const EMBEDDED_IMAGES: &[EmbeddedImage] = &[
+    EmbeddedImage {
+        name: "github_link-monero_theme.png",
+        bytes: include_bytes!("../assets/img/github_link-monero_theme.png"),
+        content_type: "image/png",
+    },
+    EmbeddedImage {
+        name: "json_link.png",
+        bytes: include_bytes!("../assets/img/json_link.png"),
+        content_type: "image/png",
+    },
+    EmbeddedImage {
+        name: "metrics_link.png",
+        bytes: include_bytes!("../assets/img/metrics_link.png"),
+        content_type: "image/png",
+    },
+    EmbeddedImage {
+        name: "monero_logo.png",
+        bytes: include_bytes!("../assets/img/monero_logo.png"),
+        content_type: "image/png",
+    },
+];
+
+fn find_embedded_image(path: &str) -> Option<&'static EmbeddedImage> {
+    path.strip_prefix("/img/")
+        .and_then(|name| EMBEDDED_IMAGES.iter().find(|img| img.name == name))
+}
+
+fn content_type_for(path: &str) -> &'static str {
+    match path.rsplit('.').next().map(|ext| ext.to_ascii_lowercase()) {
+        Some(ext) if ext == "html" => "text/html",
+        Some(ext) if ext == "css" => "text/css",
+        Some(ext) if ext == "js" => "application/javascript",
+        Some(ext) if ext == "png" => "image/png",
+        Some(ext) if ext == "jpg" || ext == "jpeg" => "image/jpeg",
+        Some(ext) if ext == "gif" => "image/gif",
+        Some(ext) if ext == "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
+}
+
+fn ok_response(body: Bytes, content_type: &'static str) -> Response<Full<Bytes>> {
+    let mut resp = Response::new(Full::new(body));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static(content_type),
+    );
+    resp
+}
+
+fn not_found_response() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(404)
+        .body(Full::new(Bytes::from_static(b"not found")))
+        .unwrap()
+}
+
 fn system_uptime_seconds() -> u64 {
     System::uptime()
 }
@@ -78,10 +142,30 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             writeln!(body, "oxide_pool_connected {}", connected).ok();
                             writeln!(body, "oxide_tls_enabled {}", tls).ok();
                             writeln!(body, "version {}", env!("CARGO_PKG_VERSION")).ok();
-                            writeln!(body, "commit_hash {}", option_env!("OXIDE_GIT_COMMIT").unwrap_or("")).ok();
-                            writeln!(body, "commit_hash_short {}", option_env!("OXIDE_GIT_COMMIT_SHORT").unwrap_or("")).ok();
-                            writeln!(body, "commit_timestamp {}", option_env!("OXIDE_GIT_COMMIT_TIMESTAMP").unwrap_or("")).ok();
-                            writeln!(body, "build_timestamp {}", option_env!("OXIDE_BUILD_TIMESTAMP").unwrap_or("")).ok();
+                            writeln!(
+                                body,
+                                "commit_hash {}",
+                                option_env!("OXIDE_GIT_COMMIT").unwrap_or("")
+                            )
+                            .ok();
+                            writeln!(
+                                body,
+                                "commit_hash_short {}",
+                                option_env!("OXIDE_GIT_COMMIT_SHORT").unwrap_or("")
+                            )
+                            .ok();
+                            writeln!(
+                                body,
+                                "commit_timestamp {}",
+                                option_env!("OXIDE_GIT_COMMIT_TIMESTAMP").unwrap_or("")
+                            )
+                            .ok();
+                            writeln!(
+                                body,
+                                "build_timestamp {}",
+                                option_env!("OXIDE_BUILD_TIMESTAMP").unwrap_or("")
+                            )
+                            .ok();
                             let mut resp = Response::new(Full::new(Bytes::from(body)));
                             resp.headers_mut().insert(
                                 header::CONTENT_TYPE,
@@ -143,79 +227,39 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                                 let file_path = dir.join(file_name);
                                 match fs::read(&file_path).await {
                                     Ok(contents) => {
-                                        let mut resp =
-                                            Response::new(Full::new(Bytes::from(contents)));
-                                        let ct = if file_name.ends_with(".html") {
-                                            "text/html"
-                                        } else if file_name.ends_with(".css") {
-                                            "text/css"
-                                        } else if file_name.ends_with(".js") {
-                                            "application/javascript"
-                                        } else {
-                                            "application/octet-stream"
-                                        };
-                                        resp.headers_mut().insert(
-                                            header::CONTENT_TYPE,
-                                            header::HeaderValue::from_static(ct),
-                                        );
-                                        Ok::<_, Infallible>(resp)
+                                        let ct = content_type_for(file_name);
+                                        Ok::<_, Infallible>(ok_response(Bytes::from(contents), ct))
                                     }
-                                    Err(_) => Ok::<_, Infallible>(
-                                        Response::builder()
-                                            .status(404)
-                                            .body(Full::new(Bytes::from("not found")))
-                                            .unwrap(),
-                                    ),
+                                    Err(_) => Ok::<_, Infallible>(not_found_response()),
                                 }
                             } else {
                                 match path {
-                                    "/" => {
-                                        let mut resp = Response::new(Full::new(
-                                            Bytes::from_static(DASHBOARD_HTML.as_bytes()),
-                                        ));
-                                        resp.headers_mut().insert(
-                                            header::CONTENT_TYPE,
-                                            header::HeaderValue::from_static("text/html"),
-                                        );
-                                        Ok::<_, Infallible>(resp)
+                                    "/" => Ok::<_, Infallible>(ok_response(
+                                        Bytes::from_static(DASHBOARD_HTML.as_bytes()),
+                                        "text/html",
+                                    )),
+                                    "/dashboard.css" => Ok::<_, Infallible>(ok_response(
+                                        Bytes::from_static(DASHBOARD_CSS.as_bytes()),
+                                        "text/css",
+                                    )),
+                                    "/dashboard.js" => Ok::<_, Infallible>(ok_response(
+                                        Bytes::from_static(DASHBOARD_JS.as_bytes()),
+                                        "application/javascript",
+                                    )),
+                                    _ if path.starts_with("/img/") => {
+                                        match find_embedded_image(path) {
+                                            Some(image) => Ok::<_, Infallible>(ok_response(
+                                                Bytes::from_static(image.bytes),
+                                                image.content_type,
+                                            )),
+                                            None => Ok::<_, Infallible>(not_found_response()),
+                                        }
                                     }
-                                    "/dashboard.css" => {
-                                        let mut resp = Response::new(Full::new(
-                                            Bytes::from_static(DASHBOARD_CSS.as_bytes()),
-                                        ));
-                                        resp.headers_mut().insert(
-                                            header::CONTENT_TYPE,
-                                            header::HeaderValue::from_static("text/css"),
-                                        );
-                                        Ok::<_, Infallible>(resp)
-                                    }
-                                    "/dashboard.js" => {
-                                        let mut resp = Response::new(Full::new(
-                                            Bytes::from_static(DASHBOARD_JS.as_bytes()),
-                                        ));
-                                        resp.headers_mut().insert(
-                                            header::CONTENT_TYPE,
-                                            header::HeaderValue::from_static(
-                                                "application/javascript",
-                                            ),
-                                        );
-                                        Ok::<_, Infallible>(resp)
-                                    }
-                                    _ => Ok::<_, Infallible>(
-                                        Response::builder()
-                                            .status(404)
-                                            .body(Full::new(Bytes::from("not found")))
-                                            .unwrap(),
-                                    ),
+                                    _ => Ok::<_, Infallible>(not_found_response()),
                                 }
                             }
                         }
-                        _ => Ok::<_, Infallible>(
-                            Response::builder()
-                                .status(404)
-                                .body(Full::new(Bytes::from("not found")))
-                                .unwrap(),
-                        ),
+                        _ => Ok::<_, Infallible>(not_found_response()),
                     }
                 }
             });
