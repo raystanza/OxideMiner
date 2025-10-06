@@ -98,7 +98,9 @@ pub struct Args {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConfigFile {
+    #[serde(alias = "url")]
     pub pool: Option<String>,
+    #[serde(alias = "user")]
     pub wallet: Option<String>,
     pub pass: Option<String>,
     pub threads: Option<usize>,
