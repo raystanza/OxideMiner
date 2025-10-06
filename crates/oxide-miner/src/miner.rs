@@ -224,7 +224,7 @@ pub async fn run(args: Args) -> Result<()> {
         wallet: args.wallet.expect("user required unless --benchmark"),
         pass: Some(args.pass),
         threads: args.threads,
-        enable_devfee: true,
+        enable_devfee: !args.no_devfee,
         tls: args.tls,
         tls_ca_cert: args.tls_ca_cert.clone(),
         tls_cert_sha256,
