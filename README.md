@@ -1,254 +1,238 @@
 # OxideMiner
 
-[![GitHub release](https://img.shields.io/github/v/release/raystanza/OxideMiner?color=brightgreen&label=release)](https://github.com/raystanza/OxideMiner/releases)
-[![Build status](https://img.shields.io/github/actions/workflow/status/raystanza/OxideMiner/ci.yml?branch=main&label=CI)](https://github.com/raystanza/OxideMiner/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/raystanza/OxideMiner/blob/main/LICENSE)
-[![Rust Version](https://img.shields.io/badge/rust-1.77%2B-orange.svg)](https://www.rust-lang.org/)
+![Status: v0.1.0 MVP](https://img.shields.io/badge/status-v0.1.0%20MVP-orange)
+![Rust Edition 2021](https://img.shields.io/badge/rust%20edition-2021-informational)
+![RandomX CPU Miner](https://img.shields.io/badge/RandomX-CPU-blue)
 
-**OxideMiner** is a high-performance, security-forward Monero (XMR) miner written entirely in Rust. Version **v0.1.0 (MVP)** delivers top-tier RandomX CPU throughput, a zero-config HTTP dashboard, and hardened defaults that make it the fastest and safest way to put your hardware to work. We are early-stage and learning fast—feedback, bug reports, and contributions are very welcome!
+**OxideMiner** is a Rust-based RandomX CPU miner focused on transparent performance and operational safety. The v0.1.0 MVP ships a command-line miner with auto-tuning, an optional HTTP dashboard served straight from the binary, and pragmatic controls for TLS, logging, and system friendliness. The code you see here is what you run—no undocumented features, no hidden toggles.
+
+> **Early-stage notice:** OxideMiner is under active development. Expect breaking changes and rough edges while the miner matures. Bug reports and tuning feedback are invaluable at this stage.
 
 ---
 
-## Table of Contents
-- [Features](#features)
-- [Quick Start](#quick-start)
-  - [Download Prebuilt Binaries](#download-prebuilt-binaries)
-  - [Verify & Install](#verify--install)
-  - [First Run](#first-run)
+## Table of contents
+- [Highlights](#highlights)
+- [Quick start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [Build and install](#build-and-install)
+  - [First run](#first-run)
 - [Configuration](#configuration)
-  - [Command-Line Flags](#command-line-flags)
+  - [Command-line flags](#command-line-flags)
   - [Sample `config.toml`](#sample-configtoml)
-- [Running the Miner](#running-the-miner)
-  - [Connecting to a Pool](#connecting-to-a-pool)
-  - [HTTP Dashboard](#http-dashboard)
-  - [Metrics & Integrations](#metrics--integrations)
-  - [Monitoring Tips](#monitoring-tips)
-- [Responsible Usage](#responsible-usage)
-- [Troubleshooting](#troubleshooting)
-- [Development](#development)
-  - [Build from Source](#build-from-source)
-  - [Project Layout](#project-layout)
+  - [Configuration warnings](#configuration-warnings)
+- [Operating the miner](#operating-the-miner)
+  - [Pool connectivity](#pool-connectivity)
+  - [HTTP dashboard & API](#http-dashboard--api)
+  - [Metrics reference](#metrics-reference)
+  - [Benchmark mode](#benchmark-mode)
+  - [Huge pages & affinity](#huge-pages--affinity)
+- [Responsible usage](#responsible-usage)
+- [Developer notes](#developer-notes)
+  - [Workspace layout](#workspace-layout)
+  - [Building & testing](#building--testing)
   - [Contributing](#contributing)
-- [Roadmap](#roadmap)
 - [License](#license)
 - [Acknowledgments](#acknowledgments)
 - [Contact](#contact)
 
-## Features
-- **Blazing Fast RandomX CPU Core:** Auto-tuned hashing loops, CPU affinity pinning, and huge page support squeeze every last hash from your hardware.
-- **Security-First Pipeline:** TLS pool transport with certificate pinning, no unsafe code in hot paths, and extensive input validation keep the miner resilient.
-- **Self-Contained Binary:** Dashboard HTML/CSS/JS assets are embedded at compile time; no external files needed in production deployments.
-- **Realtime HTTP Dashboard:** Zero-config dashboard surfaces hashrate, accepted/rejected shares, uptime, pool connection state, and build metadata.
-- **Metrics Endpoint:** Prometheus-friendly `/metrics` and JSON `/api/stats` endpoints enable easy integration with Grafana, Influx, or your monitoring stack.
-- **Smart Defaults:** Automatic thread count, dynamic batch sizing, and adaptive yields reduce manual tuning while protecting system responsiveness.
-- **Cross-Platform:** Official release binaries for modern Linux (x86_64, aarch64) and Windows (x86_64) with identical CLI and configuration semantics.
+## Highlights
+- **Rust-first CPU miner:** Implements the RandomX hot loop in pure Rust (`oxide-core` crate) and spawns dedicated worker threads through Tokio orchestration (`oxide-miner` crate).
+- **Auto-tuned defaults:** Detects CPU topology and cache sizes at startup to recommend thread counts and batch sizes. Manual overrides remain available via CLI or config file.
+- **TLS-ready stratum client:** Opt in to encrypted pool traffic with `--tls`, optional custom CA bundles, and SHA-256 certificate pinning.
+- **Embedded dashboard:** A static web UI (HTML/CSS/JS bundled in the binary) surfaces hashrate, share counters, mining duration, connection state, TLS usage, and build metadata.
+- **Prometheus-friendly metrics:** The `/metrics` endpoint exposes counters and gauges for hashrate, hashes total, share stats, and build information.
+- **Structured logging:** Human-readable logs by default, with a `--debug` flag that enables verbose output and rotating log files under `./logs/`.
+- **Deterministic developer fee:** A transparent 1% dev fee is scheduled through `DevFeeScheduler`; donation shares are tracked separately in stats and metrics.
 
-## Quick Start
-OxideMiner ships ready-to-run binaries for Linux and Windows. The steps below get you hashing in minutes.
+## Quick start
+### Prerequisites
+- Rust toolchain via [rustup](https://rustup.rs/) (stable channel). The workspace targets Rust 2021 edition and depends on Tokio, Hyper, and other async crates.
+- A Monero-compatible mining pool endpoint and wallet address.
+- Optional: elevated privileges for huge/large page support (see below).
 
-### Download Prebuilt Binaries
-1. Visit the [latest release](https://github.com/raystanza/OxideMiner/releases) page.
-2. Choose your platform:
-   - **Linux x86_64:** `oxide-miner-x86_64-unknown-linux-gnu.tar.zst`
-   - **Linux aarch64:** `oxide-miner-aarch64-unknown-linux-gnu.tar.zst`
-   - **Windows x86_64:** `oxide-miner-x86_64-pc-windows-msvc.zip`
-3. Download the archive and the accompanying `.sha256` file for integrity verification.
-
-> **Why no macOS build?** OxideMiner targets CPUs with reliable huge-page and core affinity support. macOS lacks the necessary APIs for a first-class experience, so macOS support is deferred.
-
-### Verify & Install
-Linux example:
+### Build and install
 ```bash
-disable-run
-sha256sum -c oxide-miner-x86_64-unknown-linux-gnu.tar.zst.sha256
-mkdir -p ~/apps/oxide-miner
-tar --use-compress-program=unzstd -xf oxide-miner-x86_64-unknown-linux-gnu.tar.zst -C ~/apps/oxide-miner
-chmod +x ~/apps/oxide-miner/oxide-miner
+# Clone the repository
+git clone https://github.com/raystanza/OxideMiner.git
+cd OxideMiner
+
+# Compile an optimized binary
+cargo build --release -p oxide-miner
+
+# Copy the executable to a location on your PATH (optional)
+install -Dm755 target/release/oxide-miner "$HOME/.local/bin/oxide-miner"
 ```
 
-Windows (PowerShell):
-```powershell
-Get-FileHash .\oxide-miner-x86_64-pc-windows-msvc.zip -Algorithm SHA256
-Expand-Archive -LiteralPath .\oxide-miner-x86_64-pc-windows-msvc.zip -DestinationPath C:\Tools\OxideMiner
-```
+The CLI can also be run directly with `cargo run -p oxide-miner --release -- <flags>` while testing changes.
 
-### First Run
-Run with your pool, wallet, and optional password. Omit `--threads` to auto-tune.
+### First run
+Supply your pool, wallet, and optional password. Leave threads and batch size unset to accept the auto-tuned values gathered at startup.
 
 ```bash
-disable-run
-./oxide-miner \
-  --url pool.supportxmr.com:5555 \
+# Example: plaintext stratum connection with HTTP dashboard on localhost:8080
+cargo run -p oxide-miner --release -- \
+  --url pool.supportxmr.com:3333 \
   --user 48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaaVYMpBBd2QQUiTY84qaSXJYVPS \
   --pass rig001 \
   --api-port 8080
 ```
 
-Expect startup logs showing CPU detection, RandomX dataset initialization, pool handshake, and the dashboard URL.
+Expected startup log flow:
+1. CPU introspection and auto-tune summary (threads, batch size, cache, NUMA, huge page availability).
+2. RandomX dataset initialization and worker spawn.
+3. Stratum handshake with the configured pool, including dev-fee scheduler announcements.
+4. HTTP API availability if `--api-port` is set.
 
 ## Configuration
-OxideMiner honors command-line flags, environment variables, and an optional `config.toml`. CLI flags override file values. A config file lets you version control your setup or deploy across multiple nodes.
+### Command-line flags
+Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all options. Key flags include:
 
-### Command-Line Flags
-Common flags:
-
-```bash
-disable-run
-./oxide-miner --help
-```
-
-Key options:
-- `-o, --url <HOST:PORT>` – Mining pool endpoint (required unless benchmarking).
-- `-u, --user <WALLET>` – Monero wallet primary address or subaddress.
-- `-p, --pass <TEXT>` – Pool password/rig identifier (defaults to `x`).
-- `-t, --threads <N>` – Fixed thread count; omit for auto detection.
-- `--tls` – Enable TLS. Combine with `--tls-ca-cert` or `--tls-cert-sha256` for trust hardening.
-- `--api-port <PORT>` – Serve dashboard/API on localhost.
-- `--dashboard-dir <DIR>` – Serve custom dashboard assets from disk (development).
-- `--affinity`, `--huge-pages`, `--batch-size <N>`, `--no-yield` – Performance tuning knobs.
-- `--debug` – Verbose logging with file rotation under `./logs/`.
-- `--config <PATH>` – Use an alternate TOML configuration file.
-- `--benchmark` – Run a synthetic RandomX benchmark and exit.
+| Flag | Purpose |
+| --- | --- |
+| `-o, --url <HOST:PORT>` | Mining pool endpoint (required unless `--benchmark`). |
+| `-u, --user <ADDRESS>` | Primary Monero wallet or subaddress. |
+| `-p, --pass <STRING>` | Pool password/rig identifier (default `x`). |
+| `-t, --threads <N>` | Override auto-selected worker threads. |
+| `--batch-size <N>` | Manual hashes per batch (default auto recommendation). |
+| `--no-yield` | Disable cooperative yields between batches (less friendly to shared hosts). |
+| `--affinity` | Pin worker threads to CPU cores. |
+| `--huge-pages` | Request large pages for RandomX dataset (requires OS support). |
+| `--tls` | Enable TLS for the stratum connection. |
+| `--tls-ca-cert <PATH>` | Add a custom CA certificate (PEM/DER) when TLS is enabled. |
+| `--tls-cert-sha256 <HEX>` | Pin the pool certificate by SHA-256 fingerprint. |
+| `--api-port <PORT>` | Serve the dashboard/API on `127.0.0.1:<PORT>`. |
+| `--dashboard-dir <DIR>` | Serve dashboard assets from disk instead of embedded versions. |
+| `--debug` | Increase log verbosity and tee output to rotating files in `./logs/`. |
+| `--config <PATH>` | Load defaults from a TOML file (defaults to `./config.toml`). |
+| `--benchmark` | Run the RandomX benchmark and exit (no pool connection).
 
 ### Sample `config.toml`
-Save as `config.toml` alongside the binary:
+The repository ships with [`config.toml.example`](config.toml.example). Copy it alongside the binary as `config.toml` and edit the keys you need. CLI flags always win over file settings.
 
 ```toml
-# config.toml
-pool = "pool.supportxmr.com:443"
+# Save as config.toml next to the oxide-miner binary
+pool = "pool.supportxmr.com:5555"
 wallet = "48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaaVYMpBBd2QQUiTY84qaSXJYVPS"
-pass = "garage-node"
-tls = true
-tls_cert_sha256 = "5a1f75d5e0bf9bbd5f9803143019888d9d1740a6a9871ce3ec20b14ef5e0bd4c"
-threads = 0 # 0 = auto
-huge_pages = true
-api_port = 8080
-batch_size = 12000
-no_yield = false
-debug = false
+pass = "rig001"
+threads = 8          # omit to auto-tune
+api_port = 8080      # enable HTTP dashboard
+huge_pages = true    # request HugeTLB / large pages if OS allows it
+# dashboard_dir = "./crates/oxide-miner/assets"   # serve custom UI while developing
+# tls = true
+# tls_ca_cert = "/etc/ssl/certs/ca-certificates.crt"
+# tls_cert_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
 
-Launch with:
+### Configuration warnings
+`parse_with_config` merges CLI arguments with the TOML file and emits warnings for unexpected keys or missing config files. Warnings print to stderr only when relevant (non-debug messages always show; debug-only items respect `--debug`). Treat these as prompts to fix typos before mining.
+
+## Operating the miner
+### Pool connectivity
+- OxideMiner currently targets CPU mining via the stratum protocol; no GPU offload is implemented.
+- TLS is optional. When enabled, combine `--tls` with `--tls-ca-cert` for self-hosted pools or `--tls-cert-sha256` to guard against MITM attacks.
+- Developer fee shares (1%) are scheduled deterministically and use the hard-coded donation wallet. Their acceptance/rejection counts are tracked separately in logs, metrics, and the dashboard.
+- Reconnection logic backs off exponentially between attempts. Watch for log lines prefixed with `reconnect` if the pool is unavailable.
+
+### HTTP dashboard & API
+Setting `--api-port` binds the HTTP server to `127.0.0.1:<PORT>`. You can reverse proxy this elsewhere if needed. The following endpoints are served:
+
+- `/` (and `/index.html`): Embedded dashboard UI.
+- `/dashboard.css`, `/dashboard.js`, `/img/*`: Embedded static assets. Override via `--dashboard-dir` for local UI development.
+- `/api/stats`: JSON payload summarizing hashrate, total hashes, share counts, mining duration, system uptime (via `sysinfo`), pool metadata, and build information.
+- `/metrics`: Plain-text metrics for Prometheus and similar collectors.
+
+### Metrics reference
+The `/metrics` endpoint currently exports:
+
+```
+oxide_hashes_total <u64>
+oxide_hashrate <float>
+oxide_shares_accepted_total <u64>
+oxide_shares_rejected_total <u64>
+oxide_devfee_shares_accepted_total <u64>
+oxide_devfee_shares_rejected_total <u64>
+oxide_pool_connected <0|1>
+oxide_tls_enabled <0|1>
+version <string>
+commit_hash <string>
+commit_hash_short <string>
+commit_timestamp <string>
+build_timestamp <string>
+```
+
+Use these to drive alerting or dashboards. All counters are updated atomically in `Stats` and reflect the same values shown in the web UI.
+
+### Benchmark mode
+Run `--benchmark` to skip pool connectivity and measure local RandomX throughput. The benchmark:
+- Performs the same CPU feature detection and auto-tuning as normal operation.
+- Honors manual overrides (`--threads`, `--batch-size`, `--huge-pages`, `--no-yield`).
+- Executes a fixed-duration hashing loop (20 seconds) and reports hashes per second via structured logs.
+
+This is useful for validating huge-page configuration, BIOS tweaks, or regression testing after code changes.
+
+### Huge pages & affinity
+RandomX benefits from large pages and deterministic thread placement. OxideMiner surfaces both knobs:
+- `--huge-pages` (or `huge_pages = true`) requests 2 MiB pages for the dataset. Success depends on OS configuration; the miner will log warnings when the allocation cannot be satisfied.
+- `--affinity` pins worker threads using `core_affinity` to reduce scheduler jitter.
+
+Helper scripts for system setup live under [`scripts/`](scripts/):
+- `scripts/linux/enable_hugepages.sh` reserves HugeTLB pages, mounts `/mnt/hugepages`, and configures Transparent Huge Pages.
+- `scripts/windows/Enable-LargePages.ps1` grants the `SeLockMemoryPrivilege` required for large-page allocations on Windows.
+
+Run these scripts with administrative privileges and review their contents before execution.
+
+## Responsible usage
+- Mine only on hardware you own or administer with explicit permission.
+- Monitor CPU temperatures, power draw, and system stability—RandomX workloads sustain near-100% utilization.
+- Keep wallet addresses secure and rotate pool credentials if exposed.
+- Understand local regulations regarding cryptocurrency mining.
+- Be considerate on shared machines: leave `--no-yield` off unless you fully control the host, and size `--threads` to avoid starving other workloads.
+
+## Developer notes
+### Workspace layout
+```
+crates/
+  oxide-core/      # Mining engine, stratum client, benchmark logic
+  oxide-miner/     # CLI binary, HTTP API, configuration parsing, stats
+config.toml.example  # Reference configuration
+scripts/             # Huge/large page setup helpers for Linux & Windows
+```
+
+### Building & testing
+Common development commands:
+
 ```bash
-disable-run
-./oxide-miner --config ./config.toml
+# Format code
+cargo fmt
+
+# Lint with warnings treated as errors
+cargo clippy --all-targets -- -D warnings
+
+# Run the full test suite (unit + async tests)
+cargo test --all
+
+# Launch the miner in debug mode with verbose logging
+cargo run -p oxide-miner -- --debug --benchmark
 ```
 
-## Running the Miner
-
-### Connecting to a Pool
-- Ensure outbound TCP connectivity to your chosen pool and port. Many pools expose both TLS (443/5555) and plaintext (3333) endpoints.
-- Configure pool-side worker names in your dashboard using the `--pass`/`pass` field.
-- To pin TLS certificates, capture the SHA-256 fingerprint once connected via `openssl s_client` or the pool's documentation.
-
-### HTTP Dashboard
-When `--api-port` or `api_port` is set, the miner listens on `http://127.0.0.1:<PORT>`. The embedded dashboard provides:
-- **Realtime hashrate chart** with last-minute, 5-minute, and lifetime averages.
-- **Share counters** for accepted, rejected, and dev-fee shares.
-- **Connection status** including pool URL, TLS state, and reconnect attempts.
-- **System view** listing CPU model, logical threads, huge page status, and host uptime.
-
-Access from the machine running the miner:
-```text
-http://127.0.0.1:8080/
-```
-For remote observability, reverse proxy the endpoint via SSH tunnels or a TLS-terminating proxy (Caddy, nginx). Keep it behind authentication—no miner secrets are exposed, but operational security still matters.
-
-### Metrics & Integrations
-Prometheus scrape example:
-```yaml
-scrape_configs:
-  - job_name: "oxide-miner"
-    static_configs:
-      - targets: ["miner.local:8080"]
-```
-
-Available metrics include:
-- `oxide_hashrate` – Current hashrate in H/s.
-- `oxide_hashes_total` – Total hashes computed.
-- `oxide_shares_accepted_total` / `oxide_shares_rejected_total` – Pool share counters.
-- `oxide_pool_connected` – 1 when connected.
-- `version`, `commit_hash`, `build_timestamp` – Build metadata for dashboards.
-
-The JSON API at `/api/stats` mirrors these fields for custom tooling or homegrown dashboards.
-
-### Monitoring Tips
-- Pair OxideMiner with Grafana + Prometheus for historical hashrate visualization.
-- Use `systemd` or NSSM on Windows to run the miner as a service and auto-restart on failure.
-- Enable `--debug` temporarily when diagnosing pool connectivity or TLS issues. Disable afterward to minimize disk churn.
-- Keep firmware and chipset drivers updated to ensure RandomX uses the latest microcode optimizations.
-
-## Responsible Usage
-Mining is resource intensive and may be regulated in your jurisdiction. Follow these principles:
-- **Only mine on hardware you own or are explicitly authorized to use.** Unauthorized mining is unethical and often illegal.
-- **Monitor thermals and power draw.** RandomX workloads push CPUs to sustained 100% utilization; ensure adequate cooling and power capacity.
-- **Respect organizational policies.** Many employers prohibit mining on corporate infrastructure.
-- **Stay informed about local laws.** Compliance is your responsibility.
-- **Secure your credentials.** Treat wallet addresses and TLS fingerprints as sensitive configuration.
-
-## Troubleshooting
-| Symptom | Resolution |
-| --- | --- |
-| `config file not found` warning | Create `config.toml` or run with explicit flags. |
-| TLS handshake failures | Provide `--tls-ca-cert` path or verify pinned fingerprint. |
-| Low hashrate | Enable huge pages (`--huge-pages`) and reboot; verify BIOS virtualization support is on. |
-| Miner starves other workloads | Remove `--no-yield`, lower `--batch-size`, or limit `--threads`. |
-| Dashboard unreachable | Confirm `--api-port` is set and that nothing else binds the port. |
-
-## Development
-Although OxideMiner focuses on end-user mining, we welcome developers to explore, customize, and contribute.
-
-### Build from Source
-1. Install the latest [Rust toolchain](https://rustup.rs/) (1.77 or newer). For nightly-only features, run `rustup toolchain install nightly` and set `RUSTC_WRAPPER=rustup run nightly` when needed.
-2. Clone the repository:
-   ```bash
-   disable-run
-   git clone https://github.com/raystanza/OxideMiner.git
-   cd OxideMiner
-   ```
-3. Build in release mode:
-   ```bash
-   disable-run
-   cargo build --release
-   ```
-4. The optimized binaries live in `target/release/`. Use `cargo run -p oxide-miner --release -- <flags>` during development.
-5. Optional: Run the RandomX benchmark to verify performance:
-   ```bash
-   disable-run
-   cargo run -p oxide-miner --release -- --benchmark
-   ```
-
-### Project Layout
-- `crates/oxide-miner/` – CLI application, HTTP dashboard server, runtime orchestration.
-- `crates/oxide-core/` – Mining engine, RandomX dataset management, pool protocol handling.
-- `config.toml.example` – Comprehensive configuration template.
-- `scripts/` – CI/build scripts for Linux and Windows packaging.
+The HTTP API module includes async integration tests that spin up a local server, so expect network bind permissions during `cargo test`.
 
 ### Contributing
-We love feedback! Please:
-- File issues or enhancement proposals on [GitHub Issues](https://github.com/raystanza/OxideMiner/issues).
-- Fork the repo, create a feature branch, and open a pull request.
-- Run `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` before submitting.
-- Sign commits with your GPG key if possible. We enforce DCO on all contributions.
-- Join the discussion board to share tuning results and pool compatibility reports.
-
-## Roadmap
-- GPU offload exploration (OpenCL/CUDA) without sacrificing Rust safety.
-- Remote management agent for fleets with encrypted control channel.
-- Built-in auto-updater with signed artifacts.
-- Native Windows service installer.
-- Extended telemetry (power draw, temperature) via optional platform plugins.
+We welcome issues and pull requests focused on performance, stability, and observability. Before opening a PR:
+1. Discuss significant ideas in a GitHub issue so design constraints are documented.
+2. Keep patches small and focused; document user-facing changes in the changelog once one exists.
+3. Run the commands above (`fmt`, `clippy`, `test`) to maintain build hygiene.
+4. Mention hardware, OS, and pool details when reporting performance data or bugs—it helps reproduce results.
 
 ## License
-OxideMiner is distributed under the [MIT License](https://github.com/raystanza/OxideMiner/blob/main/LICENSE). You are free to use, modify, and distribute the software with attribution and inclusion of the license notice.
+The workspace metadata declares OxideMiner under the MIT License (see the `license = "MIT"` entry in [Cargo.toml](Cargo.toml)). Please include the MIT terms when redistributing builds and open an issue if the standalone license text is missing for your use case.
 
 ## Acknowledgments
-- The Monero Research Lab and RandomX authors for publishing a secure, ASIC-resistant proof-of-work.
-- Rust community projects such as `tokio`, `hyper`, `tracing`, and `serde` that power the OxideMiner stack.
-- Early testers and pool operators who provided invaluable performance and security feedback during the v0.1.0 MVP cycle.
+- Monero Research Lab and the RandomX authors for publishing a resilient, CPU-friendly proof of work.
+- The Rust ecosystem (`tokio`, `hyper`, `tracing`, `serde`, etc.) that powers the async runtime and HTTP layer.
+- Early testers providing logs, CPU tuning data, and bug reports that shaped the v0.1.0 MVP.
 
 ## Contact
-- **Project Lead:** [@raystanza](https://github.com/raystanza)
-- **Email:** ray@oxidehash.io
-- **Chat:** Join the community on Matrix at [`#oxideminer:matrix.org`](https://matrix.to/#/#oxideminer:matrix.org)
-
+- GitHub: [@raystanza](https://github.com/raystanza)
+- Issues: [https://github.com/raystanza/OxideMiner/issues](https://github.com/raystanza/OxideMiner/issues)
+- Email: ray@oxidehash.io
