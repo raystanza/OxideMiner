@@ -9,8 +9,8 @@ use oxide_core::config::DEFAULT_BATCH_SIZE;
 use oxide_core::stratum::PoolJob;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
-    autotune_snapshot, spawn_workers, Config, DevFeeScheduler, HugePageStatus, StratumClient,
-    DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
+    autotune_snapshot, spawn_workers, Config, DevFeeScheduler, HugePageStatus, ProxyConfig,
+    StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{atomic::Ordering, Arc};
@@ -244,7 +244,18 @@ pub async fn run(args: Args) -> Result<()> {
         batch_size: DEFAULT_BATCH_SIZE,
         yield_between_batches: !args.no_yield,
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
+        proxy: args.proxy.clone(),
     };
+
+    let proxy_cfg = cfg
+        .proxy
+        .as_ref()
+        .map(|url| ProxyConfig::parse(url))
+        .transpose()?;
+
+    if let Some(proxy) = proxy_cfg.as_ref() {
+        tracing::info!(proxy = %proxy.redacted(), "routing stratum traffic via SOCKS5 proxy");
+    }
 
     // Take snapshot to log how auto-tune decided thread count and batch recommendation.
     let snap = autotune_snapshot();
@@ -386,6 +397,7 @@ pub async fn run(args: Args) -> Result<()> {
     let tls = cfg.tls;
 
     // Pool IO task with reconnect loop
+    let proxy_cfg = proxy_cfg.clone();
     let pool_handle = tokio::spawn({
         let jobs_tx = jobs_tx.clone();
         let stats = stats.clone();
@@ -393,6 +405,7 @@ pub async fn run(args: Args) -> Result<()> {
         let user_wallet = user_wallet.clone();
         let pass = pass.clone();
         let agent = agent.clone();
+        let proxy_cfg = proxy_cfg.clone();
 
         async move {
             let tls_ca_cert = tls_ca_cert.clone();
@@ -409,6 +422,7 @@ pub async fn run(args: Args) -> Result<()> {
                     tls,
                     tls_ca_cert.as_deref(),
                     tls_cert_sha256.as_ref(),
+                    proxy_cfg.as_ref(),
                 )
                 .await
                 {
@@ -459,6 +473,7 @@ pub async fn run(args: Args) -> Result<()> {
                             tls,
                             tls_ca_cert.as_ref(),
                             tls_cert_sha256.as_ref(),
+                            proxy_cfg.as_ref(),
                             3,
                             "devfee",
                         )
@@ -481,6 +496,7 @@ pub async fn run(args: Args) -> Result<()> {
                                     tls,
                                     tls_ca_cert.as_ref(),
                                     tls_cert_sha256.as_ref(),
+                                    proxy_cfg.as_ref(),
                                     &jobs_tx,
                                     &mut dev_scheduler,
                                 )
@@ -547,6 +563,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                 tls,
                                                 tls_ca_cert.as_ref(),
                                                 tls_cert_sha256.as_ref(),
+                                                proxy_cfg.as_ref(),
                                                 &jobs_tx,
                                                 &mut dev_scheduler,
                                             )
@@ -606,6 +623,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                 tls,
                                                 tls_ca_cert.as_ref(),
                                                 tls_cert_sha256.as_ref(),
+                                                proxy_cfg.as_ref(),
                                                 3,
                                                 "devfee",
                                             ).await {
@@ -626,6 +644,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                         tls,
                                                         tls_ca_cert.as_ref(),
                                                         tls_cert_sha256.as_ref(),
+                                                        proxy_cfg.as_ref(),
                                                         &jobs_tx,
                                                         &mut dev_scheduler,
                                                     )
@@ -755,6 +774,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                     tls,
                                                     tls_ca_cert.as_ref(),
                                                     tls_cert_sha256.as_ref(),
+                                                    proxy_cfg.as_ref(),
                                                     &jobs_tx,
                                                     &mut valid_job_ids,
                                                     &mut seen_nonces,
@@ -891,6 +911,7 @@ async fn handle_shares(
     tls: bool,
     tls_ca_cert: Option<&std::path::PathBuf>,
     tls_cert_sha256: Option<&[u8; 32]>,
+    proxy: Option<&ProxyConfig>,
     jobs_tx: &tokio::sync::broadcast::Sender<WorkItem>,
     dev_scheduler: &mut DevFeeScheduler,
 ) -> Result<()> {
@@ -942,6 +963,7 @@ async fn handle_shares(
             tls,
             tls_ca_cert,
             tls_cert_sha256,
+            proxy,
             jobs_tx,
             valid_job_ids,
             seen_nonces,
@@ -1034,6 +1056,7 @@ async fn reconnect_user_pool(
     tls: bool,
     tls_ca_cert: Option<&std::path::PathBuf>,
     tls_cert_sha256: Option<&[u8; 32]>,
+    proxy: Option<&ProxyConfig>,
     jobs_tx: &tokio::sync::broadcast::Sender<WorkItem>,
     valid_job_ids: &mut HashSet<String>,
     seen_nonces: &mut HashMap<String, HashSet<u32>>,
@@ -1049,6 +1072,7 @@ async fn reconnect_user_pool(
         tls,
         tls_ca_cert,
         tls_cert_sha256,
+        proxy,
         5,
         "user",
     )
@@ -1075,6 +1099,7 @@ async fn connect_with_retries(
     tls: bool,
     tls_ca_cert: Option<&std::path::PathBuf>,
     tls_cert_sha256: Option<&[u8; 32]>,
+    proxy: Option<&ProxyConfig>,
     attempts: usize,
     purpose: &str,
 ) -> Result<(StratumClient, Option<PoolJob>)> {
@@ -1092,6 +1117,7 @@ async fn connect_with_retries(
             tls,
             tls_ca_cert.map(|p| p.as_path()),
             tls_cert_sha256,
+            proxy,
         )
         .await
         {

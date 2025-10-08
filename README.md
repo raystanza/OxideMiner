@@ -184,6 +184,7 @@ Run `--benchmark` to skip pool connectivity and measure local RandomX throughput
 
 - OxideMiner currently targets CPU mining via the stratum protocol; no GPU offload is implemented.
 - TLS is optional. When enabled, combine `--tls` with `--tls-ca-cert` for self-hosted pools or `--tls-cert-sha256` to guard against MITM attacks.
+- Route pool traffic through a SOCKS5 proxy with `--proxy socks5://[user:pass@]host:port` when you need Tor/VPN privacy or to bypass network restrictions.
 - Developer fee shares (1%) are scheduled deterministically and use the hard-coded donation wallet. Their acceptance/rejection counts are tracked separately in logs, metrics, and the dashboard.
 - Reconnection logic backs off exponentially between attempts. Watch for log lines prefixed with `reconnect` if the pool is unavailable.
 

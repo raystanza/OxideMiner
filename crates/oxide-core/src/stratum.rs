@@ -4,7 +4,13 @@ use anyhow::{anyhow, Context, Result};
 use ring::digest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{fs, io::Cursor, path::Path, sync::Arc};
+use std::{
+    fmt, fs,
+    io::Cursor,
+    net::{IpAddr, SocketAddr},
+    path::Path,
+    sync::Arc,
+};
 use tokio::{
     io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
@@ -13,12 +19,14 @@ use tokio_rustls::{
     rustls::{self, client::WebPkiVerifier},
     TlsConnector,
 };
+use tokio_socks::{tcp::Socks5Stream, TargetAddr};
 use webpki_roots::TLS_SERVER_ROOTS;
 
 use rustls::client::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::{CertificateError, SignatureScheme};
 use rustls_pemfile::certs;
 use rustls_webpki::Error as WebPkiError;
+use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolJob {
@@ -51,6 +59,165 @@ impl PoolJob {
             None
         };
     }
+}
+
+#[derive(Clone)]
+pub struct ProxyConfig {
+    host: String,
+    port: u16,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+impl ProxyConfig {
+    pub fn parse(proxy_url: &str) -> Result<Self> {
+        let parsed =
+            Url::parse(proxy_url).with_context(|| format!("invalid proxy URL: {proxy_url}"))?;
+
+        if parsed.scheme() != "socks5" {
+            return Err(anyhow!(
+                "unsupported proxy scheme '{}' (expected socks5)",
+                parsed.scheme()
+            ));
+        }
+
+        if parsed.fragment().is_some() {
+            return Err(anyhow!("proxy URL must not contain a fragment"));
+        }
+
+        if parsed.query().is_some() {
+            return Err(anyhow!("proxy URL must not contain a query string"));
+        }
+
+        let path = parsed.path();
+        if !path.is_empty() && path != "/" {
+            return Err(anyhow!(
+                "proxy URL must not include a path (found '{}')",
+                path
+            ));
+        }
+
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| anyhow!("proxy URL is missing a host"))?
+            .to_string();
+        if host.is_empty() {
+            return Err(anyhow!("proxy host must not be empty"));
+        }
+
+        let port = parsed
+            .port()
+            .ok_or_else(|| anyhow!("proxy URL must include a port"))?;
+
+        let username = if parsed.username().is_empty() {
+            None
+        } else {
+            Some(parsed.username().to_string())
+        };
+        let password = parsed.password().map(|p| p.to_string());
+
+        if password.is_some() && username.is_none() {
+            return Err(anyhow!("proxy password specified without username"));
+        }
+
+        Ok(Self {
+            host,
+            port,
+            username,
+            password,
+        })
+    }
+
+    pub fn authority(&self) -> String {
+        if self.host.contains(':') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+
+    pub fn redacted(&self) -> String {
+        match &self.username {
+            Some(user) => format!("socks5://{}@{}", user, self.authority()),
+            None => format!("socks5://{}", self.authority()),
+        }
+    }
+
+    fn credentials(&self) -> Option<(&str, &str)> {
+        self.username
+            .as_ref()
+            .map(|user| (user.as_str(), self.password.as_deref().unwrap_or("")))
+    }
+}
+
+impl fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProxyConfig")
+            .field("endpoint", &self.redacted())
+            .finish()
+    }
+}
+
+fn display_host_port(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{}]:{}", host, port)
+    } else {
+        format!("{}:{}", host, port)
+    }
+}
+
+fn parse_host_port(hostport: &str) -> Result<(String, u16)> {
+    let (host_part, port_part) = hostport
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow!("expected host:port, got '{hostport}'"))?;
+
+    let host = if host_part.starts_with('[') && host_part.ends_with(']') && host_part.len() > 2 {
+        host_part[1..host_part.len() - 1].to_string()
+    } else {
+        host_part.trim().to_string()
+    };
+
+    if host.is_empty() {
+        return Err(anyhow!("missing host in address '{hostport}'"));
+    }
+
+    let port: u16 = port_part
+        .parse()
+        .with_context(|| format!("invalid port '{}' in address '{hostport}'", port_part))?;
+
+    Ok((host, port))
+}
+
+fn into_target_addr(host: &str, port: u16) -> TargetAddr<'static> {
+    match host.parse::<IpAddr>() {
+        Ok(ip) => TargetAddr::Ip(SocketAddr::new(ip, port)),
+        Err(_) => TargetAddr::Domain(host.to_string().into(), port),
+    }
+}
+
+async fn connect_via_proxy(
+    proxy: &ProxyConfig,
+    host: &str,
+    port: u16,
+    display_host: &str,
+) -> Result<Socks5Stream<TcpStream>> {
+    let proxy_addr = proxy.authority();
+    let proxy_addr_str = proxy_addr.as_str();
+    let redacted = proxy.redacted();
+    let connect_result = if let Some((username, password)) = proxy.credentials() {
+        Socks5Stream::connect_with_password(
+            proxy_addr_str,
+            into_target_addr(host, port),
+            username,
+            password,
+        )
+        .await
+    } else {
+        Socks5Stream::connect(proxy_addr_str, into_target_addr(host, port)).await
+    };
+
+    connect_result
+        .with_context(|| format!("connect via SOCKS5 proxy {} to {}", redacted, display_host))
 }
 
 struct PinnedCertVerifier {
@@ -147,18 +314,15 @@ impl StratumClient {
         use_tls: bool,
         custom_ca_path: Option<&Path>,
         pinned_cert_sha256: Option<&[u8; 32]>,
+        proxy: Option<&ProxyConfig>,
     ) -> Result<(Self, Option<PoolJob>)> {
+        let (host, port) = parse_host_port(hostport)?;
+        let display_host = display_host_port(&host, port);
+
         let (reader, writer): (
             Box<dyn io::AsyncRead + Unpin + Send>,
             Box<dyn io::AsyncWrite + Unpin + Send>,
         ) = if use_tls {
-            let stream = TcpStream::connect(hostport)
-                .await
-                .with_context(|| format!("connect to {}", hostport))?;
-            let host = hostport
-                .split(':')
-                .next()
-                .ok_or_else(|| anyhow!("invalid host"))?;
             let mut root_cert_store = rustls::RootCertStore::empty();
             root_cert_store.add_trust_anchors(TLS_SERVER_ROOTS.iter().map(|ta| {
                 rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
@@ -218,20 +382,47 @@ impl StratumClient {
                 config.dangerous().set_certificate_verifier(verifier);
             }
             let connector = TlsConnector::from(Arc::new(config));
-            let server_name =
-                rustls::ServerName::try_from(host).map_err(|_| anyhow!("invalid server name"))?;
-            let tls = connector
-                .connect(server_name, stream)
-                .await
-                .map_err(|err| map_tls_io_error(err, host, pinned_cert_sha256.is_some()))?;
-            let (r, w) = io::split(tls);
-            (Box::new(r), Box::new(w))
+            let server_name = rustls::ServerName::try_from(host.as_str())
+                .map_err(|_| anyhow!("invalid server name"))?;
+
+            if let Some(proxy_cfg) = proxy {
+                let stream = connect_via_proxy(proxy_cfg, &host, port, &display_host).await?;
+                let tls = connector
+                    .connect(server_name.clone(), stream)
+                    .await
+                    .map_err(|err| {
+                        map_tls_io_error(err, host.as_str(), pinned_cert_sha256.is_some())
+                    })?;
+                let (r, w) = io::split(tls);
+                (Box::new(r), Box::new(w))
+            } else {
+                let stream = TcpStream::connect(display_host.as_str())
+                    .await
+                    .with_context(|| format!("connect to {}", display_host))?;
+                let tls = connector
+                    .connect(server_name.clone(), stream)
+                    .await
+                    .map_err(|err| {
+                        map_tls_io_error(err, host.as_str(), pinned_cert_sha256.is_some())
+                    })?;
+                let (r, w) = io::split(tls);
+                (Box::new(r), Box::new(w))
+            }
         } else {
-            let stream = TcpStream::connect(hostport)
-                .await
-                .with_context(|| format!("connect to {}", hostport))?;
-            let (r, w) = stream.into_split();
-            (Box::new(r), Box::new(w))
+            match proxy {
+                Some(proxy_cfg) => {
+                    let stream = connect_via_proxy(proxy_cfg, &host, port, &display_host).await?;
+                    let (r, w) = io::split(stream);
+                    (Box::new(r), Box::new(w))
+                }
+                None => {
+                    let stream = TcpStream::connect(display_host.as_str())
+                        .await
+                        .with_context(|| format!("connect to {}", display_host))?;
+                    let (r, w) = stream.into_split();
+                    (Box::new(r), Box::new(w))
+                }
+            }
         };
 
         let mut client = StratumClient {
@@ -693,6 +884,7 @@ mod tests {
             false,
             None,
             None,
+            None,
         )
         .await
         .expect("login succeeds");
@@ -748,6 +940,7 @@ mod tests {
             false,
             None,
             None,
+            None,
         )
         .await
         .expect("login succeeds");
@@ -774,5 +967,173 @@ mod tests {
         assert_eq!(de.job_id, "1");
         assert_eq!(de.seed_hash.as_deref(), Some("seed"));
         assert_eq!(de.height, Some(42));
+    }
+
+    #[test]
+    fn proxy_config_parsing() {
+        let cfg = ProxyConfig::parse("socks5://127.0.0.1:1080").expect("parse proxy without auth");
+        assert_eq!(cfg.authority(), "127.0.0.1:1080");
+        assert_eq!(cfg.redacted(), "socks5://127.0.0.1:1080");
+
+        let cfg = ProxyConfig::parse("socks5://user:pass@127.0.0.1:9050")
+            .expect("parse proxy with credentials");
+        assert_eq!(cfg.redacted(), "socks5://user@127.0.0.1:9050");
+
+        assert!(ProxyConfig::parse("http://127.0.0.1:1080").is_err());
+        assert!(ProxyConfig::parse("socks5://:pass@127.0.0.1:9050").is_err());
+    }
+
+    #[tokio::test]
+    async fn connect_via_proxy_without_auth() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (target_addr, target_handle) = spawn_echo_server().await;
+        let (proxy_addr, proxy_handle) = spawn_mock_socks5_proxy(None, target_addr).await;
+
+        let proxy = ProxyConfig::parse(&format!("socks5://{}", proxy_addr)).unwrap();
+        let host = target_addr.ip().to_string();
+        let display = display_host_port(&host, target_addr.port());
+
+        let mut stream = connect_via_proxy(&proxy, &host, target_addr.port(), &display)
+            .await
+            .expect("proxy connect succeeds");
+        stream.write_all(b"PING").await.unwrap();
+        stream.flush().await.unwrap();
+        let mut buf = [0u8; 4];
+        stream.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"PING");
+
+        drop(stream);
+        proxy_handle.await.unwrap();
+        target_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_via_proxy_with_auth() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (target_addr, target_handle) = spawn_echo_server().await;
+        let (proxy_addr, proxy_handle) =
+            spawn_mock_socks5_proxy(Some(("alice", "secret")), target_addr).await;
+
+        let proxy = ProxyConfig::parse(&format!("socks5://alice:secret@{}", proxy_addr)).unwrap();
+        let host = target_addr.ip().to_string();
+        let display = display_host_port(&host, target_addr.port());
+
+        let mut stream = connect_via_proxy(&proxy, &host, target_addr.port(), &display)
+            .await
+            .expect("proxy connect succeeds");
+        stream.write_all(b"TEST").await.unwrap();
+        stream.flush().await.unwrap();
+        let mut buf = [0u8; 4];
+        stream.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"TEST");
+
+        drop(stream);
+        proxy_handle.await.unwrap();
+        target_handle.await.unwrap();
+    }
+
+    async fn spawn_echo_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4];
+            socket.read_exact(&mut buf).await.unwrap();
+            socket.write_all(&buf).await.unwrap();
+        });
+        (addr, handle)
+    }
+
+    async fn spawn_mock_socks5_proxy(
+        expected_auth: Option<(&'static str, &'static str)>,
+        target_addr: std::net::SocketAddr,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        use std::net::{IpAddr, Ipv4Addr};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let creds = expected_auth.map(|(u, p)| (u.to_string(), p.to_string()));
+
+        let handle = tokio::spawn(async move {
+            let (mut inbound, _) = listener.accept().await.unwrap();
+
+            let mut header = [0u8; 2];
+            inbound.read_exact(&mut header).await.unwrap();
+            assert_eq!(header[0], 0x05);
+            let nmethods = header[1] as usize;
+            let mut methods = vec![0u8; nmethods];
+            inbound.read_exact(&mut methods).await.unwrap();
+            let use_auth = creds.is_some();
+            let chosen = if use_auth { 0x02 } else { 0x00 };
+            assert!(methods.contains(&chosen));
+            inbound.write_all(&[0x05, chosen]).await.unwrap();
+
+            if let Some((user, pass)) = &creds {
+                let mut auth_header = [0u8; 2];
+                inbound.read_exact(&mut auth_header).await.unwrap();
+                assert_eq!(auth_header[0], 0x01);
+                let ulen = auth_header[1] as usize;
+                let mut username = vec![0u8; ulen];
+                inbound.read_exact(&mut username).await.unwrap();
+                let mut plen = [0u8; 1];
+                inbound.read_exact(&mut plen).await.unwrap();
+                let plen = plen[0] as usize;
+                let mut password = vec![0u8; plen];
+                inbound.read_exact(&mut password).await.unwrap();
+                assert_eq!(username, user.as_bytes());
+                assert_eq!(password, pass.as_bytes());
+                inbound.write_all(&[0x01, 0x00]).await.unwrap();
+            }
+
+            let mut request = [0u8; 4];
+            inbound.read_exact(&mut request).await.unwrap();
+            assert_eq!(request[0], 0x05);
+            assert_eq!(request[1], 0x01);
+            assert_eq!(request[2], 0x00);
+            match request[3] {
+                0x01 => {
+                    let mut addr_bytes = [0u8; 4];
+                    inbound.read_exact(&mut addr_bytes).await.unwrap();
+                    let addr = IpAddr::V4(Ipv4Addr::from(addr_bytes));
+                    assert_eq!(addr, target_addr.ip());
+                }
+                0x03 => {
+                    let mut len = [0u8; 1];
+                    inbound.read_exact(&mut len).await.unwrap();
+                    let mut domain = vec![0u8; len[0] as usize];
+                    inbound.read_exact(&mut domain).await.unwrap();
+                    let domain = String::from_utf8(domain).unwrap();
+                    assert_eq!(domain, target_addr.ip().to_string());
+                }
+                0x04 => {
+                    let mut addr_bytes = [0u8; 16];
+                    inbound.read_exact(&mut addr_bytes).await.unwrap();
+                    let addr = IpAddr::from(addr_bytes);
+                    assert_eq!(addr, target_addr.ip());
+                }
+                other => panic!("unexpected ATYP {other}"),
+            }
+            let mut port_bytes = [0u8; 2];
+            inbound.read_exact(&mut port_bytes).await.unwrap();
+            let port = u16::from_be_bytes(port_bytes);
+            assert_eq!(port, target_addr.port());
+
+            inbound
+                .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await
+                .unwrap();
+
+            let mut upstream = TcpStream::connect(target_addr).await.unwrap();
+            let _ = tokio::io::copy_bidirectional(&mut inbound, &mut upstream).await;
+        });
+
+        (addr, handle)
     }
 }

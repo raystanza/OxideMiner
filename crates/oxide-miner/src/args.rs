@@ -94,6 +94,10 @@ pub struct Args {
     /// Run a local RandomX benchmark and exit
     #[arg(long = "benchmark")]
     pub benchmark: bool,
+
+    /// Route pool connections through a SOCKS5 proxy (socks5://[user:pass@]host:port)
+    #[arg(long = "proxy", value_name = "URL", value_hint = ValueHint::Url)]
+    pub proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -114,6 +118,7 @@ pub struct ConfigFile {
     pub batch_size: Option<usize>,
     pub no_yield: Option<bool>,
     pub debug: Option<bool>,
+    pub proxy: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -311,6 +316,12 @@ fn apply_config_defaults(
 
     if config.debug == Some(true) && !has_arg(original_args, None, Some("debug")) {
         push_flag(args, "--debug");
+    }
+
+    if let Some(proxy) = config.proxy.as_ref() {
+        if !has_arg(original_args, None, Some("proxy")) {
+            push_value(args, "--proxy", proxy.as_str());
+        }
     }
 }
 
