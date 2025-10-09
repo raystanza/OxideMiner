@@ -30,6 +30,8 @@ ring = { workspace = true }
 rustls = { workspace = true }
 rustls_webpki = { workspace = true }
 clap = { workspace = true }
+tokio-socks = { workspace = true }
+url = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = [

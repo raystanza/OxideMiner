@@ -34,6 +34,8 @@ pub struct Config {
     /// yield to Tokio scheduler between hash batches
     pub yield_between_batches: bool,
     pub agent: String,
+    /// optional SOCKS5 proxy URL (socks5://[user:pass@]host:port)
+    pub proxy: Option<String>,
 }
 
 impl Default for Config {
@@ -53,6 +55,7 @@ impl Default for Config {
             batch_size: DEFAULT_BATCH_SIZE,
             yield_between_batches: true,
             agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
+            proxy: None,
         }
     }
 }
@@ -77,5 +80,6 @@ mod tests {
         assert_eq!(cfg.batch_size, DEFAULT_BATCH_SIZE);
         assert!(cfg.yield_between_batches);
         assert!(cfg.agent.starts_with("OxideMiner/"));
+        assert!(cfg.proxy.is_none());
     }
 }

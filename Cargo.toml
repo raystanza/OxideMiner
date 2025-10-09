@@ -25,6 +25,8 @@ once_cell = "1.19"
 hyper = { version = "1", features = ["full"] }
 tokio-rustls = "0.24"
 webpki-roots = "0.25"
+tokio-socks = "0.5"
+url = "2"
 core_affinity = "0.5"
 hyper-util = { version = "0.1", features = ["server", "tokio"] }
 http-body-util = "0.1"

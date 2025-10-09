@@ -4,7 +4,7 @@
 ![Rust Edition 2021](https://img.shields.io/badge/rust%20edition-2021-informational)
 ![RandomX CPU Miner](https://img.shields.io/badge/RandomX-CPU-orange)
 
-**OxideMiner** is a **next-generation RandomX CPU miner** written entirely in **Rust** — engineered for *speed, safety, and full transparency*.
+**OxideMiner** is a **next-generation RandomX CPU miner** written entirely in **Rust** — engineered for _speed, safety, and full transparency_.
 It’s built to squeeze every cycle from your CPU while keeping your system secure and predictable.
 No hidden payloads, no opaque binaries — just verifiable, auditable performance.
 
@@ -15,6 +15,7 @@ Version **v0.1.0 (MVP)** ships a **command-line miner** with automatic CPU tunin
 
 > **Note:** This is an early-stage release. Expect rough edges while we stabilize and benchmark across more hardware.
 > Bug reports and tuning data are especially valuable at this stage.
+
 ---
 
 ## Table of contents
@@ -46,7 +47,7 @@ Version **v0.1.0 (MVP)** ships a **command-line miner** with automatic CPU tunin
 
 ## Highlights
 
-> **TL;DR** OxideMiner aims to be *the most transparent, secure, and efficient RandomX CPU miner ever written in Rust.*
+> **TL;DR** OxideMiner aims to be _the most transparent, secure, and efficient RandomX CPU miner ever written in Rust._
 
 - ⚡ **Rust-first CPU miner:** Built from the ground up in Rust for memory safety and predictable performance; with **no C glue, no unsafe shortcuts**.
   The `oxide-core` crate implements the RandomX hot loop, while `oxide-miner` orchestrates worker threads through Tokio for maximum throughput and minimal overhead.
@@ -71,14 +72,14 @@ Version **v0.1.0 (MVP)** ships a **command-line miner** with automatic CPU tunin
 
 Download a pre-built binary from the [Relases](https://github.com/raystanza/OxideMiner/releases/) page, copy and rename 'config.toml.example' -> 'config.toml', fill in your desired pool & wallet address, run the miner:
 
->**Windows**: .\oxide-miner.exe \
->**Linux**: ./oxide-miner
+> **Windows**: .\oxide-miner.exe \
+> **Linux**: ./oxide-miner
 
-*By default OxideMiner will look for a 'config.toml' file in the same directory as the binary, but you can supply the '--config \<PATH_to_CONFIG.TOML>' argument.*
+_By default OxideMiner will look for a 'config.toml' file in the same directory as the binary, but you can supply the '--config \<PATH_to_CONFIG.TOML>' argument._
 
 ### Prerequisites
 
->The steps below are for if you want to build from source.
+> The steps below are for if you want to build from source.
 
 - Rust toolchain via [rustup](https://rustup.rs/) (stable channel). The workspace targets Rust 2021 edition.
 - A Monero-compatible mining pool endpoint and wallet address.
@@ -127,24 +128,25 @@ Expected startup log flow:
 
 Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all options. Key flags include:
 
-| Flag                      | Purpose                                                                     |
-| ------------------------- | --------------------------------------------------------------------------- |
-| `-o, --url <HOST:PORT>`   | Mining pool endpoint (required unless `--benchmark`).                       |
-| `-u, --user <ADDRESS>`    | Primary Monero wallet or subaddress.                                        |
-| `-p, --pass <STRING>`     | Pool password/rig identifier (default `x`).                                 |
-| `-t, --threads <N>`       | Override auto-selected worker threads.                                      |
-| `--batch-size <N>`        | Manual hashes per batch (default auto recommendation).                      |
-| `--no-yield`              | Disable cooperative yields between batches (less friendly to shared hosts). |
-| `--affinity`              | Pin worker threads to CPU cores.                                            |
-| `--huge-pages`            | Request large pages for RandomX dataset (requires OS support).              |
-| `--tls`                   | Enable TLS for the stratum connection.                                      |
-| `--tls-ca-cert <PATH>`    | Add a custom CA certificate (PEM/DER) when TLS is enabled.                  |
-| `--tls-cert-sha256 <HEX>` | Pin the pool certificate by SHA-256 fingerprint.                            |
-| `--api-port <PORT>`       | Serve the dashboard/API on `127.0.0.1:<PORT>`.                              |
-| `--dashboard-dir <DIR>`   | Serve dashboard assets from disk instead of embedded versions.              |
-| `--debug`                 | Increase log verbosity and tee output to rotating files in `./logs/`.       |
-| `--config <PATH>`         | Load defaults from a TOML file (defaults to `./config.toml`).               |
-| `--benchmark`             | Run the RandomX benchmark and exit (no pool connection).                    |
+| Flag                      | Purpose                                                                           |
+| ------------------------- | --------------------------------------------------------------------------------- |
+| `-o, --url <HOST:PORT>`   | Mining pool endpoint (required unless `--benchmark`).                             |
+| `-u, --user <ADDRESS>`    | Primary Monero wallet or subaddress.                                              |
+| `-p, --pass <STRING>`     | Pool password/rig identifier (default `x`).                                       |
+| `-t, --threads <N>`       | Override auto-selected worker threads.                                            |
+| `--batch-size <N>`        | Manual hashes per batch (default auto recommendation).                            |
+| `--no-yield`              | Disable cooperative yields between batches (less friendly to shared hosts).       |
+| `--affinity`              | Pin worker threads to CPU cores.                                                  |
+| `--huge-pages`            | Request large pages for RandomX dataset (requires OS support).                    |
+| `--proxy <URL>`           | Route stratum traffic via SOCKS5 proxy. Format: `socks5://[user:pass@]host:port`. |
+| `--tls`                   | Enable TLS for the stratum connection.                                            |
+| `--tls-ca-cert <PATH>`    | Add a custom CA certificate (PEM/DER) when TLS is enabled.                        |
+| `--tls-cert-sha256 <HEX>` | Pin the pool certificate by SHA-256 fingerprint.                                  |
+| `--api-port <PORT>`       | Serve the dashboard/API on `127.0.0.1:<PORT>`.                                    |
+| `--dashboard-dir <DIR>`   | Serve dashboard assets from disk instead of embedded versions.                    |
+| `--debug`                 | Increase log verbosity and tee output to rotating files in `./logs/`.             |
+| `--config <PATH>`         | Load defaults from a TOML file (defaults to `./config.toml`).                     |
+| `--benchmark`             | Run the RandomX benchmark and exit (no pool connection).                          |
 
 ### Sample `config.toml`
 
@@ -178,12 +180,13 @@ Run `--benchmark` to skip pool connectivity and measure local RandomX throughput
 - Honors manual overrides (`--threads`, `--batch-size`, `--huge-pages`, `--no-yield`).
 - Executes a fixed-duration hashing loop (20 seconds) and reports hashes per second via structured logs.
 
-> OxideMiner’s benchmark isn’t synthetic fluff. It’s the *exact* mining loop used in production, giving you a realistic, apples-to-apples performance baseline. This is useful for validating huge-page configuration, BIOS tweaks, or regression testing after code changes.
+> OxideMiner’s benchmark isn’t synthetic fluff. It’s the _exact_ mining loop used in production, giving you a realistic, apples-to-apples performance baseline. This is useful for validating huge-page configuration, BIOS tweaks, or regression testing after code changes.
 
 ### Pool connectivity
 
 - OxideMiner currently targets CPU mining via the stratum protocol; no GPU offload is implemented.
 - TLS is optional. When enabled, combine `--tls` with `--tls-ca-cert` for self-hosted pools or `--tls-cert-sha256` to guard against MITM attacks.
+- Route pool traffic through a SOCKS5 proxy with `--proxy socks5://[user:pass@]host:port` when you need Tor/VPN privacy or to bypass network restrictions.
 - Developer fee shares (1%) are scheduled deterministically and use the hard-coded donation wallet. Their acceptance/rejection counts are tracked separately in logs, metrics, and the dashboard.
 - Reconnection logic backs off exponentially between attempts. Watch for log lines prefixed with `reconnect` if the pool is unavailable.
 
@@ -201,7 +204,7 @@ Helper scripts for system setup live under [`scripts/`](scripts/):
 - `scripts/linux/enable_hugepages.sh` reserves HugeTLB pages, mounts `/mnt/hugepages`, and configures Transparent Huge Pages.
 - `scripts/windows/Enable-LargePages.ps1` grants the `SeLockMemoryPrivilege` required for large-page allocations on Windows.
 
-Run these scripts with administrative privileges and review their contents before execution.  Afterward you'll need to log out and log back in for changes to take effect.
+Run these scripts with administrative privileges and review their contents before execution. Afterward you'll need to log out and log back in for changes to take effect.
 
 ### HTTP dashboard & API
 
