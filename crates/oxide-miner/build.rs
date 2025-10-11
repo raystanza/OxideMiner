@@ -213,12 +213,52 @@ fn copy_scripts_to_target_profile() {
     println!("cargo:rerun-if-env-changed=PROFILE");
 }
 
+fn compile_windows_resources(manifest_dir: &Path) {
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os != "windows" {
+        return;
+    }
+
+    let icon_path = manifest_dir.join("assets").join("oxideminer_icon_no-text.ico");
+    println!("cargo:rerun-if-changed={}", icon_path.display());
+
+    if !icon_path.is_file() {
+        panic!(
+            "Windows application icon not found at {}",
+            icon_path.display()
+        );
+    }
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
+    let icon_out = out_dir.join("oxide-miner-icon.ico");
+    if let Err(err) = fs::copy(&icon_path, &icon_out) {
+        panic!(
+            "Failed to copy application icon to build output ({} -> {}): {}",
+            icon_path.display(),
+            icon_out.display(),
+            err
+        );
+    }
+
+    let rc_path = out_dir.join("oxide-miner.rc");
+    if let Err(err) = fs::write(&rc_path, "1 ICON \"oxide-miner-icon.ico\"") {
+        panic!(
+            "Failed to write resource script {}: {}",
+            rc_path.display(),
+            err
+        );
+    }
+
+    embed_resource::compile(&rc_path, embed_resource::NONE);
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo");
+    let manifest_path = Path::new(&manifest_dir);
     let root = workspace_root(&manifest_dir);
 
     copy_config_example(&root);
@@ -238,5 +278,6 @@ fn main() {
     let build_timestamp = chrono::Utc::now().to_rfc3339();
     println!("cargo:rustc-env=OXIDE_BUILD_TIMESTAMP={build_timestamp}");
 
+    compile_windows_resources(manifest_path);
     copy_scripts_to_target_profile();
 }
