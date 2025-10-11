@@ -48,10 +48,6 @@ pub async fn run_benchmark(
 
     let mut handles: Vec<task::JoinHandle<Result<u64>>> = Vec::new();
     for id in 0..threads {
-        let duration = duration;
-        let batch_size = batch_size;
-        let threads_u32 = threads_u32;
-        let yield_between_batches = yield_between_batches;
         let cache = shared_cache.clone();
         let dataset = shared_dataset.clone();
         handles.push(task::spawn(async move {

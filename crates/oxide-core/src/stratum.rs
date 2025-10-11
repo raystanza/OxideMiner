@@ -304,18 +304,31 @@ pub struct StratumClient {
     next_req_id: u64,
 }
 
+#[derive(Clone, Copy)]
+pub struct ConnectConfig<'a> {
+    pub hostport: &'a str,
+    pub wallet: &'a str,
+    pub pass: &'a str,
+    pub agent: &'a str,
+    pub use_tls: bool,
+    pub custom_ca_path: Option<&'a Path>,
+    pub pinned_cert_sha256: Option<&'a [u8; 32]>,
+    pub proxy: Option<&'a ProxyConfig>,
+}
+
 impl StratumClient {
     /// Connect + login; returns (client, initial_job_if_any)
-    pub async fn connect_and_login(
-        hostport: &str,
-        wallet: &str,
-        pass: &str,
-        agent: &str,
-        use_tls: bool,
-        custom_ca_path: Option<&Path>,
-        pinned_cert_sha256: Option<&[u8; 32]>,
-        proxy: Option<&ProxyConfig>,
-    ) -> Result<(Self, Option<PoolJob>)> {
+    pub async fn connect_and_login(config: ConnectConfig<'_>) -> Result<(Self, Option<PoolJob>)> {
+        let ConnectConfig {
+            hostport,
+            wallet,
+            pass,
+            agent,
+            use_tls,
+            custom_ca_path,
+            pinned_cert_sha256,
+            proxy,
+        } = config;
         let (host, port) = parse_host_port(hostport)?;
         let display_host = display_host_port(&host, port);
 
@@ -622,9 +635,7 @@ fn is_ca_used_as_end_entity(error: &CertificateError) -> bool {
         CertificateError::Other(inner) => {
             inner
                 .downcast_ref::<WebPkiError>()
-                .map_or(false, |webpki_err| {
-                    matches!(webpki_err, WebPkiError::CaUsedAsEndEntity)
-                })
+                .is_some_and(|webpki_err| matches!(webpki_err, WebPkiError::CaUsedAsEndEntity))
                 || inner.to_string().contains("CaUsedAsEndEntity")
         }
         _ => false,
@@ -876,16 +887,16 @@ mod tests {
             socket.write_all(b"\n").await.unwrap();
         });
 
-        let (client, job) = StratumClient::connect_and_login(
-            &addr.to_string(),
-            "wallet",
-            "pass",
-            "agent",
-            false,
-            None,
-            None,
-            None,
-        )
+        let (client, job) = StratumClient::connect_and_login(ConnectConfig {
+            hostport: &addr.to_string(),
+            wallet: "wallet",
+            pass: "pass",
+            agent: "agent",
+            use_tls: false,
+            custom_ca_path: None,
+            pinned_cert_sha256: None,
+            proxy: None,
+        })
         .await
         .expect("login succeeds");
         assert!(job.is_some());
@@ -932,16 +943,16 @@ mod tests {
             socket.write_all(b"\n").await.unwrap();
         });
 
-        let (client, job) = StratumClient::connect_and_login(
-            &addr.to_string(),
-            "wallet",
-            "pass",
-            "agent",
-            false,
-            None,
-            None,
-            None,
-        )
+        let (client, job) = StratumClient::connect_and_login(ConnectConfig {
+            hostport: &addr.to_string(),
+            wallet: "wallet",
+            pass: "pass",
+            agent: "agent",
+            use_tls: false,
+            custom_ca_path: None,
+            pinned_cert_sha256: None,
+            proxy: None,
+        })
         .await
         .expect("login succeeds");
         assert!(job.is_some());
