@@ -3,6 +3,7 @@
 ![Status: v0.1.0](https://img.shields.io/badge/status-v0.1.0-orange)
 ![Rust Edition 2021](https://img.shields.io/badge/rust%20edition-2021-informational)
 ![RandomX CPU Miner](https://img.shields.io/badge/RandomX-CPU-orange)
+[![wakatime](https://wakatime.com/badge/user/1d79a17c-5d0d-434d-8a72-31d7acae08b4/project/42d30f15-4201-437a-bf93-558f738d2987.svg)](https://wakatime.com/badge/user/1d79a17c-5d0d-434d-8a72-31d7acae08b4/project/42d30f15-4201-437a-bf93-558f738d2987)
 
 ![OxideMiner Logo](oxideminer_logo_transparent_256.png)
 
