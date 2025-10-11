@@ -231,7 +231,7 @@ fn enable_lock_memory_privilege() -> bool {
             return false;
         }
 
-        let mut privileges = TOKEN_PRIVILEGES {
+        let privileges = TOKEN_PRIVILEGES {
             PrivilegeCount: 1,
             Privileges: [LUID_AND_ATTRIBUTES {
                 Luid: luid,
