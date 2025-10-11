@@ -7,6 +7,13 @@
     <link rel="stylesheet" href="/dashboard.css" />
 </head>
 <body data-theme="light">
+    <div id="loading-overlay" class="loading-overlay" role="status" aria-live="polite" aria-busy="true">
+        <div class="loading-content">
+            <div class="loading-spinner" aria-hidden="true"></div>
+            <p id="loading-message">Loading miner stats...</p>
+            <p id="loading-error" class="loading-error" role="alert" aria-live="assertive"></p>
+        </div>
+    </div>
     <div class="container">
         <header class="toolbar">
             <div class="brand">

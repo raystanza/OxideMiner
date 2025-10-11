@@ -1,5 +1,83 @@
+const controlElements = Array.from(document.querySelectorAll('.toolbar select'));
+
+function setControlsDisabled(disabled) {
+  controlElements.forEach((el) => {
+    el.disabled = disabled;
+    if (disabled) {
+      el.setAttribute('aria-disabled', 'true');
+    } else {
+      el.removeAttribute('aria-disabled');
+    }
+  });
+}
+
+const loading = (() => {
+  const overlay = document.getElementById('loading-overlay');
+  const messageEl = document.getElementById('loading-message');
+  const errorEl = document.getElementById('loading-error');
+  const spinnerEl = overlay ? overlay.querySelector('.loading-spinner') : null;
+
+  function showBase() {
+    if (!overlay) return;
+    overlay.classList.remove('is-hidden', 'has-error');
+    overlay.setAttribute('aria-busy', 'true');
+    if (spinnerEl) {
+      spinnerEl.hidden = false;
+    }
+    if (errorEl) {
+      errorEl.textContent = '';
+    }
+    setControlsDisabled(true);
+  }
+
+  function updateAttempt(attempt, maxAttempts, nextDelayMs) {
+    showBase();
+    if (!messageEl) return;
+    let text = 'Loading miner stats...';
+    if (attempt > 1) {
+      text += ` (retry ${attempt} of ${maxAttempts})`;
+      if (Number.isFinite(nextDelayMs) && nextDelayMs > 0) {
+        const seconds = (nextDelayMs / 1000).toFixed(1).replace(/\.0$/, '');
+        text += ` – retrying in ${seconds}s`;
+      }
+    }
+    messageEl.textContent = text;
+  }
+
+  function hide() {
+    if (!overlay) return;
+    overlay.classList.add('is-hidden');
+    overlay.classList.remove('has-error');
+    overlay.setAttribute('aria-busy', 'false');
+    if (spinnerEl) {
+      spinnerEl.hidden = true;
+    }
+    setControlsDisabled(false);
+  }
+
+  function error(message) {
+    if (!overlay) return;
+    overlay.classList.remove('is-hidden');
+    overlay.classList.add('has-error');
+    overlay.setAttribute('aria-busy', 'false');
+    if (spinnerEl) {
+      spinnerEl.hidden = true;
+    }
+    if (messageEl) {
+      messageEl.textContent = 'Unable to load miner stats';
+    }
+    if (errorEl) {
+      errorEl.textContent = message;
+    }
+    setControlsDisabled(false);
+  }
+
+  return { updateAttempt, hide, error };
+})();
+
+loading.updateAttempt(1, 20);
+
 function formatHashrate(hps) {
-  // hps = hashes per second (Number)
   if (!Number.isFinite(hps)) return '-';
   if (hps >= 1e9) { return (hps / 1e9).toFixed(3) + ' GH/s'; }
   if (hps >= 1e3) { return (hps / 1e3).toFixed(3) + ' KH/s'; }
@@ -27,92 +105,213 @@ function formatDuration(seconds) {
 function formatIsoLocal(iso) {
   if (!iso) return null;
   const d = new Date(iso);
-  return isNaN(d) ? null : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleString();
 }
 
-async function fetchStats() {
+function applyStats(data) {
+  const hashrateEl = document.getElementById('hashrate');
+  if (hashrateEl) {
+    hashrateEl.textContent = formatHashrate(Number(data.hashrate));
+  }
+  const hashesEl = document.getElementById('hashes');
+  if (hashesEl) {
+    hashesEl.textContent = intFmt.format(Number(data.hashes_total));
+  }
+
+  const shares = data.shares || {};
+  const sharesEl = document.getElementById('shares');
+  if (sharesEl) {
+    const accepted = Number.isFinite(Number(shares.accepted)) ? shares.accepted : '-';
+    const rejected = Number.isFinite(Number(shares.rejected)) ? shares.rejected : '-';
+    sharesEl.textContent = `${accepted} / ${rejected}`;
+  }
+
+  const devSharesEl = document.getElementById('dev_shares');
+  if (devSharesEl) {
+    const devAccepted = Number.isFinite(Number(shares.dev_accepted)) ? shares.dev_accepted : '-';
+    const devRejected = Number.isFinite(Number(shares.dev_rejected)) ? shares.dev_rejected : '-';
+    devSharesEl.textContent = `${devAccepted} / ${devRejected}`;
+  }
+
+  const poolEl = document.getElementById('pool');
+  if (poolEl) {
+    const pool = data.pool || '-';
+    poolEl.textContent = pool;
+    poolEl.title = pool !== '-' ? pool : '';
+  }
+
+  const connectedEl = document.getElementById('connected');
+  if (connectedEl) {
+    connectedEl.textContent = data.connected ? 'Yes' : 'No';
+  }
+
+  const tlsEl = document.getElementById('tls');
+  if (tlsEl) {
+    tlsEl.textContent = data.tls ? 'Yes' : 'No';
+  }
+
+  const timing = data.timing || {};
+  const systemUptimeEl = document.getElementById('system_uptime');
+  if (systemUptimeEl) {
+    systemUptimeEl.textContent = formatDuration(Number(timing.system_uptime_seconds));
+  }
+  const miningTimeEl = document.getElementById('mining_time');
+  if (miningTimeEl) {
+    miningTimeEl.textContent = formatDuration(Number(timing.mining_time_seconds));
+  }
+
+  updateFooter(data);
+}
+
+async function requestStatsJson() {
+  let response;
   try {
-    const response = await fetch('/api/stats');
-    const data = await response.json();
-    document.getElementById('hashrate').textContent = formatHashrate(Number(data.hashrate));
-    document.getElementById('hashes').textContent = intFmt.format(Number(data.hashes_total));
-    const shares = data.shares || {};
-    const sharesEl = document.getElementById('shares');
-    if (sharesEl) {
-      const accepted = Number.isFinite(Number(shares.accepted)) ? shares.accepted : '-';
-      const rejected = Number.isFinite(Number(shares.rejected)) ? shares.rejected : '-';
-      sharesEl.textContent = `${accepted} / ${rejected}`;
-    }
+    response = await fetch('/api/stats', { cache: 'no-store' });
+  } catch (networkError) {
+    const error = new Error('Network error while requesting miner stats');
+    error.cause = networkError;
+    throw error;
+  }
 
-    const devSharesEl = document.getElementById('dev_shares');
-    if (devSharesEl) {
-      const devAccepted = Number.isFinite(Number(shares.dev_accepted)) ? shares.dev_accepted : '-';
-      const devRejected = Number.isFinite(Number(shares.dev_rejected)) ? shares.dev_rejected : '-';
-      devSharesEl.textContent = `${devAccepted} / ${devRejected}`;
-    }
-    const poolEl = document.getElementById('pool');
-    poolEl.textContent = data.pool || '-';
-    poolEl.title = data.pool || '';
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} while fetching miner stats`);
+  }
 
-    document.getElementById('connected').textContent = data.connected ? 'Yes' : 'No';
-    document.getElementById('tls').textContent = data.tls ? 'Yes' : 'No';
-    const timing = data.timing || {};
-    document.getElementById('system_uptime').textContent =
-      formatDuration(Number(timing.system_uptime_seconds));
-    document.getElementById('mining_time').textContent =
-      formatDuration(Number(timing.mining_time_seconds));
-    updateFooter(data);
-  } catch (e) {
-    console.error('Failed to fetch stats', e);
+  try {
+    return await response.json();
+  } catch (parseError) {
+    const error = new Error('Failed to parse miner stats response');
+    error.cause = parseError;
+    throw error;
   }
 }
 
-/* Refresh/polling interval handling */
-(function initPolling() {
+async function updateStats() {
+  const data = await requestStatsJson();
+  applyStats(data);
+  return data;
+}
+
+function fetchStatsSafe() {
+  updateStats().catch((err) => {
+    console.error('Failed to fetch stats', err);
+  });
+}
+
+const pollingController = (() => {
   const POLL_KEY = 'oxide_poll_ms';
   const select = document.getElementById('polling-select');
   const allowed = [1000, 5000, 10000, 30000, 60000];
+
   let pollTimer = null;
+  let currentInterval = 1000;
+  let isReady = false;
 
   function normalize(ms) {
     const n = parseInt(ms, 10);
     return allowed.includes(n) ? n : 1000;
   }
 
-  function apply(ms) {
-    const n = normalize(ms);
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(fetchStats, n);
-    if (select && select.value !== String(n)) select.value = String(n);
-    try { localStorage.setItem(POLL_KEY, String(n)); } catch (_) {}
+  function stop() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
   }
 
-  // Initial value (persisted or default 1s)
+  function startTimer() {
+    stop();
+    if (!isReady) return;
+    pollTimer = setInterval(fetchStatsSafe, currentInterval);
+  }
+
+  function applyInterval(ms, { persist = true, immediate = false } = {}) {
+    const n = normalize(ms);
+    currentInterval = n;
+    if (select && select.value !== String(n)) {
+      select.value = String(n);
+    }
+    if (persist) {
+      try {
+        localStorage.setItem(POLL_KEY, String(n));
+      } catch (_) {}
+    }
+    startTimer();
+    if (immediate && isReady) {
+      fetchStatsSafe();
+    }
+  }
+
   const saved = (() => {
-    try { return parseInt(localStorage.getItem(POLL_KEY), 10); } catch (_) { return NaN; }
+    try {
+      return parseInt(localStorage.getItem(POLL_KEY), 10);
+    } catch (_) {
+      return NaN;
+    }
   })();
-  apply(saved);
+
+  applyInterval(saved, { persist: false });
 
   if (select) {
     select.addEventListener('change', () => {
-      apply(select.value);
-      fetchStats(); // immediate refresh on change
+      applyInterval(select.value, { immediate: true });
     });
   }
 
-  // Pause when tab not visible to save cycles
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-      if (pollTimer) clearInterval(pollTimer);
+      stop();
     } else {
-      apply(select ? select.value : saved);
-      fetchStats();
+      startTimer();
+      if (isReady) {
+        fetchStatsSafe();
+      }
     }
   });
+
+  return {
+    notifyReady() {
+      if (isReady) return;
+      isReady = true;
+      startTimer();
+    },
+    stop,
+  };
+})();
+
+async function loadStatsWithRetry() {
+  const maxAttempts = 20;
+  const baseDelay = 3000;
+  const backoffFactor = 1.5;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    loading.updateAttempt(attempt, maxAttempts);
+    try {
+      await updateStats();
+      return;
+    } catch (error) {
+      console.error('Failed to fetch stats', error);
+      if (attempt === maxAttempts) {
+        throw error;
+      }
+      const delay = Math.round(baseDelay * Math.pow(backoffFactor, attempt - 1));
+      loading.updateAttempt(attempt + 1, maxAttempts, delay);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+(async () => {
+  try {
+    await loadStatsWithRetry();
+    loading.hide();
+    pollingController.notifyReady();
+  } catch (error) {
+    loading.error('Failed to load stats after multiple attempts. Check the miner CLI for errors.');
+  }
 })();
 
 /* Theme handling */
-
 (function initTheme() {
   const THEME_KEY = 'oxide_theme';
   const body = document.body;
@@ -126,13 +325,11 @@ async function fetchStats() {
     try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
   }
 
-  // Initial theme (persisted or default "light")
   const saved = (() => {
     try { return localStorage.getItem(THEME_KEY); } catch (_) { return null; }
   })();
   applyTheme(saved || 'light');
 
-  // Hook up selector
   if (select) {
     select.addEventListener('change', () => applyTheme(select.value));
   }
@@ -164,5 +361,3 @@ function updateFooter(data) {
 
   el.innerHTML = parts.join(' <span class="sep">•</span> ');
 }
-
-fetchStats();
