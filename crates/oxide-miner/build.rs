@@ -4,6 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+
 fn git_output(args: &[&str]) -> Option<String> {
     Command::new("git")
         .args(args)
@@ -213,15 +214,61 @@ fn copy_scripts_to_target_profile() {
     println!("cargo:rerun-if-env-changed=PROFILE");
 }
 
+fn compile_windows_resource(manifest_dir: &Path) {
+    if env::var("CARGO_CFG_WINDOWS").is_err() {
+        return;
+    }
+
+    let icon_path = manifest_dir.join("assets").join("oxideminer_icon_no-text.ico");
+    if !icon_path.is_file() {
+        println!(
+            "cargo:warning=Skipping Windows resource compilation: icon not found at {}",
+            icon_path.display()
+        );
+        return;
+    }
+
+    println!("cargo:rerun-if-changed={}", icon_path.display());
+
+    let out_dir = match env::var("OUT_DIR") {
+        Ok(path) => PathBuf::from(path),
+        Err(err) => {
+            println!(
+                "cargo:warning=Failed to locate OUT_DIR for Windows resource compilation: {}",
+                err
+            );
+            return;
+        }
+    };
+    let rc_path = out_dir.join("oxide-miner-icon.rc");
+
+    let icon_literal = icon_path
+        .to_string_lossy()
+        .replace('\\', "\\\\");
+    let rc_contents = format!("1 ICON \"{}\"\n", icon_literal);
+    if let Err(err) = fs::write(&rc_path, rc_contents) {
+        println!(
+            "cargo:warning=Failed to write Windows resource script {}: {}",
+            rc_path.display(),
+            err
+        );
+        return;
+    }
+
+    embed_resource::compile(&rc_path, embed_resource::NONE);
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo");
+    let manifest_path = Path::new(&manifest_dir);
     let root = workspace_root(&manifest_dir);
 
     copy_config_example(&root);
+    compile_windows_resource(manifest_path);
 
     if let Some(commit) = git_output(&["rev-parse", "HEAD"]) {
         println!("cargo:rustc-env=OXIDE_GIT_COMMIT={commit}");
