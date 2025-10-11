@@ -6,13 +6,15 @@ use crate::stats::Stats;
 use crate::util::tiny_jitter_ms;
 use anyhow::{anyhow, Context, Result};
 use oxide_core::config::DEFAULT_BATCH_SIZE;
+use oxide_core::stratum::ConnectParams;
 use oxide_core::stratum::PoolJob;
 use oxide_core::worker::{Share, WorkItem};
 use oxide_core::{
     autotune_snapshot, spawn_workers, Config, DevFeeScheduler, HugePageStatus, ProxyConfig,
-    StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
+    StratumClient, WorkerOptions, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::{atomic::Ordering, Arc};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{sleep, Duration};
@@ -41,6 +43,45 @@ impl ActivePool {
 struct PendingShare {
     is_devfee: bool,
     job_id: String,
+}
+
+#[derive(Clone, Copy)]
+struct ConnectionSettings<'a> {
+    pool: &'a str,
+    wallet: &'a str,
+    pass: &'a str,
+    agent: &'a str,
+    tls: bool,
+    tls_ca_cert: Option<&'a Path>,
+    tls_cert_sha256: Option<&'a [u8; 32]>,
+    proxy: Option<&'a ProxyConfig>,
+}
+
+impl<'a> ConnectionSettings<'a> {
+    fn as_params(&self) -> ConnectParams<'a> {
+        ConnectParams {
+            hostport: self.pool,
+            wallet: self.wallet,
+            pass: self.pass,
+            agent: self.agent,
+            use_tls: self.tls,
+            custom_ca_path: self.tls_ca_cert,
+            pinned_cert_sha256: self.tls_cert_sha256,
+            proxy: self.proxy,
+        }
+    }
+}
+
+struct ShareLoopContext<'a> {
+    client: &'a mut StratumClient,
+    stats: &'a Arc<Stats>,
+    active_pool: &'a mut ActivePool,
+    valid_job_ids: &'a mut HashSet<String>,
+    seen_nonces: &'a mut HashMap<String, HashSet<u32>>,
+    pending_shares: &'a mut HashMap<u64, PendingShare>,
+    jobs_tx: &'a tokio::sync::broadcast::Sender<WorkItem>,
+    dev_scheduler: &'a mut DevFeeScheduler,
+    user_connection: ConnectionSettings<'a>,
 }
 
 pub async fn run(args: Args) -> Result<()> {
@@ -366,14 +407,18 @@ pub async fn run(args: Args) -> Result<()> {
     let tls_ca_cert = cfg.tls_ca_cert.clone();
     let tls_cert_sha256 = cfg.tls_cert_sha256;
 
+    let worker_options = WorkerOptions {
+        affinity: cfg.affinity,
+        large_pages,
+        batch_size: cfg.batch_size,
+        yield_between_batches: cfg.yield_between_batches,
+    };
+
     let _workers = spawn_workers(
         n_workers,
         jobs_tx.clone(),
         shares_tx,
-        cfg.affinity,
-        large_pages,
-        cfg.batch_size,
-        cfg.yield_between_batches,
+        worker_options,
         stats.hashes.clone(),
     );
 
@@ -412,35 +457,40 @@ pub async fn run(args: Args) -> Result<()> {
             let mut backoff_ms = 1_000u64;
             let mut dev_scheduler = DevFeeScheduler::new();
 
+            let user_connection = ConnectionSettings {
+                pool: main_pool.as_str(),
+                wallet: user_wallet.as_str(),
+                pass: pass.as_str(),
+                agent: agent.as_str(),
+                tls,
+                tls_ca_cert: tls_ca_cert.as_deref(),
+                tls_cert_sha256: tls_cert_sha256.as_ref(),
+                proxy: proxy_cfg.as_ref(),
+            };
+            let dev_connection = ConnectionSettings {
+                wallet: DEV_WALLET_ADDRESS,
+                ..user_connection
+            };
+
             loop {
                 stats.pool_connected.store(false, Ordering::Relaxed);
-                let (mut client, initial_job) = match StratumClient::connect_and_login(
-                    &main_pool,
-                    &user_wallet,
-                    &pass,
-                    &agent,
-                    tls,
-                    tls_ca_cert.as_deref(),
-                    tls_cert_sha256.as_ref(),
-                    proxy_cfg.as_ref(),
-                )
-                .await
-                {
-                    Ok(v) => {
-                        backoff_ms = 1_000;
-                        stats.pool_connected.store(true, Ordering::Relaxed);
-                        v
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "connect/login failed; retrying in {}s: {e}",
-                            backoff_ms / 1000
-                        );
-                        sleep(Duration::from_millis(backoff_ms)).await;
-                        backoff_ms = (backoff_ms * 2).min(60_000);
-                        continue;
-                    }
-                };
+                let (mut client, initial_job) =
+                    match StratumClient::connect_and_login(user_connection.as_params()).await {
+                        Ok(v) => {
+                            backoff_ms = 1_000;
+                            stats.pool_connected.store(true, Ordering::Relaxed);
+                            v
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "connect/login failed; retrying in {}s: {e}",
+                                backoff_ms / 1000
+                            );
+                            sleep(Duration::from_millis(backoff_ms)).await;
+                            backoff_ms = (backoff_ms * 2).min(60_000);
+                            continue;
+                        }
+                    };
 
                 let mut valid_job_ids: HashSet<String> = HashSet::new();
                 let mut seen_nonces: HashMap<String, HashSet<u32>> = HashMap::new();
@@ -465,42 +515,21 @@ pub async fn run(args: Args) -> Result<()> {
                             interval,
                             "devfee activation triggered (initial job)"
                         );
-                        match connect_with_retries(
-                            &main_pool,
-                            DEV_WALLET_ADDRESS,
-                            &pass,
-                            &agent,
-                            tls,
-                            tls_ca_cert.as_ref(),
-                            tls_cert_sha256.as_ref(),
-                            proxy_cfg.as_ref(),
-                            3,
-                            "devfee",
-                        )
-                        .await
-                        {
+                        match connect_with_retries(&dev_connection, 3, "devfee").await {
                             Ok((new_client, dev_job)) => {
-                                if let Err(e) = handle_shares(
-                                    None,
-                                    &mut shares_rx,
-                                    &mut client,
-                                    &stats,
-                                    &mut active_pool,
-                                    &mut valid_job_ids,
-                                    &mut seen_nonces,
-                                    &mut pending_shares,
-                                    &main_pool,
-                                    &user_wallet,
-                                    &pass,
-                                    &agent,
-                                    tls,
-                                    tls_ca_cert.as_ref(),
-                                    tls_cert_sha256.as_ref(),
-                                    proxy_cfg.as_ref(),
-                                    &jobs_tx,
-                                    &mut dev_scheduler,
-                                )
-                                .await
+                                let mut share_ctx = ShareLoopContext {
+                                    client: &mut client,
+                                    stats: &stats,
+                                    active_pool: &mut active_pool,
+                                    valid_job_ids: &mut valid_job_ids,
+                                    seen_nonces: &mut seen_nonces,
+                                    pending_shares: &mut pending_shares,
+                                    jobs_tx: &jobs_tx,
+                                    dev_scheduler: &mut dev_scheduler,
+                                    user_connection,
+                                };
+                                if let Err(e) =
+                                    handle_shares(None, &mut shares_rx, &mut share_ctx).await
                                 {
                                     tracing::warn!(
                                         error = %e,
@@ -547,27 +576,19 @@ pub async fn run(args: Args) -> Result<()> {
                         maybe_share = shares_rx.recv() => {
                             match maybe_share {
                                 Some(share) => {
-                                    if let Err(e) = handle_shares(
-                                        Some(share),
-                                        &mut shares_rx,
-                                        &mut client,
-                                        &stats,
-                                        &mut active_pool,
-                                        &mut valid_job_ids,
-                                        &mut seen_nonces,
-                                        &mut pending_shares,
-                                                &main_pool,
-                                                &user_wallet,
-                                                &pass,
-                                                &agent,
-                                                tls,
-                                                tls_ca_cert.as_ref(),
-                                                tls_cert_sha256.as_ref(),
-                                                proxy_cfg.as_ref(),
-                                                &jobs_tx,
-                                                &mut dev_scheduler,
-                                            )
-                                    .await
+                                    let mut share_ctx = ShareLoopContext {
+                                        client: &mut client,
+                                        stats: &stats,
+                                        active_pool: &mut active_pool,
+                                        valid_job_ids: &mut valid_job_ids,
+                                        seen_nonces: &mut seen_nonces,
+                                        pending_shares: &mut pending_shares,
+                                        jobs_tx: &jobs_tx,
+                                        dev_scheduler: &mut dev_scheduler,
+                                        user_connection,
+                                    };
+                                    if let Err(e) =
+                                        handle_shares(Some(share), &mut shares_rx, &mut share_ctx).await
                                     {
                                         tracing::warn!("reconnect failed (devfee -> user): {e}");
                                         stats.pool_connected.store(false, Ordering::Relaxed);
@@ -615,40 +636,21 @@ pub async fn run(args: Args) -> Result<()> {
                                                 interval,
                                                 "devfee activation triggered"
                                             );
-                                            match connect_with_retries(
-                                                &main_pool,
-                                                DEV_WALLET_ADDRESS,
-                                                &pass,
-                                                &agent,
-                                                tls,
-                                                tls_ca_cert.as_ref(),
-                                                tls_cert_sha256.as_ref(),
-                                                proxy_cfg.as_ref(),
-                                                3,
-                                                "devfee",
-                                            ).await {
+                                            match connect_with_retries(&dev_connection, 3, "devfee").await {
                                                 Ok((new_client, job_opt)) => {
-                                                    if let Err(e) = handle_shares(
-                                                        None,
-                                                        &mut shares_rx,
-                                                        &mut client,
-                                                        &stats,
-                                                        &mut active_pool,
-                                                        &mut valid_job_ids,
-                                                        &mut seen_nonces,
-                                                        &mut pending_shares,
-                                                        &main_pool,
-                                                        &user_wallet,
-                                                        &pass,
-                                                        &agent,
-                                                        tls,
-                                                        tls_ca_cert.as_ref(),
-                                                        tls_cert_sha256.as_ref(),
-                                                        proxy_cfg.as_ref(),
-                                                        &jobs_tx,
-                                                        &mut dev_scheduler,
-                                                    )
-                                                    .await
+                                                    let mut share_ctx = ShareLoopContext {
+                                                        client: &mut client,
+                                                        stats: &stats,
+                                                        active_pool: &mut active_pool,
+                                                        valid_job_ids: &mut valid_job_ids,
+                                                        seen_nonces: &mut seen_nonces,
+                                                        pending_shares: &mut pending_shares,
+                                                        jobs_tx: &jobs_tx,
+                                                        dev_scheduler: &mut dev_scheduler,
+                                                        user_connection,
+                                                    };
+                                                    if let Err(e) =
+                                                        handle_shares(None, &mut shares_rx, &mut share_ctx).await
                                                     {
                                                         tracing::warn!(
                                                             error = %e,
@@ -764,26 +766,18 @@ pub async fn run(args: Args) -> Result<()> {
                                             }
 
                                             if reconnect_user && matches!(active_pool, ActivePool::Dev) {
-                                                if let Err(e) = reconnect_user_pool(
-                                                    &mut client,
-                                                    &mut active_pool,
-                                                    &main_pool,
-                                                    &user_wallet,
-                                                    &pass,
-                                                    &agent,
-                                                    tls,
-                                                    tls_ca_cert.as_ref(),
-                                                    tls_cert_sha256.as_ref(),
-                                                    proxy_cfg.as_ref(),
-                                                    &jobs_tx,
-                                                    &mut valid_job_ids,
-                                                    &mut seen_nonces,
-                                                    &mut pending_shares,
-                                                    &stats,
-                                                    &mut dev_scheduler,
-                                                )
-                                                .await
-                                                {
+                                                let mut share_ctx = ShareLoopContext {
+                                                    client: &mut client,
+                                                    stats: &stats,
+                                                    active_pool: &mut active_pool,
+                                                    valid_job_ids: &mut valid_job_ids,
+                                                    seen_nonces: &mut seen_nonces,
+                                                    pending_shares: &mut pending_shares,
+                                                    jobs_tx: &jobs_tx,
+                                                    dev_scheduler: &mut dev_scheduler,
+                                                    user_connection,
+                                                };
+                                                if let Err(e) = reconnect_user_pool(&mut share_ctx).await {
                                                     tracing::warn!("reconnect failed (devfee -> user): {e}");
                                                     stats.pool_connected.store(false, Ordering::Relaxed);
                                                     break;
@@ -898,34 +892,19 @@ fn reset_session(
 async fn handle_shares(
     initial: Option<Share>,
     shares_rx: &mut UnboundedReceiver<Share>,
-    client: &mut StratumClient,
-    stats: &Arc<Stats>,
-    active_pool: &mut ActivePool,
-    valid_job_ids: &mut HashSet<String>,
-    seen_nonces: &mut HashMap<String, HashSet<u32>>,
-    pending_shares: &mut HashMap<u64, PendingShare>,
-    main_pool: &str,
-    user_wallet: &str,
-    pass: &str,
-    agent: &str,
-    tls: bool,
-    tls_ca_cert: Option<&std::path::PathBuf>,
-    tls_cert_sha256: Option<&[u8; 32]>,
-    proxy: Option<&ProxyConfig>,
-    jobs_tx: &tokio::sync::broadcast::Sender<WorkItem>,
-    dev_scheduler: &mut DevFeeScheduler,
+    ctx: &mut ShareLoopContext<'_>,
 ) -> Result<()> {
     let mut reconnect_user = false;
 
     if let Some(share) = initial {
         reconnect_user |= submit_share_internal(
             share,
-            client,
-            stats,
-            *active_pool,
-            valid_job_ids,
-            seen_nonces,
-            pending_shares,
+            ctx.client,
+            ctx.stats,
+            *ctx.active_pool,
+            ctx.valid_job_ids,
+            ctx.seen_nonces,
+            ctx.pending_shares,
         )
         .await;
     }
@@ -935,12 +914,12 @@ async fn handle_shares(
             Ok(share) => {
                 reconnect_user |= submit_share_internal(
                     share,
-                    client,
-                    stats,
-                    *active_pool,
-                    valid_job_ids,
-                    seen_nonces,
-                    pending_shares,
+                    ctx.client,
+                    ctx.stats,
+                    *ctx.active_pool,
+                    ctx.valid_job_ids,
+                    ctx.seen_nonces,
+                    ctx.pending_shares,
                 )
                 .await;
             }
@@ -952,26 +931,8 @@ async fn handle_shares(
         }
     }
 
-    if reconnect_user && matches!(*active_pool, ActivePool::Dev) {
-        reconnect_user_pool(
-            client,
-            active_pool,
-            main_pool,
-            user_wallet,
-            pass,
-            agent,
-            tls,
-            tls_ca_cert,
-            tls_cert_sha256,
-            proxy,
-            jobs_tx,
-            valid_job_ids,
-            seen_nonces,
-            pending_shares,
-            stats,
-            dev_scheduler,
-        )
-        .await?;
+    if reconnect_user && matches!(*ctx.active_pool, ActivePool::Dev) {
+        reconnect_user_pool(ctx).await?;
     }
 
     Ok(())
@@ -1046,60 +1007,31 @@ async fn submit_share_internal(
     reconnect_user
 }
 
-async fn reconnect_user_pool(
-    client: &mut StratumClient,
-    active_pool: &mut ActivePool,
-    main_pool: &str,
-    user_wallet: &str,
-    pass: &str,
-    agent: &str,
-    tls: bool,
-    tls_ca_cert: Option<&std::path::PathBuf>,
-    tls_cert_sha256: Option<&[u8; 32]>,
-    proxy: Option<&ProxyConfig>,
-    jobs_tx: &tokio::sync::broadcast::Sender<WorkItem>,
-    valid_job_ids: &mut HashSet<String>,
-    seen_nonces: &mut HashMap<String, HashSet<u32>>,
-    pending_shares: &mut HashMap<u64, PendingShare>,
-    stats: &Arc<Stats>,
-    dev_scheduler: &mut DevFeeScheduler,
-) -> Result<()> {
-    let (new_client, job_opt) = connect_with_retries(
-        main_pool,
-        user_wallet,
-        pass,
-        agent,
-        tls,
-        tls_ca_cert,
-        tls_cert_sha256,
-        proxy,
-        5,
-        "user",
-    )
-    .await?;
+async fn reconnect_user_pool(ctx: &mut ShareLoopContext<'_>) -> Result<()> {
+    let (new_client, job_opt) = connect_with_retries(&ctx.user_connection, 5, "user").await?;
 
-    *client = new_client;
-    *active_pool = ActivePool::User;
-    reset_session(valid_job_ids, seen_nonces, pending_shares);
-    stats.pool_connected.store(true, Ordering::Relaxed);
+    *ctx.client = new_client;
+    *ctx.active_pool = ActivePool::User;
+    reset_session(ctx.valid_job_ids, ctx.seen_nonces, ctx.pending_shares);
+    ctx.stats.pool_connected.store(true, Ordering::Relaxed);
 
     if let Some(job) = job_opt {
-        let job_id = broadcast_job(job, false, true, jobs_tx, valid_job_ids, seen_nonces);
-        let _ = scheduler_tick(dev_scheduler, &job_id, *active_pool);
+        let job_id = broadcast_job(
+            job,
+            false,
+            true,
+            ctx.jobs_tx,
+            ctx.valid_job_ids,
+            ctx.seen_nonces,
+        );
+        let _ = scheduler_tick(ctx.dev_scheduler, &job_id, *ctx.active_pool);
     }
 
     Ok(())
 }
 
 async fn connect_with_retries(
-    pool: &str,
-    wallet: &str,
-    pass: &str,
-    agent: &str,
-    tls: bool,
-    tls_ca_cert: Option<&std::path::PathBuf>,
-    tls_cert_sha256: Option<&[u8; 32]>,
-    proxy: Option<&ProxyConfig>,
+    settings: &ConnectionSettings<'_>,
     attempts: usize,
     purpose: &str,
 ) -> Result<(StratumClient, Option<PoolJob>)> {
@@ -1109,18 +1041,7 @@ async fn connect_with_retries(
 
     while attempt < attempts {
         attempt += 1;
-        match StratumClient::connect_and_login(
-            pool,
-            wallet,
-            pass,
-            agent,
-            tls,
-            tls_ca_cert.map(|p| p.as_path()),
-            tls_cert_sha256,
-            proxy,
-        )
-        .await
-        {
+        match StratumClient::connect_and_login(settings.as_params()).await {
             Ok(conn) => return Ok(conn),
             Err(e) => {
                 last_err = Some(e);

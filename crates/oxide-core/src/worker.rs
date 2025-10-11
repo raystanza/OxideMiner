@@ -24,20 +24,25 @@ pub struct Share {
     pub is_devfee: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct WorkerOptions {
+    pub affinity: bool,
+    pub large_pages: bool,
+    pub batch_size: usize,
+    pub yield_between_batches: bool,
+}
+
 /// Spawn `n` workers; each subscribes to job broadcasts and sends shares back.
 pub fn spawn_workers(
     n: usize,
     jobs_tx: broadcast::Sender<WorkItem>,
     shares_tx: mpsc::UnboundedSender<Share>,
-    affinity: bool,
-    large_pages: bool,
-    batch_size: usize,
-    yield_between_batches: bool,
+    options: WorkerOptions,
     hash_counter: Arc<AtomicU64>,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     #[cfg(feature = "randomx")]
-    let _ = engine::set_large_pages(large_pages);
-    let core_ids = if affinity {
+    let _ = engine::set_large_pages(options.large_pages);
+    let core_ids = if options.affinity {
         core_affinity::get_core_ids()
     } else {
         None
@@ -53,14 +58,14 @@ pub fn spawn_workers(
                 {
                     if let Some(ref ids) = core_ids {
                         if let Some(id) = ids.get(i % ids.len()) {
-                            let _ = core_affinity::set_for_current(*id);
+                            core_affinity::set_for_current(*id);
                         }
                     }
                     if let Err(e) = randomx_worker_loop(
                         i,
                         n,
-                        batch_size,
-                        yield_between_batches,
+                        options.batch_size,
+                        options.yield_between_batches,
                         &mut rx,
                         shares_tx,
                         hc,
@@ -416,10 +421,7 @@ async fn randomx_worker_loop(
             .seed_hash
             .as_deref()
             .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000");
-        let mut seed_bytes = match hex::decode(_seed_hex) {
-            Ok(b) => b,
-            Err(_) => Vec::new(),
-        };
+        let mut seed_bytes = hex::decode(_seed_hex).unwrap_or_default();
         if seed_bytes.len() != 32 {
             seed_bytes.resize(32, 0u8);
         }
@@ -449,8 +451,8 @@ async fn randomx_worker_loop(
             + (SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .subsec_nanos() as u32
-                % 0xFFFF_0000);
+                .subsec_nanos()
+                % 0xFFFF_0000u32);
 
         'mine: loop {
             match rx.try_recv() {
@@ -589,10 +591,12 @@ mod tests {
             3,
             jobs_tx,
             shares_tx,
-            false,
-            false,
-            10_000,
-            true,
+            WorkerOptions {
+                affinity: false,
+                large_pages: false,
+                batch_size: 10_000,
+                yield_between_batches: true,
+            },
             hash_counter,
         );
         assert_eq!(handles.len(), 3);
