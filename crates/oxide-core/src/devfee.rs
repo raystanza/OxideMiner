@@ -12,6 +12,12 @@ pub struct DevFeeScheduler {
     interval: u64,
 }
 
+impl Default for DevFeeScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DevFeeScheduler {
     pub fn new() -> Self {
         let interval = (10_000u64 / DEV_FEE_BASIS_POINTS as u64).max(1);

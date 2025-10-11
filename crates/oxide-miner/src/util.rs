@@ -18,6 +18,6 @@ mod tests {
     #[test]
     fn jitter_in_range() {
         let j = tiny_jitter_ms();
-        assert!(j >= 100 && j <= 600);
+        assert!((100..=600).contains(&j));
     }
 }

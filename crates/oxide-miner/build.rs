@@ -1,8 +1,8 @@
 use std::env;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::io;
 
 fn git_output(args: &[&str]) -> Option<String> {
     Command::new("git")
@@ -139,7 +139,10 @@ fn copy_scripts_to_target_profile() {
 
     let scripts_src = workspace_root.join("scripts");
     if !scripts_src.exists() {
-        println!("cargo:warning=scripts/ not found at {}", scripts_src.display());
+        println!(
+            "cargo:warning=scripts/ not found at {}",
+            scripts_src.display()
+        );
         return;
     }
 
@@ -164,20 +167,26 @@ fn copy_scripts_to_target_profile() {
     // Optional secondary destination if binaries are in target/<profile> (no triple)
     // When profile_dir includes a triple (target/<triple>/<profile>), also mirror to target/<profile> if it exists.
     let dst_secondary = profile_dir
-        .parent()                         // target/<triple>
-        .and_then(|p| p.parent())         // target
+        .parent() // target/<triple>
+        .and_then(|p| p.parent()) // target
         .map(|target_root| target_root.join(env::var("PROFILE").unwrap()));
 
     // Copy to primary
     if let Err(e) = fs::remove_dir_all(&dst_primary) {
         // ignore missing dir; report other errors
         if e.kind() != io::ErrorKind::NotFound {
-            println!("cargo:warning=Failed to clean {}: {e}", dst_primary.display());
+            println!(
+                "cargo:warning=Failed to clean {}: {e}",
+                dst_primary.display()
+            );
         }
     }
     match copy_dir_recursive(&scripts_src, &dst_primary) {
         Ok(_) => println!("cargo:warning=Copied scripts/ -> {}", dst_primary.display()),
-        Err(e) => println!("cargo:warning=Failed to copy scripts/ -> {}: {e}", dst_primary.display()),
+        Err(e) => println!(
+            "cargo:warning=Failed to copy scripts/ -> {}: {e}",
+            dst_primary.display()
+        ),
     }
 
     // Copy to secondary (if that directory exists)
@@ -191,7 +200,10 @@ fn copy_scripts_to_target_profile() {
             }
             match copy_dir_recursive(&scripts_src, &dst2) {
                 Ok(_) => println!("cargo:warning=Copied scripts/ -> {}", dst2.display()),
-                Err(e) => println!("cargo:warning=Failed to copy scripts/ -> {}: {e}", dst2.display()),
+                Err(e) => println!(
+                    "cargo:warning=Failed to copy scripts/ -> {}: {e}",
+                    dst2.display()
+                ),
             }
         }
     }

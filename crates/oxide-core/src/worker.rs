@@ -24,17 +24,28 @@ pub struct Share {
     pub is_devfee: bool,
 }
 
+#[derive(Clone)]
+pub struct WorkerSpawnConfig {
+    pub jobs_tx: broadcast::Sender<WorkItem>,
+    pub shares_tx: mpsc::UnboundedSender<Share>,
+    pub affinity: bool,
+    pub large_pages: bool,
+    pub batch_size: usize,
+    pub yield_between_batches: bool,
+    pub hash_counter: Arc<AtomicU64>,
+}
+
 /// Spawn `n` workers; each subscribes to job broadcasts and sends shares back.
-pub fn spawn_workers(
-    n: usize,
-    jobs_tx: broadcast::Sender<WorkItem>,
-    shares_tx: mpsc::UnboundedSender<Share>,
-    affinity: bool,
-    large_pages: bool,
-    batch_size: usize,
-    yield_between_batches: bool,
-    hash_counter: Arc<AtomicU64>,
-) -> Vec<tokio::task::JoinHandle<()>> {
+pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::JoinHandle<()>> {
+    let WorkerSpawnConfig {
+        jobs_tx,
+        shares_tx,
+        affinity,
+        large_pages,
+        batch_size,
+        yield_between_batches,
+        hash_counter,
+    } = config;
     #[cfg(feature = "randomx")]
     let _ = engine::set_large_pages(large_pages);
     let core_ids = if affinity {
@@ -53,7 +64,7 @@ pub fn spawn_workers(
                 {
                     if let Some(ref ids) = core_ids {
                         if let Some(id) = ids.get(i % ids.len()) {
-                            let _ = core_affinity::set_for_current(*id);
+                            core_affinity::set_for_current(*id);
                         }
                     }
                     if let Err(e) = randomx_worker_loop(
@@ -416,10 +427,7 @@ async fn randomx_worker_loop(
             .seed_hash
             .as_deref()
             .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000");
-        let mut seed_bytes = match hex::decode(_seed_hex) {
-            Ok(b) => b,
-            Err(_) => Vec::new(),
-        };
+        let mut seed_bytes = hex::decode(_seed_hex).unwrap_or_default();
         if seed_bytes.len() != 32 {
             seed_bytes.resize(32, 0u8);
         }
@@ -449,7 +457,7 @@ async fn randomx_worker_loop(
             + (SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .subsec_nanos() as u32
+                .subsec_nanos()
                 % 0xFFFF_0000);
 
         'mine: loop {
@@ -587,13 +595,15 @@ mod tests {
         let hash_counter = Arc::new(AtomicU64::new(0));
         let handles = spawn_workers(
             3,
-            jobs_tx,
-            shares_tx,
-            false,
-            false,
-            10_000,
-            true,
-            hash_counter,
+            WorkerSpawnConfig {
+                jobs_tx,
+                shares_tx,
+                affinity: false,
+                large_pages: false,
+                batch_size: 10_000,
+                yield_between_batches: true,
+                hash_counter,
+            },
         );
         assert_eq!(handles.len(), 3);
         for h in handles {

@@ -88,10 +88,7 @@ impl HugePageStatus {
         if !self.supported || !self.has_privilege {
             return false;
         }
-        match self.free_bytes {
-            Some(0) => false,
-            _ => true,
-        }
+        !matches!(self.free_bytes, Some(0))
     }
 
     /// Check whether the supplied allocation size can fit entirely within the available huge pages.
@@ -115,11 +112,11 @@ impl HugePageStatus {
 pub fn huge_page_status() -> HugePageStatus {
     #[cfg(target_os = "linux")]
     {
-        return linux_huge_page_status();
+        linux_huge_page_status()
     }
     #[cfg(target_os = "windows")]
     {
-        return windows_huge_page_status();
+        windows_huge_page_status()
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
@@ -168,7 +165,7 @@ fn parse_huge_page_info(meminfo: &str) -> Option<HugePageStatus> {
 fn parse_meminfo_value(meminfo: &str, needle: &str) -> Option<u64> {
     for line in meminfo.lines() {
         if let Some(rest) = line.strip_prefix(needle) {
-            if let Some(value) = rest.trim().split_whitespace().next() {
+            if let Some(value) = rest.split_whitespace().next() {
                 if let Ok(parsed) = value.parse::<u64>() {
                     return Some(parsed);
                 }
@@ -243,15 +240,7 @@ fn enable_lock_memory_privilege() -> bool {
         };
 
         // Request enable
-        if AdjustTokenPrivileges(
-            token,
-            0,
-            &mut privileges,
-            0,
-            ptr::null_mut(),
-            ptr::null_mut(),
-        ) == 0
-        {
+        if AdjustTokenPrivileges(token, 0, &privileges, 0, ptr::null_mut(), ptr::null_mut()) == 0 {
             let _ = CloseHandle(token);
             return false; // API call failed
         }

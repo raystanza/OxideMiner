@@ -16,4 +16,4 @@ pub use system::{
     cpu_has_ssse3, huge_page_status, huge_pages_enabled, numa_nodes, recommended_thread_count,
     AutoTuneSnapshot, CacheHierarchy, CacheLevel, CpuFeatures, HugePageStatus,
 };
-pub use worker::{spawn_workers, Share, WorkItem};
+pub use worker::{spawn_workers, Share, WorkItem, WorkerSpawnConfig};
