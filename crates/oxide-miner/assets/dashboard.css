@@ -49,11 +49,70 @@ body {
   justify-content: center;
   padding: 20px;
   margin: 0;
+  min-height: 100vh;
   transition: background 0.2s ease, color 0.2s ease;
 }
 
 .container {
   width: 100%;
+}
+
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.08);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(2px);
+  z-index: 1000;
+  transition: opacity 0.25s ease;
+}
+
+.loading-overlay.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.loading-overlay .loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 28px 36px;
+  border-radius: 18px;
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 12px 12px 24px var(--shadow-dark), -12px -12px 24px var(--shadow-light);
+  text-align: center;
+}
+
+.loading-overlay .loading-spinner {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 4px solid rgba(0, 0, 0, 0.1);
+  border: 4px solid color-mix(in srgb, var(--text) 20%, transparent);
+  border-top-color: var(--accent);
+  animation: spin 1s linear infinite;
+}
+
+.loading-overlay .loading-error {
+  margin: 0;
+  color: #d7263d;
+  font-weight: 600;
+}
+
+.loading-overlay.has-error .loading-spinner {
+  display: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Header + Theme picker */
