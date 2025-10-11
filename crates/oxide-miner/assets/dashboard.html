@@ -9,30 +9,33 @@
 <body data-theme="light">
     <div class="container">
         <header class="toolbar">
-            <h1>OxideMiner Dashboard</h1>
+            <div class="brand">
+                <img src="img/oxideminer_logo_dash_48.png" width="48" height="48" alt="OxideMiner Dashboard Logo"/>
+                <h1>OxideMiner Dashboard</h1>
+            </div>
 
             <div class="toolbar-controls">
                 <label class="theme-picker">
-                <span>Theme</span>
-                <select id="theme-select" aria-label="Theme">
-                    <option value="light">Light</option>
-                    <option value="dark">Dark</option>
-                    <option value="monero">Monero</option>
-                </select>
+                    <span>Theme</span>
+                    <select id="theme-select" aria-label="Theme">
+                        <option value="light">Light</option>
+                        <option value="dark">Dark</option>
+                        <option value="monero">Monero</option>
+                    </select>
                 </label>
 
                 <label class="theme-picker">
-                <span>Refresh</span>
-                <select id="polling-select" aria-label="Refresh interval">
-                    <option value="1000">1s</option>
-                    <option value="5000">5s</option>
-                    <option value="10000">10s</option>
-                    <option value="30000">30s</option>
-                    <option value="60000">60s</option>
-                </select>
+                    <span>Refresh</span>
+                    <select id="polling-select" aria-label="Refresh interval">
+                        <option value="1000">1s</option>
+                        <option value="5000">5s</option>
+                        <option value="10000">10s</option>
+                        <option value="30000">30s</option>
+                        <option value="60000">60s</option>
+                    </select>
                 </label>
             </div>
-            </header>
+        </header>
 
         <div class="grid">
             <div class="card">
@@ -81,11 +84,11 @@
                 </div>
 
                 <nav class="footer-links" aria-label="Project links">
-                <a href="https://github.com/raystanza/OxideMiner" target="_blank" rel="noopener noreferrer"><img src="img/github_link-monero_theme.png" width="24" height="24" alt="GitHub Logo"></a>
-                <a href="https://github.com/raystanza" target="_blank" rel="noopener noreferrer"><img src="https://avatars.githubusercontent.com/u/51805268?v=4" width="24" height="24" alt="raystanza GitHub profile image"></a>
-                <a href="/metrics"><img src="img/metrics_link.png" width="24" height="24" alt="Metrics"></a>
-                <a href="/api/stats"><img src="img/json_link.png" width="24" height="24" alt="JSON API"></a>
-                <a href="https://www.getmonero.org/" target="_blank" rel="noopener noreferrer"><img src="img/monero_logo.png" width="24" height="24" alt="Monero Logo"></a>
+                    <a href="https://github.com/raystanza/OxideMiner" target="_blank" rel="noopener noreferrer"><img src="img/github_link-monero_theme.png" width="24" height="24" alt="GitHub Logo"></a>
+                    <a href="https://github.com/raystanza" target="_blank" rel="noopener noreferrer"><img src="https://avatars.githubusercontent.com/u/51805268?v=4" width="24" height="24" alt="raystanza GitHub profile image"></a>
+                    <a href="/metrics"><img src="img/metrics_link.png" width="24" height="24" alt="Metrics"></a>
+                    <a href="/api/stats"><img src="img/json_link.png" width="24" height="24" alt="JSON API"></a>
+                    <a href="https://www.getmonero.org/" target="_blank" rel="noopener noreferrer"><img src="img/monero_logo.png" width="24" height="24" alt="Monero Logo"></a>
                 </nav>
             </div>
         </footer>

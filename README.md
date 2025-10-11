@@ -1,17 +1,18 @@
 # OxideMiner
 
-![Status: v0.1.0 MVP](https://img.shields.io/badge/status-v0.1.0%20MVP-orange)
+![Status: v0.1.0](https://img.shields.io/badge/status-v0.1.0-orange)
 ![Rust Edition 2021](https://img.shields.io/badge/rust%20edition-2021-informational)
 ![RandomX CPU Miner](https://img.shields.io/badge/RandomX-CPU-orange)
+
+![OxideMiner Logo](oxideminer_logo_transparent_256.png)
 
 **OxideMiner** is a **next-generation RandomX CPU miner** written entirely in **Rust** — engineered for _speed, safety, and full transparency_.
 It’s built to squeeze every cycle from your CPU while keeping your system secure and predictable.
 No hidden payloads, no opaque binaries — just verifiable, auditable performance.
 
-Version **v0.1.0 (MVP)** ships a **command-line miner** with automatic CPU tuning, an **optional embedded dashboard**, and hardened controls for TLS, logging, and system friendliness. Every byte of it compiles from the code you see here.
+Version **v0.1.0** ships a **command-line miner** with automatic CPU tuning, an **optional embedded dashboard**, and hardened controls for TLS, logging, and system friendliness. Every byte of it compiles from the code you see here.
 
-> **Performance meets integrity.**
-> OxideMiner is what happens when modern Rust engineering meets Monero’s RandomX algorithm. Optimized for real-world rigs and safe for production hosts.
+**Performance meets integrity.** OxideMiner is what happens when modern Rust engineering meets Monero’s RandomX algorithm. Optimized for real-world rigs and safe for production hosts.
 
 > **Note:** This is an early-stage release. Expect rough edges while we stabilize and benchmark across more hardware.
 > Bug reports and tuning data are especially valuable at this stage.
@@ -57,14 +58,16 @@ Version **v0.1.0 (MVP)** ships a **command-line miner** with automatic CPU tunin
 
 - 🔒 **TLS-ready stratum client:** Secure pool connectivity via `--tls`, with optional certificate pinning and custom CA support.
 
-- 📊 **Built-in dashboard:** A modern, static web UI (HTML/CSS/JS fully embedded in the binary) shows hashrate, shares, uptime, connection state, and build metadata.
-
 - 📈 **Prometheus-compatible metrics:** The `/metrics` endpoint exposes rich counters and gauges, ready for Grafana dashboards or cluster monitoring.
 
 - 🪶 **Clean, structured logs:** Human-readable by default, detailed under `--debug`. Rotating log files keep long runs tidy.
 
 - 💎 **Transparent dev fee:** A fixed 1% developer fee, clearly logged and accounted for in metrics.
   No stealth mining, no surprises — just honesty.
+
+- 📊 **Built-in dashboard (with themes!):** A modern, static web UI (HTML/CSS/JS fully embedded in the binary) shows hashrate, shares, uptime, connection state, and build metadata.
+
+![Screenshot](oxideminer_themes_screenshot.png)
 
 ## Quick start
 
@@ -76,6 +79,8 @@ Download a pre-built binary from the [Relases](https://github.com/raystanza/Oxid
 > **Linux**: ./oxide-miner
 
 _By default OxideMiner will look for a 'config.toml' file in the same directory as the binary, but you can supply the '--config \<PATH_to_CONFIG.TOML>' argument._
+
+>[CLI Screenshot](oxideminer_cli_screenshot.png)
 
 ### Prerequisites
 
@@ -297,7 +302,7 @@ The workspace metadata declares OxideMiner under the MIT License (see the `licen
 
 - Monero Research Lab and the RandomX authors for publishing a resilient, CPU-friendly proof of work.
 - The Rust ecosystem (`tokio`, `hyper`, `tracing`, `serde`, etc.) that powers the async runtime and HTTP layer.
-- Early testers providing logs, CPU tuning data, and bug reports that shaped the v0.1.0 MVP.
+- Early testers providing logs, CPU tuning data, and bug reports that shaped v0.1.0.
 
 ## Contact
 

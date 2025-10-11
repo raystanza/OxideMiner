@@ -56,7 +56,7 @@ body {
   width: 100%;
 }
 
-/* Header / Theme picker */
+/* Header + Theme picker */
 .toolbar {
   display: flex;
   align-items: center;
@@ -96,6 +96,19 @@ h1 {
   outline: none;
   cursor: pointer;
   transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Brand logo + title */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.brand img {
+  display: block;
+  border-radius: 8px;
 }
 
 /* Cards */
