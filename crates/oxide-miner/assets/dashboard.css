@@ -65,6 +65,7 @@ body {
   justify-content: center;
   background: rgba(0, 0, 0, 0.08);
   background: color-mix(in srgb, var(--bg) 92%, transparent);
+  -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
   z-index: 1000;
   transition: opacity 0.25s ease;
@@ -94,25 +95,26 @@ body {
   height: 48px;
   border-radius: 50%;
   border: 4px solid rgba(0, 0, 0, 0.1);
-  border: 4px solid color-mix(in srgb, var(--text) 20%, transparent);
+  border: 4px solid rgba(128, 128, 128, 0.2);
   border-top-color: var(--accent);
+  /* hint and force GPU compositing to reduce paint cost */
+  will-change: transform;
+  transform: translateZ(0) rotate(0deg);
+  backface-visibility: hidden;
+  transform-origin: center;
   animation: spin 1s linear infinite;
 }
 
-.loading-overlay .loading-error {
-  margin: 0;
-  color: #d7263d;
-  font-weight: 600;
-}
-
-.loading-overlay.has-error .loading-spinner {
-  display: none;
+@media (prefers-reduced-motion: reduce) {
+  .loading-overlay .loading-spinner {
+    animation: none;
+    transform: none;
+  }
 }
 
 @keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  from { transform: rotate(0deg); } /* explicit start */
+  to   { transform: rotate(360deg); }
 }
 
 /* Header + Theme picker */
