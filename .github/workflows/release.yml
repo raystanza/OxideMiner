@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.ref_name }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive-extension: tar.gz
+            binary-extension: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive-extension: zip
+            binary-extension: .exe
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Build oxide-miner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target ${{ matrix.target }} -p oxide-miner
+
+      - name: Set release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RELEASE_NAME=oxide-miner-${RELEASE_TAG}-${{ matrix.target }}" >> "$GITHUB_ENV"
+          echo "ARCHIVE_NAME=oxide-miner-${RELEASE_TAG}-${{ matrix.target }}.${{ matrix.archive-extension }}" >> "$GITHUB_ENV"
+          echo "CHECKSUM_NAME=oxide-miner-${RELEASE_TAG}-${{ matrix.target }}.sha256" >> "$GITHUB_ENV"
+
+      - name: Prepare Linux artifact
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist_dir="dist"
+          mkdir -p "$dist_dir"
+          binary_path="target/${{ matrix.target }}/release/oxide-miner"
+          install -m 0755 "$binary_path" "$dist_dir/${RELEASE_NAME}"
+          (cd "$dist_dir" && tar -czf "$ARCHIVE_NAME" "$RELEASE_NAME")
+          rm "$dist_dir/${RELEASE_NAME}"
+          bash scripts/release/generate-checksums.sh "$dist_dir/$CHECKSUM_NAME" "$dist_dir/$ARCHIVE_NAME"
+
+      - name: Install GnuPG (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: pwsh
+        run: choco install gnupg -y
+
+      - name: Prepare Windows artifact
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $distDir = 'dist'
+          New-Item -ItemType Directory -Path $distDir -Force | Out-Null
+          $binaryPath = "target/${{ matrix.target }}/release/oxide-miner${{ matrix.binary-extension }}"
+          $releaseName = "$env:RELEASE_NAME${{ matrix.binary-extension }}"
+          Copy-Item $binaryPath (Join-Path $distDir $releaseName) -Force
+          Compress-Archive -Path (Join-Path $distDir $releaseName) -DestinationPath (Join-Path $distDir $env:ARCHIVE_NAME)
+          Remove-Item (Join-Path $distDir $releaseName)
+          $archivePath = Join-Path $distDir $env:ARCHIVE_NAME
+          $checksumFile = Join-Path $distDir $env:CHECKSUM_NAME
+          $hash = Get-FileHash -Path $archivePath -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $($env:ARCHIVE_NAME)" | Out-File -FilePath $checksumFile -Encoding ascii
+
+      - name: Sign artifacts (Linux)
+        if: ${{ matrix.os == 'ubuntu-latest' && secrets.GPG_PRIVATE_KEY != '' }}
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.gnupg
+          # The private key secret must be base64-encoded to preserve ASCII armor formatting.
+          echo "$GPG_PRIVATE_KEY" | base64 --decode | gpg --batch --import
+          sign_args=(--batch --yes --armor --detach-sign)
+          if [[ -n "${GPG_PASSPHRASE:-}" ]]; then
+            sign_args+=(--pinentry-mode loopback --passphrase "$GPG_PASSPHRASE")
+          fi
+          for artifact in "dist/$ARCHIVE_NAME" "dist/$CHECKSUM_NAME"; do
+            gpg "${sign_args[@]}" "$artifact"
+          done
+
+      - name: Sign artifacts (Windows)
+        if: ${{ matrix.os == 'windows-latest' && secrets.GPG_PRIVATE_KEY != '' }}
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The private key secret must be base64-encoded to preserve ASCII armor formatting.
+          $keyBytes = [Convert]::FromBase64String($env:GPG_PRIVATE_KEY)
+          $keyPath = Join-Path $env:USERPROFILE 'gpg_private.key'
+          [System.IO.File]::WriteAllBytes($keyPath, $keyBytes)
+          & gpg --batch --yes --import $keyPath
+          Remove-Item $keyPath
+          $signArgs = @('--batch','--yes','--armor','--detach-sign')
+          if ($env:GPG_PASSPHRASE) {
+            $signArgs += @('--pinentry-mode','loopback','--passphrase',$env:GPG_PASSPHRASE)
+          }
+          foreach ($artifact in @((Join-Path 'dist' $env:ARCHIVE_NAME), (Join-Path 'dist' $env:CHECKSUM_NAME))) {
+            & gpg @signArgs $artifact
+          }
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxide-miner-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Create release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p notes
+          {
+            echo "## OxideMiner ${RELEASE_TAG}"
+            echo
+            echo "Automated release for tag ${RELEASE_TAG}."
+          } > notes/body.md
+
+      - name: Create release if needed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists"
+          else
+            gh release create "${RELEASE_TAG}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "OxideMiner ${RELEASE_TAG}" \
+              --notes-file notes/body.md \
+              --verify-tag
+          fi
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for asset in release-assets/*/*; do
+            gh release upload "${RELEASE_TAG}" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+          done

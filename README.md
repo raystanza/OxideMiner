@@ -28,6 +28,7 @@ Version **v0.1.0** ships a **command-line miner** with automatic CPU tuning, an 
   - [Prerequisites](#prerequisites)
   - [Build and install](#build-and-install)
   - [First run](#first-run)
+- [Downloading and Verifying Releases](#downloading-and-verifying-releases)
 - [Configuration](#configuration)
   - [Command-line flags](#command-line-flags)
   - [Sample `config.toml`](#sample-configtoml)
@@ -127,6 +128,85 @@ Expected startup log flow:
 2. RandomX dataset initialization and worker spawn.
 3. Stratum handshake with the configured pool, including dev-fee scheduler announcements.
 4. HTTP API availability (if `--api-port` is set.)
+
+## Downloading and Verifying Releases
+
+The project publishes signed release artifacts on the [GitHub Releases](https://github.com/raystanza/OxideMiner/releases) page.
+Each release includes compressed binaries (`.tar.gz` for Linux, `.zip` for Windows), matching SHA-256 checksum files, and detached
+GPG signatures (`.asc`). Always verify downloads before running them to protect against tampering.
+
+### 1. Download the official artifacts
+
+1. Visit the [Releases](https://github.com/raystanza/OxideMiner/releases) page and choose the tag you want (for example, `v1.2.3`).
+2. Download the archive for your operating system and the accompanying checksum (`.sha256`). If signatures are available, download
+   the `.asc` files as well.
+
+### 2. Verify SHA-256 checksums
+
+Validating checksums ensures that the file you downloaded matches what the release workflow produced.
+
+#### Debian/Ubuntu (and other GNU/Linux distributions)
+
+```bash
+# Replace the filenames with the release assets you downloaded
+sha256sum -c oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.sha256
+```
+
+The command reports `OK` when the archive’s digest matches the expected value. If it fails, delete the file immediately and
+re-download it from the official release page.
+
+#### Windows 10/11 (Command Prompt)
+
+```cmd
+:: Replace the file names with the versions you downloaded
+certutil -hashfile oxide-miner-v1.2.3-x86_64-pc-windows-msvc.zip SHA256
+```
+
+Compare the printed hash with the value inside `oxide-miner-v1.2.3-x86_64-pc-windows-msvc.sha256`. The values must match exactly.
+
+#### Windows 10/11 (PowerShell)
+
+```powershell
+# Replace the file names with the versions you downloaded
+Get-FileHash .\oxide-miner-v1.2.3-x86_64-pc-windows-msvc.zip -Algorithm SHA256
+```
+
+Compare the `Hash` field in the output with the value in the `.sha256` file. If they differ, do not run the binary.
+
+### 3. Verify GPG signatures (recommended)
+
+GPG signatures offer an additional guarantee that the release was produced by the OxideMiner maintainers.
+
+1. Import the OxideMiner release signing key. The maintainers publish it as `release-signing-key.asc` in this repository and on
+   public keyservers. For example:
+
+   ```bash
+   # Linux / macOS
+   curl -O https://raw.githubusercontent.com/raystanza/OxideMiner/main/release-signing-key.asc
+   gpg --import release-signing-key.asc
+
+   # Or fetch it by fingerprint from a keyserver (replace with the published fingerprint)
+   gpg --keyserver hkps://keys.openpgp.org --recv-keys <MAINTAINER_FINGERPRINT>
+   ```
+
+2. Verify the signature for the archive (and the checksum file, if provided):
+
+   ```bash
+   gpg --verify oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.tar.gz.asc oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.tar.gz
+   gpg --verify oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.sha256.asc oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.sha256
+   ```
+
+   On Windows PowerShell, use the same commands inside `gpg` (installed with Git for Windows or Gpg4win):
+
+   ```powershell
+   gpg --verify oxide-miner-v1.2.3-x86_64-pc-windows-msvc.zip.asc oxide-miner-v1.2.3-x86_64-pc-windows-msvc.zip
+   ```
+
+3. Confirm the signing key’s fingerprint matches the fingerprint published by the project maintainers. If it does not, discard
+   the artifacts and investigate before proceeding.
+
+Only run the miner when both the checksum and signature verifications succeed. This defense-in-depth approach reduces exposure to
+malicious mirrors and supply-chain attacks.
 
 ## Configuration
 
