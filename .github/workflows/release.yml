@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -50,6 +51,19 @@ jobs:
           set -euo pipefail
           cargo build --locked --release --target ${{ matrix.target }} -p oxide-miner
 
+      # Discover the actual Cargo target dir (respects workspace config)
+      - name: Discover Cargo target dir
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_dir="$(cargo metadata --no-deps --format-version=1 | python3 - <<'PY'
+          import sys, json
+          print(json.load(sys.stdin)["target_directory"])
+          PY
+          )"
+          echo "CARGO_TARGET_DIR=$target_dir" | tee -a "$GITHUB_ENV"
+          echo "Resolved CARGO_TARGET_DIR: $target_dir"
+
       - name: Set release metadata
         shell: bash
         run: |
@@ -57,6 +71,15 @@ jobs:
           echo "RELEASE_NAME=oxide-miner-${RELEASE_TAG}-${{ matrix.target }}" >> "$GITHUB_ENV"
           echo "ARCHIVE_NAME=oxide-miner-${RELEASE_TAG}-${{ matrix.target }}.${{ matrix.archive-extension }}" >> "$GITHUB_ENV"
           echo "CHECKSUM_NAME=oxide-miner-${RELEASE_TAG}-${{ matrix.target }}.sha256" >> "$GITHUB_ENV"
+
+      - name: List built files (Linux)
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Listing $CARGO_TARGET_DIR/release (host) and $CARGO_TARGET_DIR/${{ matrix.target }}/release (triple):"
+          ls -la "$CARGO_TARGET_DIR/release" || true
+          ls -la "$CARGO_TARGET_DIR/${{ matrix.target }}/release" || true
 
       - name: Prepare Linux artifact
         if: ${{ matrix.os == 'ubuntu-latest' }}
@@ -66,22 +89,33 @@ jobs:
           dist_dir="dist"
           mkdir -p "$dist_dir"
 
-          # Resolve binary path with hyphen/underscore fallback
-          dir="target/${{ matrix.target }}/release"
-          bin_hyphen="$dir/oxide-miner"
-          bin_under="$dir/oxide_miner"
+          # Prefer triple dir; fallback to host dir
+          if [[ -d "$CARGO_TARGET_DIR/${{ matrix.target }}/release" ]]; then
+            build_dir="$CARGO_TARGET_DIR/${{ matrix.target }}/release"
+          elif [[ -d "$CARGO_TARGET_DIR/release" ]]; then
+            build_dir="$CARGO_TARGET_DIR/release"
+          else
+            echo "No build output directory found."
+            exit 1
+          fi
+
+          # Resolve binary path (hyphen or underscore)
+          bin_hyphen="$build_dir/oxide-miner"
+          bin_under="$build_dir/oxide_miner"
           if [[ -f "$bin_hyphen" ]]; then
             binary_path="$bin_hyphen"
           elif [[ -f "$bin_under" ]]; then
             binary_path="$bin_under"
           else
-            echo "Built binary not found at $bin_hyphen or $bin_under"
-            echo "Available files in $dir:"
-            ls -la "$dir" || true
+            echo "Built binary not found at:"
+            echo "  $bin_hyphen"
+            echo "  $bin_under"
+            echo "Available files in $build_dir:"
+            ls -la "$build_dir" || true
             exit 1
           fi
 
-          # Package
+          echo "Packaging binary from: $binary_path"
           install -m 0755 "$binary_path" "$dist_dir/${RELEASE_NAME}"
           (cd "$dist_dir" && tar -czf "$ARCHIVE_NAME" "$RELEASE_NAME")
           rm "$dist_dir/${RELEASE_NAME}"
@@ -89,11 +123,18 @@ jobs:
           # Checksums
           bash scripts/release/generate-checksums.sh "$dist_dir/$CHECKSUM_NAME" "$dist_dir/$ARCHIVE_NAME"
 
+      # Only set up GnuPG on Windows if we actually plan to sign
       - name: Ensure GnuPG (Windows)
         if: ${{ matrix.os == 'windows-latest' }}
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if (-not $env:GPG_PRIVATE_KEY) {
+            Write-Host "No GPG key provided; skipping GnuPG setup."
+            exit 0
+          }
           if (Get-Command gpg -ErrorAction SilentlyContinue) {
             Write-Host "gpg already available:"
             gpg --version
@@ -101,6 +142,16 @@ jobs:
             choco install gnupg -y --no-progress
             gpg --version
           }
+
+      - name: List built files (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: pwsh
+        run: |
+          $dir1 = "$env:CARGO_TARGET_DIR\release"
+          $dir2 = "$env:CARGO_TARGET_DIR\${{ matrix.target }}\release"
+          Write-Host "Listing $dir1 and $dir2"
+          if (Test-Path $dir1) { Get-ChildItem -Force $dir1 | Format-List Length,Name,FullName } else { Write-Host "Missing: $dir1" }
+          if (Test-Path $dir2) { Get-ChildItem -Force $dir2 | Format-List Length,Name,FullName } else { Write-Host "Missing: $dir2" }
 
       - name: Prepare Windows artifact
         if: ${{ matrix.os == 'windows-latest' }}
@@ -110,17 +161,25 @@ jobs:
           $distDir = 'dist'
           New-Item -ItemType Directory -Path $distDir -Force | Out-Null
 
-          # Resolve binary path with hyphen/underscore fallback
-          $dir = "target/${{ matrix.target }}/release"
-          $binHyphen = Join-Path $dir "oxide-miner${{ matrix.binary-extension }}"
-          $binUnder  = Join-Path $dir "oxide_miner${{ matrix.binary-extension }}"
+          # Prefer triple dir; fallback to host dir
+          if (Test-Path "$env:CARGO_TARGET_DIR\${{ matrix.target }}\release") {
+            $buildDir = "$env:CARGO_TARGET_DIR\${{ matrix.target }}\release"
+          } elseif (Test-Path "$env:CARGO_TARGET_DIR\release") {
+            $buildDir = "$env:CARGO_TARGET_DIR\release"
+          } else {
+            Write-Host "No build output directory found."
+            exit 1
+          }
+
+          $binHyphen = Join-Path $buildDir "oxide-miner${{ matrix.binary-extension }}"
+          $binUnder  = Join-Path $buildDir "oxide_miner${{ matrix.binary-extension }}"
           if (Test-Path $binHyphen) {
             $binaryPath = $binHyphen
           } elseif (Test-Path $binUnder) {
             $binaryPath = $binUnder
           } else {
             Write-Host "Built binary not found at $binHyphen or $binUnder"
-            Get-ChildItem -Force $dir | Format-List -Property Length,Name,FullName
+            Get-ChildItem -Force $buildDir | Format-List -Property Length,Name,FullName
             throw "Binary not found"
           }
 
