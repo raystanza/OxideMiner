@@ -94,13 +94,18 @@ jobs:
           "$($hash.Hash.ToLower())  $($env:ARCHIVE_NAME)" | Out-File -FilePath $checksumFile -Encoding ascii
 
       - name: Sign artifacts (Linux)
-        if: ${{ matrix.os == 'ubuntu-latest' && secrets.GPG_PRIVATE_KEY != '' }}
+        if: ${{ matrix.os == 'ubuntu-latest' }}
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         shell: bash
         run: |
           set -euo pipefail
+          # Skip if the secret isn't set
+          if [[ -z "${GPG_PRIVATE_KEY:-}" ]]; then
+            echo "No GPG_PRIVATE_KEY secret set; skipping signing."
+            exit 0
+          fi
           install -d -m 0700 ~/.gnupg
           # The private key secret must be base64-encoded to preserve ASCII armor formatting.
           echo "$GPG_PRIVATE_KEY" | base64 --decode | gpg --batch --import
@@ -113,13 +118,17 @@ jobs:
           done
 
       - name: Sign artifacts (Windows)
-        if: ${{ matrix.os == 'windows-latest' && secrets.GPG_PRIVATE_KEY != '' }}
+        if: ${{ matrix.os == 'windows-latest' }}
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if (-not $env:GPG_PRIVATE_KEY) {
+            Write-Host "No GPG_PRIVATE_KEY secret set; skipping signing."
+            exit 0
+          }
           # The private key secret must be base64-encoded to preserve ASCII armor formatting.
           $keyBytes = [Convert]::FromBase64String($env:GPG_PRIVATE_KEY)
           $keyPath = Join-Path $env:USERPROFILE 'gpg_private.key'
