@@ -28,6 +28,7 @@ Version **v0.1.0** ships a **command-line miner** with automatic CPU tuning, an 
   - [Prerequisites](#prerequisites)
   - [Build and install](#build-and-install)
   - [First run](#first-run)
+- [Downloading and Verifying Releases](#downloading-and-verifying-releases)
 - [Configuration](#configuration)
   - [Command-line flags](#command-line-flags)
   - [Sample `config.toml`](#sample-configtoml)
@@ -127,6 +128,79 @@ Expected startup log flow:
 2. RandomX dataset initialization and worker spawn.
 3. Stratum handshake with the configured pool, including dev-fee scheduler announcements.
 4. HTTP API availability (if `--api-port` is set.)
+
+## Downloading and Verifying Releases
+
+Official release archives are published on the [GitHub Releases](https://github.com/raystanza/OxideMiner/releases) page after the
+CI pipeline finishes building and signing them. Each release upload contains:
+
+- Platform-specific archives such as `oxide-miner-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` and
+  `oxide-miner-vX.Y.Z-x86_64-pc-windows-msvc.zip`.
+- Per-archive SHA-256 checksum files (matching the archive name with a `.sha256` suffix).
+- Optional ASCII-armored signature files (`.asc`) that cover both the archive and its checksum when a signing key is configured.
+
+Always verify the integrity of downloads before running them:
+
+### 1. Download the artifacts
+
+1. Visit the [Releases](https://github.com/raystanza/OxideMiner/releases) page.
+2. Pick the tag you want (for example `v0.1.0`) and download the archive and matching `.sha256` file for your platform.
+3. (Optional) Download the `.asc` signature that corresponds to each file if GPG verification is available for that release.
+
+### 2. Verify SHA-256 checksums
+
+Integrity verification ensures the archive was not tampered with in transit. Replace the filenames below with the ones you
+downloaded.
+
+#### Debian and other Linux distributions
+
+```bash
+sha256sum -c oxide-miner-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.sha256
+```
+
+The command prints `OK` when the computed digest matches the expected value in the checksum file. If it fails, stop and download
+again from a trusted network.
+
+#### Windows 10/11 (Command Prompt)
+
+```bat
+certutil -hashfile oxide-miner-vX.Y.Z-x86_64-pc-windows-msvc.zip SHA256
+```
+
+Compare the printed hash against the value inside `oxide-miner-vX.Y.Z-x86_64-pc-windows-msvc.zip.sha256`. They must match exactly.
+
+#### Windows 10/11 (PowerShell)
+
+```powershell
+Get-FileHash -Path .\oxide-miner-vX.Y.Z-x86_64-pc-windows-msvc.zip -Algorithm SHA256
+```
+
+Compare the `Hash` field with the checksum file, ignoring letter casing.
+
+### 3. Verify GPG signatures (if provided)
+
+Signature verification protects against malicious mirrors and tampered GitHub uploads. The maintainers publish their release
+signing public key on the release page and in the repository (check the release notes for the canonical download location).
+Import the key and validate the signatures before trusting the binaries.
+
+```bash
+# Import the release signing key (replace the path or URL with the trusted source you use)
+gpg --import path/to/oxide-miner-release.asc
+
+# Inspect the fingerprint and compare it against the one announced in the release notes
+gpg --fingerprint "OxideMiner Release Signing"
+
+# Verify the archive
+gpg --verify oxide-miner-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.asc \
+     oxide-miner-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
+
+# Verify the checksum file if a signature is provided for it
+gpg --verify oxide-miner-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.sha256.asc \
+     oxide-miner-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.sha256
+```
+
+Only proceed if GPG reports a valid signature from a trusted key. If verification fails, assume the download has been tampered
+with and contact the maintainers using a secure channel.
 
 ## Configuration
 
