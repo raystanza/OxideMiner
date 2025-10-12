@@ -1,6 +1,5 @@
 # Rust build artifacts and cache
 /target/
-Cargo.lock
 
 # VS Code editor settings and workspace files
 .vscode/
