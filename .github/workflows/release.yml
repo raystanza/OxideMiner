@@ -65,16 +65,42 @@ jobs:
           set -euo pipefail
           dist_dir="dist"
           mkdir -p "$dist_dir"
-          binary_path="target/${{ matrix.target }}/release/oxide-miner"
+
+          # Resolve binary path with hyphen/underscore fallback
+          dir="target/${{ matrix.target }}/release"
+          bin_hyphen="$dir/oxide-miner"
+          bin_under="$dir/oxide_miner"
+          if [[ -f "$bin_hyphen" ]]; then
+            binary_path="$bin_hyphen"
+          elif [[ -f "$bin_under" ]]; then
+            binary_path="$bin_under"
+          else
+            echo "Built binary not found at $bin_hyphen or $bin_under"
+            echo "Available files in $dir:"
+            ls -la "$dir" || true
+            exit 1
+          fi
+
+          # Package
           install -m 0755 "$binary_path" "$dist_dir/${RELEASE_NAME}"
           (cd "$dist_dir" && tar -czf "$ARCHIVE_NAME" "$RELEASE_NAME")
           rm "$dist_dir/${RELEASE_NAME}"
+
+          # Checksums
           bash scripts/release/generate-checksums.sh "$dist_dir/$CHECKSUM_NAME" "$dist_dir/$ARCHIVE_NAME"
 
-      - name: Install GnuPG (Windows)
+      - name: Ensure GnuPG (Windows)
         if: ${{ matrix.os == 'windows-latest' }}
         shell: pwsh
-        run: choco install gnupg -y
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Get-Command gpg -ErrorAction SilentlyContinue) {
+            Write-Host "gpg already available:"
+            gpg --version
+          } else {
+            choco install gnupg -y --no-progress
+            gpg --version
+          }
 
       - name: Prepare Windows artifact
         if: ${{ matrix.os == 'windows-latest' }}
@@ -83,11 +109,27 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $distDir = 'dist'
           New-Item -ItemType Directory -Path $distDir -Force | Out-Null
-          $binaryPath = "target/${{ matrix.target }}/release/oxide-miner${{ matrix.binary-extension }}"
+
+          # Resolve binary path with hyphen/underscore fallback
+          $dir = "target/${{ matrix.target }}/release"
+          $binHyphen = Join-Path $dir "oxide-miner${{ matrix.binary-extension }}"
+          $binUnder  = Join-Path $dir "oxide_miner${{ matrix.binary-extension }}"
+          if (Test-Path $binHyphen) {
+            $binaryPath = $binHyphen
+          } elseif (Test-Path $binUnder) {
+            $binaryPath = $binUnder
+          } else {
+            Write-Host "Built binary not found at $binHyphen or $binUnder"
+            Get-ChildItem -Force $dir | Format-List -Property Length,Name,FullName
+            throw "Binary not found"
+          }
+
           $releaseName = "$env:RELEASE_NAME${{ matrix.binary-extension }}"
           Copy-Item $binaryPath (Join-Path $distDir $releaseName) -Force
           Compress-Archive -Path (Join-Path $distDir $releaseName) -DestinationPath (Join-Path $distDir $env:ARCHIVE_NAME)
           Remove-Item (Join-Path $distDir $releaseName)
+
+          # Checksums
           $archivePath = Join-Path $distDir $env:ARCHIVE_NAME
           $checksumFile = Join-Path $distDir $env:CHECKSUM_NAME
           $hash = Get-FileHash -Path $archivePath -Algorithm SHA256
@@ -101,13 +143,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Skip if the secret isn't set
           if [[ -z "${GPG_PRIVATE_KEY:-}" ]]; then
             echo "No GPG_PRIVATE_KEY secret set; skipping signing."
             exit 0
           fi
           install -d -m 0700 ~/.gnupg
-          # The private key secret must be base64-encoded to preserve ASCII armor formatting.
           echo "$GPG_PRIVATE_KEY" | base64 --decode | gpg --batch --import
           sign_args=(--batch --yes --armor --detach-sign)
           if [[ -n "${GPG_PASSPHRASE:-}" ]]; then
@@ -129,7 +169,6 @@ jobs:
             Write-Host "No GPG_PRIVATE_KEY secret set; skipping signing."
             exit 0
           }
-          # The private key secret must be base64-encoded to preserve ASCII armor formatting.
           $keyBytes = [Convert]::FromBase64String($env:GPG_PRIVATE_KEY)
           $keyPath = Join-Path $env:USERPROFILE 'gpg_private.key'
           [System.IO.File]::WriteAllBytes($keyPath, $keyBytes)

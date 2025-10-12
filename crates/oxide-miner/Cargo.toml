@@ -33,3 +33,7 @@ tempfile = "3"
 [build-dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 embed-resource = "2"
+
+[[bin]]
+name = "oxide-miner"
+path = "src/main.rs"
