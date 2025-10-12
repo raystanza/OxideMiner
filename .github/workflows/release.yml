@@ -51,18 +51,18 @@ jobs:
           set -euo pipefail
           cargo build --locked --release --target ${{ matrix.target }} -p oxide-miner
 
-      # Discover the actual Cargo target dir (respects workspace config)
-      - name: Discover Cargo target dir
+      # Resolve Cargo targe dir
+      - name: Resolve target dir
         shell: bash
         run: |
           set -euo pipefail
-          target_dir="$(cargo metadata --no-deps --format-version=1 | python3 - <<'PY'
-          import sys, json
-          print(json.load(sys.stdin)["target_directory"])
-          PY
-          )"
-          echo "CARGO_TARGET_DIR=$target_dir" | tee -a "$GITHUB_ENV"
-          echo "Resolved CARGO_TARGET_DIR: $target_dir"
+          if [[ -d "ox-build/target" ]]; then
+            td="ox-build/target"
+          else
+            td="target"
+          fi
+          echo "CARGO_TARGET_DIR=$td" | tee -a "$GITHUB_ENV"
+          echo "Resolved CARGO_TARGET_DIR: $td"
 
       - name: Set release metadata
         shell: bash
@@ -77,9 +77,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Listing $CARGO_TARGET_DIR/release (host) and $CARGO_TARGET_DIR/${{ matrix.target }}/release (triple):"
-          ls -la "$CARGO_TARGET_DIR/release" || true
+          echo "Listing $CARGO_TARGET_DIR/${{ matrix.target }}/release and $CARGO_TARGET_DIR/release"
           ls -la "$CARGO_TARGET_DIR/${{ matrix.target }}/release" || true
+          ls -la "$CARGO_TARGET_DIR/release" || true
 
       - name: Prepare Linux artifact
         if: ${{ matrix.os == 'ubuntu-latest' }}
@@ -147,8 +147,8 @@ jobs:
         if: ${{ matrix.os == 'windows-latest' }}
         shell: pwsh
         run: |
-          $dir1 = "$env:CARGO_TARGET_DIR\release"
-          $dir2 = "$env:CARGO_TARGET_DIR\${{ matrix.target }}\release"
+          $dir1 = "$env:CARGO_TARGET_DIR\${{ matrix.target }}\release"
+          $dir2 = "$env:CARGO_TARGET_DIR\release"
           Write-Host "Listing $dir1 and $dir2"
           if (Test-Path $dir1) { Get-ChildItem -Force $dir1 | Format-List Length,Name,FullName } else { Write-Host "Missing: $dir1" }
           if (Test-Path $dir2) { Get-ChildItem -Force $dir2 | Format-List Length,Name,FullName } else { Write-Host "Missing: $dir2" }
