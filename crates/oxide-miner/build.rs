@@ -1,9 +1,10 @@
+// OxideMiner/crates/oxide-miner/build.rs
+
 use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
 
 fn git_output(args: &[&str]) -> Option<String> {
     Command::new("git")

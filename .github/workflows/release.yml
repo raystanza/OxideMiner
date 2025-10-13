@@ -51,7 +51,7 @@ jobs:
           set -euo pipefail
           cargo build --locked --release --target ${{ matrix.target }} -p oxide-miner
 
-      # Resolve Cargo targe dir
+      # Resolve target dir
       - name: Resolve target dir
         shell: bash
         run: |
@@ -81,7 +81,7 @@ jobs:
           ls -la "$CARGO_TARGET_DIR/${{ matrix.target }}/release" || true
           ls -la "$CARGO_TARGET_DIR/release" || true
 
-      - name: Prepare Linux artifact
+      - name: Prepare Linux artifact (binary + config + scripts)
         if: ${{ matrix.os == 'ubuntu-latest' }}
         shell: bash
         run: |
@@ -107,23 +107,52 @@ jobs:
           elif [[ -f "$bin_under" ]]; then
             binary_path="$bin_under"
           else
-            echo "Built binary not found at:"
-            echo "  $bin_hyphen"
-            echo "  $bin_under"
-            echo "Available files in $build_dir:"
+            echo "Built binary not found:"
             ls -la "$build_dir" || true
             exit 1
           fi
 
-          echo "Packaging binary from: $binary_path"
-          install -m 0755 "$binary_path" "$dist_dir/${RELEASE_NAME}"
-          (cd "$dist_dir" && tar -czf "$ARCHIVE_NAME" "$RELEASE_NAME")
-          rm "$dist_dir/${RELEASE_NAME}"
+          # Staging folder (becomes top-level in archive)
+          pkg_dir="$dist_dir/${RELEASE_NAME}"
+          mkdir -p "$pkg_dir"
 
-          # Checksums
+          # Copy binary (normalize to 'oxide-miner')
+          install -m 0755 "$binary_path" "$pkg_dir/oxide-miner"
+
+          # Include config.toml.example (root or crate path)
+          if [[ -f "config.toml.example" ]]; then
+            cp "config.toml.example" "$pkg_dir/"
+          elif [[ -f "crates/oxide-miner/config.toml.example" ]]; then
+            cp "crates/oxide-miner/config.toml.example" "$pkg_dir/"
+          else
+            echo "WARNING: config.toml.example not found; continuing"
+          fi
+
+          # Include scripts (windows & linux), exclude scripts/release
+          if [[ -d "scripts/linux" ]]; then
+            mkdir -p "$pkg_dir/scripts"
+            cp -r "scripts/linux" "$pkg_dir/scripts/"
+            chmod +x "$pkg_dir/scripts/linux/"*.sh || true
+          fi
+          if [[ -d "scripts/windows" ]]; then
+            mkdir -p "$pkg_dir/scripts"
+            cp -r "scripts/windows" "$pkg_dir/scripts/"
+            # (PowerShell scripts don't need chmod on Linux, fine as-is)
+          fi
+          # Optional readme for scripts if you want it shipped:
+          if [[ -f "scripts/README.md" ]]; then
+            mkdir -p "$pkg_dir/scripts"
+            cp "scripts/README.md" "$pkg_dir/scripts/"
+          fi
+
+          # Package the folder
+          (cd "$dist_dir" && tar -czf "$ARCHIVE_NAME" "$RELEASE_NAME")
+          rm -rf "$pkg_dir"
+
+          # Checksums (archive only)
           bash scripts/release/generate-checksums.sh "$dist_dir/$CHECKSUM_NAME" "$dist_dir/$ARCHIVE_NAME"
 
-      # Only set up GnuPG on Windows if we actually plan to sign
+      # Setup GPG on Windows, with choco fallback
       - name: Ensure GnuPG (Windows)
         if: ${{ matrix.os == 'windows-latest' }}
         env:
@@ -153,7 +182,7 @@ jobs:
           if (Test-Path $dir1) { Get-ChildItem -Force $dir1 | Format-List Length,Name,FullName } else { Write-Host "Missing: $dir1" }
           if (Test-Path $dir2) { Get-ChildItem -Force $dir2 | Format-List Length,Name,FullName } else { Write-Host "Missing: $dir2" }
 
-      - name: Prepare Windows artifact
+      - name: Prepare Windows artifact (binary + config + scripts)
         if: ${{ matrix.os == 'windows-latest' }}
         shell: pwsh
         run: |
@@ -167,10 +196,10 @@ jobs:
           } elseif (Test-Path "$env:CARGO_TARGET_DIR\release") {
             $buildDir = "$env:CARGO_TARGET_DIR\release"
           } else {
-            Write-Host "No build output directory found."
-            exit 1
+            throw "No build output directory found."
           }
 
+          # Resolve binary path
           $binHyphen = Join-Path $buildDir "oxide-miner${{ matrix.binary-extension }}"
           $binUnder  = Join-Path $buildDir "oxide_miner${{ matrix.binary-extension }}"
           if (Test-Path $binHyphen) {
@@ -178,17 +207,49 @@ jobs:
           } elseif (Test-Path $binUnder) {
             $binaryPath = $binUnder
           } else {
-            Write-Host "Built binary not found at $binHyphen or $binUnder"
-            Get-ChildItem -Force $buildDir | Format-List -Property Length,Name,FullName
+            Get-ChildItem -Force $buildDir | Format-List Length,Name,FullName
             throw "Binary not found"
           }
 
-          $releaseName = "$env:RELEASE_NAME${{ matrix.binary-extension }}"
-          Copy-Item $binaryPath (Join-Path $distDir $releaseName) -Force
-          Compress-Archive -Path (Join-Path $distDir $releaseName) -DestinationPath (Join-Path $distDir $env:ARCHIVE_NAME)
-          Remove-Item (Join-Path $distDir $releaseName)
+          # Staging folder (will be root in zip)
+          $pkgDir = Join-Path $distDir $env:RELEASE_NAME
+          New-Item -ItemType Directory -Path $pkgDir -Force | Out-Null
 
-          # Checksums
+          # Copy binary (normalize to 'oxide-miner.exe')
+          Copy-Item $binaryPath (Join-Path $pkgDir "oxide-miner${{ matrix.binary-extension }}") -Force
+
+          # Include config.toml.example (root or crate path)
+          if (Test-Path ".\config.toml.example") {
+            Copy-Item ".\config.toml.example" $pkgDir -Force
+          } elseif (Test-Path ".\crates\oxide-miner\config.toml.example") {
+            Copy-Item ".\crates\oxide-miner\config.toml.example" $pkgDir -Force
+          } else {
+            Write-Host "WARNING: config.toml.example not found; continuing"
+          }
+
+          # Include scripts (windows & linux), exclude scripts/release
+          if (Test-Path ".\scripts\windows") {
+            New-Item -ItemType Directory -Path (Join-Path $pkgDir "scripts") -Force | Out-Null
+            Copy-Item ".\scripts\windows" (Join-Path $pkgDir "scripts") -Recurse -Force
+          }
+          if (Test-Path ".\scripts\linux") {
+            New-Item -ItemType Directory -Path (Join-Path $pkgDir "scripts") -Force | Out-Null
+            Copy-Item ".\scripts\linux" (Join-Path $pkgDir "scripts") -Recurse -Force
+          }
+          if (Test-Path ".\scripts\README.md") {
+            New-Item -ItemType Directory -Path (Join-Path $pkgDir "scripts") -Force | Out-Null
+            Copy-Item ".\scripts\README.md" (Join-Path $pkgDir "scripts") -Force
+          }
+
+          # Zip the folder (keep top-level directory in the archive)
+          Push-Location $distDir
+          Compress-Archive -Path $env:RELEASE_NAME -DestinationPath $env:ARCHIVE_NAME -Force
+          Pop-Location
+
+          # Remove staging folder
+          Remove-Item $pkgDir -Recurse -Force
+
+          # Checksums (archive only)
           $archivePath = Join-Path $distDir $env:ARCHIVE_NAME
           $checksumFile = Join-Path $distDir $env:CHECKSUM_NAME
           $hash = Get-FileHash -Path $archivePath -Algorithm SHA256
