@@ -68,7 +68,7 @@ fn embedded_asset(path: &str) -> Option<EmbeddedAsset> {
         }),
         "/img/oxideminer_logo_dash_48.png" => Some(EmbeddedAsset {
             bytes: IMG_OXIDEMINER_LOGO_PNG,
-            content_type: "image/png"
+            content_type: "image/png",
         }),
         _ => None,
     }

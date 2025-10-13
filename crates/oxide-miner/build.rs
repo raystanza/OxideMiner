@@ -220,7 +220,9 @@ fn compile_windows_resource(manifest_dir: &Path) {
         return;
     }
 
-    let icon_path = manifest_dir.join("assets").join("oxideminer_icon_no-text.ico");
+    let icon_path = manifest_dir
+        .join("assets")
+        .join("oxideminer_icon_no-text.ico");
     if !icon_path.is_file() {
         println!(
             "cargo:warning=Skipping Windows resource compilation: icon not found at {}",
@@ -243,9 +245,7 @@ fn compile_windows_resource(manifest_dir: &Path) {
     };
     let rc_path = out_dir.join("oxide-miner-icon.rc");
 
-    let icon_literal = icon_path
-        .to_string_lossy()
-        .replace('\\', "\\\\");
+    let icon_literal = icon_path.to_string_lossy().replace('\\', "\\\\");
     let rc_contents = format!("1 ICON \"{}\"\n", icon_literal);
     if let Err(err) = fs::write(&rc_path, rc_contents) {
         println!(
