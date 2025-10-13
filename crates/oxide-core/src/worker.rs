@@ -110,6 +110,10 @@ mod engine {
     #[derive(Clone)]
     struct ThreadSafeCache(RandomXCache);
 
+    // SAFETY: `RandomXCache` instances become immutable after initialization. The wrapper only
+    // exposes cloning of the underlying cache, so sharing references between threads cannot race
+    // on mutation or destruction. The underlying FFI object also owns its memory for the lifetime
+    // of the wrapper, so transferring ownership across threads is sound.
     unsafe impl Send for ThreadSafeCache {}
     unsafe impl Sync for ThreadSafeCache {}
 
@@ -135,6 +139,11 @@ mod engine {
 
     // RandomX cache/dataset objects are read-only after initialization and may be shared across
     // threads safely.
+    // SAFETY: `Cache` and `Dataset` only expose read-only operations after construction. The
+    // internal `RandomXCache`/`RandomXDataset` values are never mutated once the object is
+    // initialized, and cloning produces independent handles backed by the RandomX library. Moving
+    // these wrappers between threads therefore cannot introduce races, and the underlying library
+    // keeps the memory alive for the lifetime of the wrapper.
     unsafe impl Send for Cache {}
     unsafe impl Sync for Cache {}
     unsafe impl Send for Dataset {}
@@ -146,6 +155,9 @@ mod engine {
     }
 
     // RandomX VMs are not thread-safe by default, but we confine each to a single worker thread.
+    // SAFETY: Each `Vm` is created and used by a single worker task. The async worker future is
+    // `Send` so it may move between executor threads, but it is never accessed concurrently from
+    // multiple threads, preserving the thread confinement required by `RandomXVM`.
     unsafe impl Send for Vm {}
 
     // randomx-rs exposes FLAG_* constants.
