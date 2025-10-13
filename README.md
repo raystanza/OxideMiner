@@ -1,4 +1,4 @@
-# OxideMiner
+# OxideMiner — High-Performance Monero (XMR) CPU Miner in Rust
 
 ![Status: v0.1.0](https://img.shields.io/badge/status-v0.1.0-orange)
 ![Rust Edition 2021](https://img.shields.io/badge/rust%20edition-2021-informational)
