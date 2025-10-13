@@ -177,6 +177,8 @@ fn parse_meminfo_value(meminfo: &str, needle: &str) -> Option<u64> {
 
 #[cfg(target_os = "windows")]
 fn windows_huge_page_status() -> HugePageStatus {
+    // SAFETY: `GetLargePageMinimum` performs no memory access and the helper functions invoked
+    // below only operate on OS-managed handles. We do not pass any invalid pointers.
     unsafe {
         let page_min = GetLargePageMinimum();
         if page_min == 0 {
@@ -210,6 +212,9 @@ pub fn enable_large_page_privilege() -> bool {
 
 #[cfg(target_os = "windows")]
 fn enable_lock_memory_privilege() -> bool {
+    // SAFETY: All raw handles are obtained from Win32 APIs and closed on every exit path. The
+    // buffer we pass to `AdjustTokenPrivileges` is stack-allocated and lives for the duration of
+    // the call, so pointer arguments remain valid.
     unsafe {
         if has_lock_memory_privilege() {
             return true;
@@ -265,6 +270,9 @@ fn enable_lock_memory_privilege() -> bool {
 
 #[cfg(target_os = "windows")]
 fn has_lock_memory_privilege() -> bool {
+    // SAFETY: All pointers and buffer lengths originate from Win32 APIs. The token handle is
+    // closed before returning, and we validate the size of the returned privilege list before
+    // creating typed slices from it.
     unsafe {
         let mut token: HANDLE = std::ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
@@ -290,7 +298,14 @@ fn has_lock_memory_privilege() -> bool {
             return false;
         }
 
-        let mut buffer = vec![0u8; required_len as usize];
+        if required_len == 0 {
+            let _ = CloseHandle(token);
+            return false;
+        }
+
+        let word_size = mem::size_of::<usize>();
+        let len_words = ((required_len as usize) + (word_size - 1)) / word_size;
+        let mut buffer = vec![0usize; len_words];
         if GetTokenInformation(
             token,
             TokenPrivileges,
@@ -305,6 +320,24 @@ fn has_lock_memory_privilege() -> bool {
 
         let token_privileges = buffer.as_ptr() as *const TOKEN_PRIVILEGES;
         let count = (*token_privileges).PrivilegeCount as usize;
+
+        let base = mem::size_of::<TOKEN_PRIVILEGES>();
+        let extra = count
+            .saturating_sub(1)
+            .checked_mul(mem::size_of::<LUID_AND_ATTRIBUTES>())
+            .unwrap_or(usize::MAX);
+        let needed = match base.checked_add(extra) {
+            Some(n) => n,
+            None => {
+                let _ = CloseHandle(token);
+                return false;
+            }
+        };
+        if needed > len_words * word_size {
+            let _ = CloseHandle(token);
+            return false;
+        }
+
         let privileges_ptr = (*token_privileges).Privileges.as_ptr();
         let privileges = slice::from_raw_parts(privileges_ptr, count);
 
