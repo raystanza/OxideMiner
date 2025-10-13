@@ -7,11 +7,11 @@
 
 ![OxideMiner Logo](oxideminer_logo_transparent_256.png)
 
-**OxideMiner** is a **next-generation RandomX CPU miner** written entirely in **Rust** — engineered for _speed, safety, and full transparency_.
+**OxideMiner** is a **next-generation RandomX CPU miner** written entirely in **Rust**. Engineered for _speed, safety, and full transparency_.
 It’s built to squeeze every cycle from your CPU while keeping your system secure and predictable.
-No hidden payloads, no opaque binaries — just verifiable, auditable performance.
+No hidden payloads, no opaque binaries...just verifiable, auditable performance.
 
-Version **v0.1.0** ships a **command-line miner** with automatic CPU tuning, an **optional embedded dashboard**, and hardened controls for TLS, logging, and system friendliness. Every byte of it compiles from the code you see here.
+We ship a **command-line miner** with automatic CPU tuning, an **optional embedded dashboard**, and hardened controls for TLS, logging, and system friendliness. Every byte of it compiles from the code you see here.
 
 **Performance meets integrity.** OxideMiner is what happens when modern Rust engineering meets Monero’s RandomX algorithm. Optimized for real-world rigs and safe for production hosts.
 
@@ -65,7 +65,7 @@ Version **v0.1.0** ships a **command-line miner** with automatic CPU tuning, an 
 - 🪶 **Clean, structured logs:** Human-readable by default, detailed under `--debug`. Rotating log files keep long runs tidy.
 
 - 💎 **Transparent dev fee:** A fixed 1% developer fee, clearly logged and accounted for in metrics.
-  No stealth mining, no surprises — just honesty.
+  No stealth mining, no surprises, just honesty.
 
 - 📊 **Built-in dashboard (with themes!):** A modern, static web UI (HTML/CSS/JS fully embedded in the binary) shows hashrate, shares, uptime, connection state, and build metadata.
 
@@ -326,14 +326,14 @@ Use these to drive alerting or dashboards. All counters are updated atomically i
 ## Responsible usage
 
 - Mine only on hardware you own or administer with explicit permission.
-- Monitor CPU temperatures, power draw, and system stability—RandomX workloads sustain near-100% utilization.
+- Monitor CPU temperatures, power draw, and system stability as RandomX workloads sustain near-100% utilization.
 - Keep wallet addresses secure and rotate pool credentials if exposed.
 - Understand local regulations regarding cryptocurrency mining.
 - Be considerate on shared machines: leave `--no-yield` off unless you fully control the host, and size `--threads` to avoid starving other workloads.
 
 ## Developer notes
 
-OxideMiner’s architecture is clean and modular — optimized for contribution and inspection.
+OxideMiner’s architecture is clean and modular. It is optimized for contribution and inspection.
 Rust crates are separated into logical domains (`oxide-core` for the engine, `oxide-miner` for orchestration), ensuring the miner remains maintainable as it grows.
 
 ### Workspace layout
@@ -373,7 +373,7 @@ We welcome issues and pull requests focused on performance, stability, and obser
 1. Discuss significant ideas in a GitHub issue so design constraints are documented.
 2. Keep patches small and focused; document user-facing changes in the changelog once one exists.
 3. Run the commands above (`fmt`, `clippy`, `test`) to maintain build hygiene.
-4. Mention hardware, OS, and pool details when reporting performance data or bugs—it helps reproduce results.
+4. Mention hardware, OS, and pool details when reporting performance data or bugs (it helps reproduce results).
 
 ## License
 
