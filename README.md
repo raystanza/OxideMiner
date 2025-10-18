@@ -374,7 +374,7 @@ We welcome issues and pull requests focused on performance, stability, and obser
 
 ## License
 
-The workspace metadata declares OxideMiner under the MIT License (see the `license = "MIT"` entry in [Cargo.toml](Cargo.toml)). Please include the MIT terms when redistributing builds and open an issue if the standalone license text is missing for your use case.
+OxideMiner is distributed under the Business Source License 1.1. The `LICENSE` file spells out the parameters for the grant, including the Additional Use Grant, the Change Date (2028-01-01), and the Change License (MIT). Review those terms before redistributing builds or incorporating the code into other projects, and open an issue if you need a commercial license beyond the Additional Use Grant.
 
 ## Acknowledgments
 
