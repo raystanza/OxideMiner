@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: OxideMiner Security Reports
+    url: https://github.com/raystanza/OxideMiner/security/advisories/new
+    about: Please use the private advisory flow for security vulnerabilities.
+  - name: Community Discussions
+    url: https://github.com/raystanza/OxideMiner/discussions
+    about: Ask questions, share tuning data, and chat with the community.
