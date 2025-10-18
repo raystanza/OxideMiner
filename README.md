@@ -1,6 +1,9 @@
 # OxideMiner: High-Performance Monero (XMR) CPU Miner in Rust
 
 [![Release](https://github.com/raystanza/OxideMiner/actions/workflows/release.yml/badge.svg)](https://github.com/raystanza/OxideMiner/actions/workflows/release.yml)
+[![Version](https://img.shields.io/github/v/release/raystanza/OxideMiner?sort=semver)](https://github.com/raystanza/OxideMiner/releases)
+[![Downloads](https://img.shields.io/github/downloads/raystanza/OxideMiner/total)](https://github.com/raystanza/OxideMiner/releases)
+[![License](https://img.shields.io/badge/License-BSL_1.1-orange)](LICENSE)
 
 ![OxideMiner Logo](oxideminer_logo_transparent_256.png)
 
