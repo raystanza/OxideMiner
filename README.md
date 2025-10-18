@@ -374,7 +374,7 @@ We welcome issues and pull requests focused on performance, stability, and obser
 
 ## License
 
-OxideMiner is provided under the Business Source License 1.1. Non-production use—including evaluation, internal development, and testing—is permitted under the terms described in [LICENSE](LICENSE). On **2028-01-01** (or, for any given version, the fourth anniversary of its first public release under the BSL, whichever comes first), OxideMiner will transition to the MIT License as the Change License. Commercial production deployments before that date require a separate agreement with the Licensor, Jim Sines ([@raystanza](https://github.com/raystanza)).
+OxideMiner is provided under the Business Source License 1.1. Non-production use—including evaluation, internal development, and testing—is permitted under the terms described in [LICENSE](LICENSE). On **2030-01-01** (or, for any given version, the fourth anniversary of its first public release under the BSL, whichever comes first), OxideMiner will transition to the MIT License as the Change License. Commercial production deployments before that date require a separate agreement with the Licensor, Jim Sines ([@raystanza](https://github.com/raystanza)).
 
 ## Acknowledgments
 
