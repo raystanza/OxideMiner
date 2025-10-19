@@ -52,11 +52,9 @@ We ship a **command-line miner** with automatic CPU tuning, an **optional embedd
 
 > **TL;DR** OxideMiner aims to be _the most transparent, secure, and efficient RandomX CPU miner ever written in Rust._
 
-- ⚡ **Rust-first CPU miner:** Built from the ground up in Rust for memory safety and predictable performance; with **no C glue, no unsafe shortcuts**.
-  The `oxide-core` crate implements the RandomX hot loop, while `oxide-miner` orchestrates worker threads through Tokio for maximum throughput and minimal overhead.
+- ⚡ **Rust-first CPU miner:** Built from the ground up in Rust for memory safety and predictable performance; with **no C glue, no unsafe shortcuts**. The `oxide-core` crate implements the RandomX hot loop, while `oxide-miner` orchestrates worker threads through Tokio for maximum throughput and minimal overhead.
 
-- 🧠 **Auto-tuned intelligence:** At startup, OxideMiner introspects your CPU topology and cache sizes to pick the perfect thread count and batch size.
-  You can always override them so you can squeeze every last drop of performance from you CPU.
+- 🧠 **Auto-tuned intelligence:** At startup, OxideMiner introspects your CPU topology and cache sizes to pick the perfect thread count and batch size. You can always override them so you can squeeze every last drop of performance from you CPU.
 
 - 🔒 **TLS-ready stratum client:** Secure pool connectivity via `--tls`, with optional certificate pinning and custom CA support.
 
@@ -64,8 +62,7 @@ We ship a **command-line miner** with automatic CPU tuning, an **optional embedd
 
 - 🪶 **Clean, structured logs:** Human-readable by default, detailed under `--debug`. Rotating log files keep long runs tidy.
 
-- 💎 **Transparent dev fee:** A fixed 1% developer fee, clearly logged and accounted for in metrics.
-  No stealth mining, no surprises, just honesty.
+- 💎 **Transparent dev fee:** A fixed 1% developer fee, clearly logged and accounted for in metrics. No stealth mining, no surprises, just honesty.
 
 - 📊 **Built-in dashboard (with themes!):** A modern, static web UI (HTML/CSS/JS fully embedded in the binary) shows hashrate, shares, uptime, connection state, and build metadata.
 
@@ -138,8 +135,7 @@ GPG signatures (`.asc`). Always verify downloads before running them to protect 
 ### 1. Download the official artifacts
 
 1. Visit the [Releases](https://github.com/raystanza/OxideMiner/releases) page and choose the tag you want (for example, `v1.2.3`).
-2. Download the archive for your operating system and the accompanying checksum (`.sha256`). If signatures are available, download
-   the `.asc` files as well.
+2. Download the archive for your operating system and the accompanying checksum (`.sha256`). If signatures are available, download the `.asc` files as well.
 
 ### 2. Verify SHA-256 checksums
 
@@ -177,33 +173,35 @@ Compare the `Hash` field in the output with the value in the `.sha256` file. If 
 
 GPG signatures offer an additional guarantee that the release was produced by the OxideMiner maintainers.
 
-1. Import the OxideMiner release signing key. The maintainers publish it as `release-signing-key.asc` in this repository and on
-   public keyservers. For example:
+### 1. Import the OxideMiner release signing key
 
-   ```bash
-   # Linux / macOS
-   curl -O https://raw.githubusercontent.com/raystanza/OxideMiner/main/release-signing-key.asc
-   gpg --import release-signing-key.asc
+We include it as `release-subkey-ci-public-20251012.asc` in this repository and on [https://raystanza.uk](https://raystanza.uk).
 
-   # Or fetch it by fingerprint from a keyserver (replace with the published fingerprint)
-   gpg --keyserver hkps://keys.openpgp.org --recv-keys <MAINTAINER_FINGERPRINT>
-   ```
+```bash
+# Linux / macOS
+curl -O https://raw.githubusercontent.com/raystanza/OxideMiner/main/release-subkey-ci-public-20251012.asc
+gpg --import release-subkey-ci-public-20251012.asc
 
-2. Verify the signature for the archive (and the checksum file, if provided):
+# Or fetch it by fingerprint from a keyserver
+gpg --keyserver hkps://keys.openpgp.org --recv-keys FDA06CAE264DAC0D29B03F5195EDEDFDCB4DD826
+```
 
-   ```bash
-   gpg --verify oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.tar.gz.asc oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.tar.gz
-   gpg --verify oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.sha256.asc oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.sha256
-   ```
+### 2. Verify the signature for the archive (and the checksum file, if provided)
 
-   On Windows PowerShell, use the same commands inside `gpg` (installed with Git for Windows or Gpg4win):
+```bash
+gpg --verify oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.tar.gz.asc oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.tar.gz
+gpg --verify oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.sha256.asc oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.sha256
+```
 
-   ```powershell
-   gpg --verify oxide-miner-v1.2.3-x86_64-pc-windows-msvc.zip.asc oxide-miner-v1.2.3-x86_64-pc-windows-msvc.zip
-   ```
+On Windows PowerShell, use the same commands inside `gpg` (installed with Git for Windows or Gpg4win):
 
-3. Confirm the signing key’s fingerprint matches the fingerprint published by the project maintainers. If it does not, discard
-   the artifacts and investigate before proceeding.
+```powershell
+gpg --verify oxide-miner-v1.2.3-x86_64-pc-windows-msvc.zip.asc oxide-miner-v1.2.3-x86_64-pc-windows-msvc.zip
+```
+
+### 3. Confirm the signing key’s fingerprint matches the fingerprint published by the project maintainer ([@raystanza](https://github.com/raystanza/))
+
+**If it does not**, discard the artifacts and investigate before proceeding!
 
 Only run the miner when both the checksum and signature verifications succeed. This defense-in-depth approach reduces exposure to
 malicious mirrors and supply-chain attacks.
