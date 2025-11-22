@@ -36,6 +36,48 @@ pub struct Config {
     pub agent: String,
     /// optional SOCKS5 proxy URL (socks5://[user:pass@]host:port)
     pub proxy: Option<String>,
+    /// optional Tari merge mining support
+    pub tari: TariMergeMiningConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TariMergeMiningConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_proxy_url")]
+    pub proxy_url: String,
+    /// Optional Monero address passed to the merge-mining proxy when it expects a Monero-compatible
+    /// `get_block_template` call (used as a fallback if the Tari JSON-RPC method is unavailable).
+    #[serde(default)]
+    pub monero_wallet_address: Option<String>,
+    #[serde(default = "default_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+    #[serde(default = "default_backoff_secs")]
+    pub backoff_secs: u64,
+}
+
+fn default_proxy_url() -> String {
+    "http://127.0.0.1:18089".to_string()
+}
+
+fn default_request_timeout_secs() -> u64 {
+    10
+}
+
+fn default_backoff_secs() -> u64 {
+    5
+}
+
+impl Default for TariMergeMiningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            proxy_url: default_proxy_url(),
+            monero_wallet_address: None,
+            request_timeout_secs: default_request_timeout_secs(),
+            backoff_secs: default_backoff_secs(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -56,6 +98,7 @@ impl Default for Config {
             yield_between_batches: true,
             agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
             proxy: None,
+            tari: TariMergeMiningConfig::default(),
         }
     }
 }
@@ -81,5 +124,7 @@ mod tests {
         assert!(cfg.yield_between_batches);
         assert!(cfg.agent.starts_with("OxideMiner/"));
         assert!(cfg.proxy.is_none());
+        assert!(!cfg.tari.enabled);
+        assert_eq!(cfg.tari.proxy_url, "http://127.0.0.1:18089");
     }
 }

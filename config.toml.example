@@ -21,6 +21,12 @@
 # Route pool traffic through a SOCKS5 proxy (useful for Tor/VPN privacy)
 #proxy = "socks5://127.0.0.1:9050"
 
+# Enable Tari merge mining through the local minotari_merge_mining_proxy
+#tari_merge_mining = false
+#tari_proxy_url = "http://127.0.0.1:18089"
+# Optional Monero address to supply when the proxy requires a Monero-style get_block_template
+#tari_monero_wallet = "48..."
+
 # Number of mining threads.
 # Omit this key to auto-tune based on CPU/cache heuristics (recommended).
 # For maximum performace set this to the total number of threads your cpu(s) have.

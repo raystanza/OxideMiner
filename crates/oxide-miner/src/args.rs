@@ -98,6 +98,19 @@ pub struct Args {
     /// Route pool connections through a SOCKS5 proxy (socks5://[user:pass@]host:port)
     #[arg(long = "proxy", value_name = "URL", value_hint = ValueHint::Url)]
     pub proxy: Option<String>,
+
+    /// Enable Tari merge mining via minotari_merge_mining_proxy
+    #[arg(long = "tari-merge-mining")]
+    pub tari_merge_mining: bool,
+
+    /// URL of the minotari merge mining proxy (e.g. http://127.0.0.1:18089)
+    #[arg(long = "tari-proxy-url", value_hint = ValueHint::Url, default_value = "http://127.0.0.1:18089")]
+    pub tari_proxy_url: String,
+
+    /// Monero address to supply when the merge-mining proxy expects a Monero-compatible
+    /// get_block_template fallback.
+    #[arg(long = "tari-monero-wallet", value_name = "XMR_ADDRESS")]
+    pub tari_monero_wallet: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -119,6 +132,9 @@ pub struct ConfigFile {
     pub no_yield: Option<bool>,
     pub debug: Option<bool>,
     pub proxy: Option<String>,
+    pub tari_merge_mining: Option<bool>,
+    pub tari_proxy_url: Option<String>,
+    pub tari_monero_wallet: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +275,24 @@ fn apply_config_defaults(
     if let Some(pass) = config.pass.as_ref() {
         if !has_arg(original_args, Some("p"), Some("pass")) {
             push_value(args, "--pass", pass.as_str());
+        }
+    }
+
+    if let Some(tari) = config.tari_merge_mining {
+        if tari && !has_arg(original_args, None, Some("tari-merge-mining")) {
+            args.push(OsString::from("--tari-merge-mining"));
+        }
+    }
+
+    if let Some(proxy_url) = config.tari_proxy_url.as_ref() {
+        if !has_arg(original_args, None, Some("tari-proxy-url")) {
+            push_value(args, "--tari-proxy-url", proxy_url.as_str());
+        }
+    }
+
+    if let Some(wallet) = config.tari_monero_wallet.as_ref() {
+        if !has_arg(original_args, None, Some("tari-monero-wallet")) {
+            push_value(args, "--tari-monero-wallet", wallet.as_str());
         }
     }
 
