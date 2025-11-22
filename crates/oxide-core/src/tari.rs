@@ -4,7 +4,7 @@ use crate::config::TariMergeMiningConfig;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
-use tracing::warn;
+use tracing::{debug, warn};
 use uint::construct_uint;
 
 construct_uint! {
@@ -83,6 +83,8 @@ pub enum TariClientError {
     InvalidDifficulty,
     #[error("proxy response missing Tari merge-mining aux data")]
     MissingAuxData,
+    #[error("malformed proxy response: {0}")]
+    MalformedResponse(String),
 }
 
 /// Parsed Monero merge-mining payload extracted from `pow_data` (RFC-0131 §Merge Mining Data).
@@ -100,6 +102,44 @@ pub struct MergeMiningPowData {
     pub monero_coinbase_merkle_proof: Vec<u8>,
     /// Full Monero coinbase transaction bytes.
     pub monero_coinbase_tx: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct MoneroCompatTemplate {
+    #[serde(default)]
+    difficulty: Option<u64>,
+    #[serde(default)]
+    height: Option<u64>,
+    #[serde(default)]
+    blockhashing_blob: Option<String>,
+    #[serde(default)]
+    blocktemplate_blob: Option<String>,
+    #[serde(default, rename = "_aux")]
+    aux: Option<MoneroAuxData>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct MoneroAuxData {
+    #[serde(default)]
+    base_difficulty: Option<u64>,
+    #[serde(default)]
+    chains: Option<Vec<MoneroAuxChain>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct MoneroAuxChain {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    difficulty: Option<u64>,
+    #[serde(default)]
+    height: Option<u64>,
+    #[serde(default)]
+    mining_hash: Option<String>,
+    #[serde(default)]
+    miner_reward: Option<u64>,
 }
 
 /// Lightweight async client for the Tari merge mining proxy.
@@ -244,48 +284,6 @@ impl TariMergeMiningClient {
             message: String,
         }
 
-        #[derive(Deserialize, Default)]
-        struct TemplateResultCompat {
-            #[serde(default)]
-            result: Option<TemplateBody>,
-        }
-
-        #[derive(Deserialize, Default)]
-        struct TemplateBody {
-            #[serde(default)]
-            difficulty: Option<u64>,
-            #[serde(default)]
-            height: Option<u64>,
-            #[serde(default)]
-            blockhashing_blob: Option<String>,
-            #[serde(default)]
-            blocktemplate_blob: Option<String>,
-            #[serde(default, rename = "_aux")]
-            aux: Option<AuxData>,
-        }
-
-        #[derive(Deserialize, Default)]
-        struct AuxData {
-            #[serde(default)]
-            base_difficulty: Option<u64>,
-            #[serde(default)]
-            chains: Option<Vec<AuxChain>>,
-        }
-
-        #[derive(Deserialize, Default)]
-        struct AuxChain {
-            #[serde(default)]
-            id: Option<String>,
-            #[serde(default)]
-            difficulty: Option<u64>,
-            #[serde(default)]
-            height: Option<u64>,
-            #[serde(default)]
-            mining_hash: Option<String>,
-            #[serde(default)]
-            miner_reward: Option<u64>,
-        }
-
         let wallet_address = self.monero_wallet_address.as_deref().unwrap_or_default();
 
         if wallet_address.is_empty() {
@@ -312,15 +310,24 @@ impl TariMergeMiningClient {
             .send()
             .await?;
 
-        let body: RpcResponse<TemplateResultCompat> = resp.json().await?;
+        let body: RpcResponse<MoneroCompatTemplate> = resp.json().await?;
         if let Some(err) = body.error {
             return Err(TariClientError::Proxy(err.message));
         }
 
-        let compat = body.result.ok_or(TariClientError::Unexpected)?;
-        let result = compat.result.ok_or(TariClientError::Unexpected)?;
-        let aux = result.aux.ok_or(TariClientError::MissingAuxData)?;
-        let chains = aux.chains.ok_or(TariClientError::MissingAuxData)?;
+        let compat = body
+            .result
+            .ok_or_else(|| TariClientError::MalformedResponse("missing result".into()))?;
+
+        self.parse_monero_compat_template(compat)
+    }
+
+    fn parse_monero_compat_template(
+        &self,
+        result: MoneroCompatTemplate,
+    ) -> Result<MergeMiningTemplate, TariClientError> {
+        let aux = result.aux.ok_or_else(|| TariClientError::MissingAuxData)?;
+        let chains = aux.chains.ok_or_else(|| TariClientError::MissingAuxData)?;
         let mut chains_iter = chains.into_iter();
         let chain = chains_iter
             .find(|c| c.id.as_deref().unwrap_or_default() == "tari")
@@ -329,6 +336,7 @@ impl TariMergeMiningClient {
 
         let target_difficulty = chain
             .difficulty
+            .or(aux.base_difficulty)
             .or(result.difficulty)
             .ok_or(TariClientError::InvalidDifficulty)?;
         let target = difficulty_to_target_bytes(target_difficulty)?;
@@ -336,7 +344,23 @@ impl TariMergeMiningClient {
         let template_id = chain
             .mining_hash
             .or_else(|| result.blockhashing_blob.clone())
+            .or_else(|| result.blocktemplate_blob.clone())
             .unwrap_or_else(|| "tari-template".to_string());
+
+        if let Some(status) = result.status {
+            if status.eq_ignore_ascii_case("fail") {
+                return Err(TariClientError::Proxy(
+                    "merge-mining proxy returned failure status".into(),
+                ));
+            }
+        }
+
+        if let Some(reward) = chain.miner_reward {
+            debug!(
+                target_difficulty,
+                reward, "received Tari aux chain reward estimate"
+            );
+        }
 
         Ok(MergeMiningTemplate {
             template_id,
@@ -597,5 +621,48 @@ mod tests {
         // difficulty 1 yields max target (all 0xFF)
         assert!(target.iter().all(|b| *b == 0xFF));
         assert!(difficulty_to_target_bytes(0).is_err());
+    }
+
+    #[test]
+    fn parses_monero_compat_template_with_aux_chain() {
+        let client = TariMergeMiningClient::new(crate::config::TariMergeMiningConfig::default())
+            .expect("client constructs with defaults");
+
+        let compat = MoneroCompatTemplate {
+            difficulty: Some(1234),
+            height: Some(42),
+            blockhashing_blob: Some("blockhashing".into()),
+            blocktemplate_blob: Some("blocktemplate".into()),
+            status: Some("OK".into()),
+            aux: Some(MoneroAuxData {
+                base_difficulty: Some(9999),
+                chains: Some(vec![MoneroAuxChain {
+                    id: Some("tari".into()),
+                    difficulty: Some(5555),
+                    height: Some(77),
+                    mining_hash: Some("mining-hash".into()),
+                    miner_reward: Some(123_456),
+                }]),
+            }),
+        };
+
+        let tpl = client
+            .parse_monero_compat_template(compat)
+            .expect("valid aux data should parse");
+
+        assert_eq!(tpl.template_id, "mining-hash");
+        assert_eq!(tpl.height, 77);
+        assert_eq!(tpl.target_difficulty, 5555);
+        assert_eq!(tpl.pow_algo, PowAlgorithm::Monero);
+    }
+
+    #[test]
+    fn fails_without_aux_chain_data() {
+        let client = TariMergeMiningClient::new(crate::config::TariMergeMiningConfig::default())
+            .expect("client constructs with defaults");
+
+        let compat = MoneroCompatTemplate::default();
+        let err = client.parse_monero_compat_template(compat).unwrap_err();
+        assert!(matches!(err, TariClientError::MissingAuxData));
     }
 }
