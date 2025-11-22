@@ -23,7 +23,7 @@
 
 # Enable Tari merge mining through the local minotari_merge_mining_proxy
 #tari_merge_mining = false
-#tari_proxy_url = "http://127.0.0.1:18089"
+#tari_proxy_url = "http://127.0.0.1:18081"
 
 # Number of mining threads.
 # Omit this key to auto-tune based on CPU/cache heuristics (recommended).

@@ -81,7 +81,7 @@ pub struct MergeMiningPowData {
 
 /// Lightweight async client for the Tari merge mining proxy.
 ///
-/// The proxy exposes a JSON-RPC endpoint (default `http://127.0.0.1:18089/json_rpc`). This client
+/// The proxy exposes a JSON-RPC endpoint (default `http://127.0.0.1:18081/json_rpc`). This client
 /// implements the minimum calls needed for merge mining per RFC-0131: fetch a template restricted
 /// to `Monero` PoW and submit a merge-mined solution tied to that template ID.
 #[derive(Clone)]

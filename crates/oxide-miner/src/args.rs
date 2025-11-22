@@ -103,8 +103,8 @@ pub struct Args {
     #[arg(long = "tari-merge-mining")]
     pub tari_merge_mining: bool,
 
-    /// URL of the minotari merge mining proxy (e.g. http://127.0.0.1:18089)
-    #[arg(long = "tari-proxy-url", value_hint = ValueHint::Url, default_value = "http://127.0.0.1:18089")]
+    /// URL of the minotari merge mining proxy (e.g. http://127.0.0.1:18081)
+    #[arg(long = "tari-proxy-url", value_hint = ValueHint::Url, default_value = "http://127.0.0.1:18081")]
     pub tari_proxy_url: String,
 }
 

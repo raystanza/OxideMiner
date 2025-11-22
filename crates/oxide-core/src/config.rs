@@ -53,7 +53,7 @@ pub struct TariMergeMiningConfig {
 }
 
 fn default_proxy_url() -> String {
-    "http://127.0.0.1:18089".to_string()
+    "http://127.0.0.1:18081".to_string()
 }
 
 fn default_request_timeout_secs() -> u64 {
@@ -120,6 +120,6 @@ mod tests {
         assert!(cfg.agent.starts_with("OxideMiner/"));
         assert!(cfg.proxy.is_none());
         assert!(!cfg.tari.enabled);
-        assert_eq!(cfg.tari.proxy_url, "http://127.0.0.1:18089");
+        assert_eq!(cfg.tari.proxy_url, "http://127.0.0.1:18081");
     }
 }
