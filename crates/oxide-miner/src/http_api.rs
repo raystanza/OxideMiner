@@ -138,6 +138,8 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             let rejected = s.rejected.load(Ordering::Relaxed);
                             let dev_acc = s.dev_accepted.load(Ordering::Relaxed);
                             let dev_rej = s.dev_rejected.load(Ordering::Relaxed);
+                            let tari_acc = s.tari_accepted.load(Ordering::Relaxed);
+                            let tari_rej = s.tari_rejected.load(Ordering::Relaxed);
                             let hashes = s.hashes.load(Ordering::Relaxed);
                             let hashrate = s.hashrate();
                             let connected = if s.pool_connected.load(Ordering::Relaxed) {
@@ -153,6 +155,8 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             writeln!(body, "oxide_shares_rejected_total {}", rejected).ok();
                             writeln!(body, "oxide_devfee_shares_accepted_total {}", dev_acc).ok();
                             writeln!(body, "oxide_devfee_shares_rejected_total {}", dev_rej).ok();
+                            writeln!(body, "oxide_tari_shares_accepted_total {}", tari_acc).ok();
+                            writeln!(body, "oxide_tari_shares_rejected_total {}", tari_rej).ok();
                             writeln!(body, "oxide_pool_connected {}", connected).ok();
                             writeln!(body, "oxide_tls_enabled {}", tls).ok();
                             writeln!(body, "version {}", env!("CARGO_PKG_VERSION")).ok();
@@ -192,6 +196,10 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             let rejected = s.rejected.load(Ordering::Relaxed);
                             let dev_acc = s.dev_accepted.load(Ordering::Relaxed);
                             let dev_rej = s.dev_rejected.load(Ordering::Relaxed);
+                            let tari_acc = s.tari_accepted.load(Ordering::Relaxed);
+                            let tari_rej = s.tari_rejected.load(Ordering::Relaxed);
+                            let tari_height = s.tari_height.load(Ordering::Relaxed);
+                            let tari_difficulty = s.tari_difficulty.load(Ordering::Relaxed);
                             let hashes = s.hashes.load(Ordering::Relaxed);
                             let hashrate = s.hashrate();
                             let mining_duration = s.mining_duration();
@@ -217,6 +225,13 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                                     "rejected": rejected,
                                     "dev_accepted": dev_acc,
                                     "dev_rejected": dev_rej,
+                                    "tari_accepted": tari_acc,
+                                    "tari_rejected": tari_rej,
+                                },
+                                "tari": {
+                                    "enabled": s.tari_enabled,
+                                    "height": tari_height,
+                                    "difficulty": tari_difficulty,
                                 },
                                 "timing": {
                                     "mining_time_seconds": mining_duration.as_secs(),
@@ -298,7 +313,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false));
+        let stats = Arc::new(Stats::new("pool".into(), false, false));
         stats.accepted.store(5, Ordering::Relaxed);
         stats.rejected.store(2, Ordering::Relaxed);
         stats.dev_accepted.store(1, Ordering::Relaxed);
@@ -343,7 +358,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false));
+        let stats = Arc::new(Stats::new("pool".into(), false, false));
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("img")).unwrap();
@@ -392,7 +407,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false));
+        let stats = Arc::new(Stats::new("pool".into(), false, false));
         let server = tokio::spawn(run_http_api(port, stats, None));
         sleep(Duration::from_millis(50)).await;
 

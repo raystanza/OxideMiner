@@ -9,8 +9,8 @@ use oxide_core::config::DEFAULT_BATCH_SIZE;
 use oxide_core::stratum::{ConnectConfig, PoolJob};
 use oxide_core::worker::{Share, WorkItem, WorkerSpawnConfig};
 use oxide_core::{
-    autotune_snapshot, spawn_workers, Config, DevFeeScheduler, HugePageStatus, ProxyConfig,
-    StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
+    autotune_snapshot, spawn_workers, Config, DevFeeScheduler, HugePageStatus, MergeMiningTemplate,
+    ProxyConfig, StratumClient, TariMergeMiningClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -80,6 +80,8 @@ struct ShareContext<'a> {
     pending_shares: &'a mut HashMap<u64, PendingShare>,
     jobs_tx: &'a tokio::sync::broadcast::Sender<WorkItem>,
     dev_scheduler: &'a mut DevFeeScheduler,
+    tari_client: Option<&'a TariMergeMiningClient>,
+    tari_templates: &'a mut HashMap<String, MergeMiningTemplate>,
 }
 
 pub async fn run(args: Args) -> Result<()> {
@@ -284,6 +286,11 @@ pub async fn run(args: Args) -> Result<()> {
         yield_between_batches: !args.no_yield,
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
         proxy: args.proxy.clone(),
+        tari: oxide_core::config::TariMergeMiningConfig {
+            enabled: args.tari_merge_mining,
+            proxy_url: args.tari_proxy_url.clone(),
+            ..Default::default()
+        },
     };
 
     let proxy_cfg = cfg
@@ -400,7 +407,19 @@ pub async fn run(args: Args) -> Result<()> {
         tracing::info!("auto-selected {} worker threads", n_workers);
     }
 
-    let stats = Arc::new(Stats::new(cfg.pool.clone(), cfg.tls));
+    let stats = Arc::new(Stats::new(cfg.pool.clone(), cfg.tls, cfg.tari.enabled));
+    let tari_client = if cfg.tari.enabled {
+        match TariMergeMiningClient::new(cfg.tari.clone()) {
+            Ok(client) => Some(client),
+            Err(e) => {
+                tracing::warn!("failed to initialize Tari merge mining client: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut tari_templates: HashMap<String, MergeMiningTemplate> = HashMap::new();
 
     let tls = cfg.tls;
     let tls_ca_cert = cfg.tls_ca_cert.clone();
@@ -491,6 +510,8 @@ pub async fn run(args: Args) -> Result<()> {
                 let mut active_pool = ActivePool::User;
 
                 if let Some(job) = initial_job {
+                    let tari_template =
+                        maybe_fetch_tari_template(tari_client.as_ref(), &stats).await;
                     let job_id = broadcast_job(
                         job,
                         active_pool.is_dev(),
@@ -498,6 +519,8 @@ pub async fn run(args: Args) -> Result<()> {
                         &jobs_tx,
                         &mut valid_job_ids,
                         &mut seen_nonces,
+                        &mut tari_templates,
+                        tari_template,
                     );
                     if scheduler_tick(&mut dev_scheduler, &job_id, active_pool) {
                         let counter = dev_scheduler.counter();
@@ -537,6 +560,8 @@ pub async fn run(args: Args) -> Result<()> {
                                         pending_shares: &mut pending_shares,
                                         jobs_tx: &jobs_tx,
                                         dev_scheduler: &mut dev_scheduler,
+                                        tari_client: tari_client.as_ref(),
+                                        tari_templates: &mut tari_templates,
                                     },
                                     user_connection,
                                 )
@@ -553,8 +578,12 @@ pub async fn run(args: Args) -> Result<()> {
                                     &mut valid_job_ids,
                                     &mut seen_nonces,
                                     &mut pending_shares,
+                                    &mut tari_templates,
                                 );
                                 if let Some(job) = dev_job {
+                                    let tari_template =
+                                        maybe_fetch_tari_template(tari_client.as_ref(), &stats)
+                                            .await;
                                     let dev_job_id = broadcast_job(
                                         job,
                                         true,
@@ -562,6 +591,8 @@ pub async fn run(args: Args) -> Result<()> {
                                         &jobs_tx,
                                         &mut valid_job_ids,
                                         &mut seen_nonces,
+                                        &mut tari_templates,
+                                        tari_template,
                                     );
                                     tracing::info!(job_id = %dev_job_id, "devfee activated for job");
                                     let _ = scheduler_tick(
@@ -596,12 +627,14 @@ pub async fn run(args: Args) -> Result<()> {
                                             active_pool: &mut active_pool,
                                             valid_job_ids: &mut valid_job_ids,
                                             seen_nonces: &mut seen_nonces,
-                                            pending_shares: &mut pending_shares,
-                                            jobs_tx: &jobs_tx,
-                                            dev_scheduler: &mut dev_scheduler,
-                                        },
-                                        user_connection,
-                                    )
+                                        pending_shares: &mut pending_shares,
+                                        jobs_tx: &jobs_tx,
+                                        dev_scheduler: &mut dev_scheduler,
+                                        tari_client: tari_client.as_ref(),
+                                        tari_templates: &mut tari_templates,
+                                    },
+                                    user_connection,
+                                )
                                     .await
                                     {
                                         tracing::warn!("reconnect failed (devfee -> user): {e}");
@@ -626,6 +659,11 @@ pub async fn run(args: Args) -> Result<()> {
                                         if let Some(params) = v.get("params") {
                                             if let Ok(job) = serde_json::from_value::<PoolJob>(params.clone()) {
                                                 let clean = params.get("clean_jobs").and_then(|x| x.as_bool()).unwrap_or(true);
+                                                let tari_template = maybe_fetch_tari_template(
+                                                    tari_client.as_ref(),
+                                                    &stats,
+                                                )
+                                                .await;
                                                 let job_id = broadcast_job(
                                                     job,
                                                     active_pool.is_dev(),
@@ -633,6 +671,8 @@ pub async fn run(args: Args) -> Result<()> {
                                                     &jobs_tx,
                                                     &mut valid_job_ids,
                                                     &mut seen_nonces,
+                                                    &mut tari_templates,
+                                                    tari_template,
                                                 );
                                                 trigger_dev = scheduler_tick(&mut dev_scheduler, &job_id, active_pool);
                                                 if trigger_dev {
@@ -674,12 +714,14 @@ pub async fn run(args: Args) -> Result<()> {
                                                             active_pool: &mut active_pool,
                                                             valid_job_ids: &mut valid_job_ids,
                                                             seen_nonces: &mut seen_nonces,
-                                                            pending_shares: &mut pending_shares,
-                                                            jobs_tx: &jobs_tx,
-                                                            dev_scheduler: &mut dev_scheduler,
-                                                        },
-                                                        user_connection,
-                                                    )
+                                                    pending_shares: &mut pending_shares,
+                                                    jobs_tx: &jobs_tx,
+                                                    dev_scheduler: &mut dev_scheduler,
+                                                    tari_client: tari_client.as_ref(),
+                                                    tari_templates: &mut tari_templates,
+                                                },
+                                                user_connection,
+                                            )
                                                     .await
                                                     {
                                                         tracing::warn!(
@@ -689,8 +731,19 @@ pub async fn run(args: Args) -> Result<()> {
                                                     }
                                                     client = new_client;
                                                     active_pool = ActivePool::Dev;
-                                                    reset_session(&mut valid_job_ids, &mut seen_nonces, &mut pending_shares);
+                                                    reset_session(
+                                                        &mut valid_job_ids,
+                                                        &mut seen_nonces,
+                                                        &mut pending_shares,
+                                                        &mut tari_templates,
+                                                    );
                                                     if let Some(job) = job_opt {
+                                                        let tari_template =
+                                                            maybe_fetch_tari_template(
+                                                                tari_client.as_ref(),
+                                                                &stats,
+                                                            )
+                                                            .await;
                                                         let job_id = broadcast_job(
                                                             job,
                                                             true,
@@ -698,6 +751,8 @@ pub async fn run(args: Args) -> Result<()> {
                                                             &jobs_tx,
                                                             &mut valid_job_ids,
                                                             &mut seen_nonces,
+                                                            &mut tari_templates,
+                                                            tari_template,
                                                         );
                                                         tracing::info!(job_id = %job_id, "devfee activated for job");
                                                         let _ = scheduler_tick(&mut dev_scheduler, &job_id, active_pool);
@@ -806,6 +861,8 @@ pub async fn run(args: Args) -> Result<()> {
                                                         pending_shares: &mut pending_shares,
                                                         jobs_tx: &jobs_tx,
                                                         dev_scheduler: &mut dev_scheduler,
+                                                        tari_client: tari_client.as_ref(),
+                                                        tari_templates: &mut tari_templates,
                                                     },
                                                     user_connection,
                                                 )
@@ -886,16 +943,22 @@ fn broadcast_job(
     jobs_tx: &tokio::sync::broadcast::Sender<WorkItem>,
     valid_job_ids: &mut HashSet<String>,
     seen_nonces: &mut HashMap<String, HashSet<u32>>,
+    tari_templates: &mut HashMap<String, MergeMiningTemplate>,
+    tari_template: Option<MergeMiningTemplate>,
 ) -> String {
     if clean_jobs {
         valid_job_ids.clear();
         seen_nonces.clear();
+        tari_templates.clear();
     }
 
     job.cache_target();
     let job_id = job.job_id.clone();
     let _ = jobs_tx.send(WorkItem { job, is_devfee });
     valid_job_ids.insert(job_id.clone());
+    if let Some(template) = tari_template {
+        tari_templates.insert(job_id.clone(), template);
+    }
     job_id
 }
 
@@ -912,14 +975,39 @@ fn scheduler_tick(scheduler: &mut DevFeeScheduler, job_id: &str, active_pool: Ac
     donate && matches!(active_pool, ActivePool::User)
 }
 
+async fn maybe_fetch_tari_template(
+    client: Option<&TariMergeMiningClient>,
+    stats: &Arc<Stats>,
+) -> Option<MergeMiningTemplate> {
+    let Some(client) = client else {
+        return None;
+    };
+
+    match client.fetch_template().await {
+        Ok(template) => {
+            stats.tari_height.store(template.height, Ordering::Relaxed);
+            stats
+                .tari_difficulty
+                .store(template.target_difficulty, Ordering::Relaxed);
+            Some(template)
+        }
+        Err(e) => {
+            tracing::warn!("Tari merge mining template fetch failed: {e}");
+            None
+        }
+    }
+}
+
 fn reset_session(
     valid_job_ids: &mut HashSet<String>,
     seen_nonces: &mut HashMap<String, HashSet<u32>>,
     pending_shares: &mut HashMap<u64, PendingShare>,
+    tari_templates: &mut HashMap<String, MergeMiningTemplate>,
 ) {
     valid_job_ids.clear();
     seen_nonces.clear();
     pending_shares.clear();
+    tari_templates.clear();
 }
 
 async fn handle_shares(
@@ -937,6 +1025,8 @@ async fn handle_shares(
         pending_shares,
         jobs_tx,
         dev_scheduler,
+        tari_client,
+        tari_templates,
     } = context;
     let mut reconnect_user = false;
 
@@ -949,6 +1039,8 @@ async fn handle_shares(
             valid_job_ids,
             seen_nonces,
             pending_shares,
+            tari_client,
+            tari_templates,
         )
         .await;
     }
@@ -964,6 +1056,8 @@ async fn handle_shares(
                     valid_job_ids,
                     seen_nonces,
                     pending_shares,
+                    tari_client,
+                    tari_templates,
                 )
                 .await;
             }
@@ -986,6 +1080,8 @@ async fn handle_shares(
                 pending_shares,
                 jobs_tx,
                 dev_scheduler,
+                tari_client,
+                tari_templates,
             },
             connection,
         )
@@ -1003,6 +1099,8 @@ async fn submit_share_internal(
     valid_job_ids: &mut HashSet<String>,
     seen_nonces: &mut HashMap<String, HashSet<u32>>,
     pending_shares: &mut HashMap<u64, PendingShare>,
+    tari_client: Option<&TariMergeMiningClient>,
+    tari_templates: &mut HashMap<String, MergeMiningTemplate>,
 ) -> bool {
     if !valid_job_ids.contains(&share.job_id) {
         tracing::debug!(
@@ -1030,10 +1128,28 @@ async fn submit_share_internal(
         nonce_hex = %nonce_hex,
         result_hex = %result_hex,
         is_devfee = share.is_devfee,
-        "submit_share"
+        "submit_share",
     );
 
     let mut reconnect_user = false;
+    if let Some(client) = tari_client {
+        if let Some(tpl) = tari_templates.get(&share.job_id) {
+            match client.submit_solution(tpl, &nonce_hex, &result_hex).await {
+                Ok(_) => {
+                    stats.tari_accepted.fetch_add(1, Ordering::Relaxed);
+                    stats.tari_height.store(tpl.height, Ordering::Relaxed);
+                    stats
+                        .tari_difficulty
+                        .store(tpl.target_difficulty, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    stats.tari_rejected.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(job_id = %share.job_id, error = %e, "failed to submit Tari merge-mining solution");
+                }
+            }
+        }
+    }
+
     match client
         .submit_share(&share.job_id, &nonce_hex, &result_hex)
         .await
@@ -1077,16 +1193,28 @@ async fn reconnect_user_pool(
         pending_shares,
         jobs_tx,
         dev_scheduler,
+        tari_client,
+        tari_templates,
     } = context;
     let (new_client, job_opt) = connect_with_retries(connection, 5, "user").await?;
 
     *client = new_client;
     *active_pool = ActivePool::User;
-    reset_session(valid_job_ids, seen_nonces, pending_shares);
+    reset_session(valid_job_ids, seen_nonces, pending_shares, tari_templates);
     stats.pool_connected.store(true, Ordering::Relaxed);
 
     if let Some(job) = job_opt {
-        let job_id = broadcast_job(job, false, true, jobs_tx, valid_job_ids, seen_nonces);
+        let tari_template = maybe_fetch_tari_template(tari_client, stats).await;
+        let job_id = broadcast_job(
+            job,
+            false,
+            true,
+            jobs_tx,
+            valid_job_ids,
+            seen_nonces,
+            tari_templates,
+            tari_template,
+        );
         let _ = scheduler_tick(dev_scheduler, &job_id, *active_pool);
     }
 
