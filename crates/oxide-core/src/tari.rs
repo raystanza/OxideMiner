@@ -32,11 +32,13 @@ pub struct MergeMiningTemplate {
     /// mining selection rules).
     pub pow_algo: PowAlgorithm,
     /// Serialized PoW data (hex-encoded) embedded in the Tari header as per RFC-0131 §Merge Mining
-    /// Data. This contains the Monero header + merkle data needed for validation.
-    pub pow_data_hex: String,
+    /// Data. This contains the Monero header + merkle data needed for validation. Monero-compatible
+    /// proxy responses may omit this; in that case it remains `None` and submissions rely on the
+    /// proxy’s stored template (RFC-0131 notes the proxy can reconstruct the header from its cache).
+    pub pow_data_hex: Option<String>,
     /// Parsed Monero merge-mining payload (length-checked against RFC-0131 §Merge Mining data
     /// ordering requirements).
-    pub pow_data: MergeMiningPowData,
+    pub pow_data: Option<MergeMiningPowData>,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +81,8 @@ pub enum TariClientError {
     InvalidPowData,
     #[error("invalid difficulty (zero or overflow) from proxy")]
     InvalidDifficulty,
+    #[error("proxy response missing Tari merge-mining aux data")]
+    MissingAuxData,
 }
 
 /// Parsed Monero merge-mining payload extracted from `pow_data` (RFC-0131 §Merge Mining Data).
@@ -128,13 +132,15 @@ impl TariMergeMiningClient {
     /// Fetches a merge-mining template constrained to `pow_algo = Monero` (RFC-0131 §Merge
     /// Mining). Validates that the returned template is merge-mineable and contains PoW data.
     pub async fn fetch_template(&self) -> Result<MergeMiningTemplate, TariClientError> {
-        match self.fetch_template_direct().await {
+        match self.fetch_template_monero_compat().await {
             Err(TariClientError::Proxy(msg)) if msg.contains("Method not found") => {
+                // Older proxies/base nodes may still expose `get_new_block_template`; try it if the
+                // Monero-compatible surface is unavailable.
                 warn!(
-                    "get_new_block_template unavailable at {}; attempting Monero-compatible get_block_template fallback",
+                    "get_block_template unavailable at {}; attempting Tari get_new_block_template",
                     self.base_url
                 );
-                self.fetch_template_monero_compat().await
+                self.fetch_template_direct().await
             }
             other => other,
         }
@@ -203,8 +209,8 @@ impl TariMergeMiningClient {
             target_difficulty: tpl.target_difficulty,
             target,
             pow_algo: tpl.header.pow.pow_algo,
-            pow_data_hex: tpl.header.pow.pow_data,
-            pow_data,
+            pow_data_hex: Some(tpl.header.pow.pow_data),
+            pow_data: Some(pow_data),
         })
     }
 
@@ -241,9 +247,43 @@ impl TariMergeMiningClient {
         #[derive(Deserialize, Default)]
         struct TemplateResultCompat {
             #[serde(default)]
-            tari: Option<TemplateResult>,
-            #[serde(default, rename = "merge_mining")]
-            merge_mining: Option<TemplateResult>,
+            result: Option<TemplateBody>,
+        }
+
+        #[derive(Deserialize, Default)]
+        struct TemplateBody {
+            #[serde(default)]
+            difficulty: Option<u64>,
+            #[serde(default)]
+            height: Option<u64>,
+            #[serde(default)]
+            blockhashing_blob: Option<String>,
+            #[serde(default)]
+            blocktemplate_blob: Option<String>,
+            #[serde(default, rename = "_aux")]
+            aux: Option<AuxData>,
+        }
+
+        #[derive(Deserialize, Default)]
+        struct AuxData {
+            #[serde(default)]
+            base_difficulty: Option<u64>,
+            #[serde(default)]
+            chains: Option<Vec<AuxChain>>,
+        }
+
+        #[derive(Deserialize, Default)]
+        struct AuxChain {
+            #[serde(default)]
+            id: Option<String>,
+            #[serde(default)]
+            difficulty: Option<u64>,
+            #[serde(default)]
+            height: Option<u64>,
+            #[serde(default)]
+            mining_hash: Option<String>,
+            #[serde(default)]
+            miner_reward: Option<u64>,
         }
 
         let wallet_address = self.monero_wallet_address.as_deref().unwrap_or_default();
@@ -278,30 +318,34 @@ impl TariMergeMiningClient {
         }
 
         let compat = body.result.ok_or(TariClientError::Unexpected)?;
-        let tpl = compat.tari.or(compat.merge_mining).ok_or_else(|| {
-            TariClientError::Proxy(
-                "proxy get_block_template response missing Tari merge-mining data".into(),
-            )
-        })?;
+        let result = compat.result.ok_or(TariClientError::Unexpected)?;
+        let aux = result.aux.ok_or(TariClientError::MissingAuxData)?;
+        let chains = aux.chains.ok_or(TariClientError::MissingAuxData)?;
+        let mut chains_iter = chains.into_iter();
+        let chain = chains_iter
+            .find(|c| c.id.as_deref().unwrap_or_default() == "tari")
+            .or_else(|| chains_iter.next())
+            .ok_or(TariClientError::MissingAuxData)?;
 
-        if tpl.header.pow.pow_algo != PowAlgorithm::Monero {
-            return Err(TariClientError::UnsupportedPow(tpl.header.pow.pow_algo));
-        }
-        if tpl.header.pow.pow_data.is_empty() {
-            return Err(TariClientError::InvalidPowData);
-        }
-
-        let target = difficulty_to_target_bytes(tpl.target_difficulty)?;
-        let pow_data = parse_monero_merge_mining_pow_data(&tpl.header.pow.pow_data)?;
+        let target_difficulty = chain
+            .difficulty
+            .or(result.difficulty)
+            .ok_or(TariClientError::InvalidDifficulty)?;
+        let target = difficulty_to_target_bytes(target_difficulty)?;
+        let height = chain.height.or(result.height).unwrap_or_default();
+        let template_id = chain
+            .mining_hash
+            .or_else(|| result.blockhashing_blob.clone())
+            .unwrap_or_else(|| "tari-template".to_string());
 
         Ok(MergeMiningTemplate {
-            template_id: tpl.template_id,
-            height: tpl.header.height,
-            target_difficulty: tpl.target_difficulty,
+            template_id,
+            height,
+            target_difficulty,
             target,
-            pow_algo: tpl.header.pow.pow_algo,
-            pow_data_hex: tpl.header.pow.pow_data,
-            pow_data,
+            pow_algo: PowAlgorithm::Monero,
+            pow_data_hex: None,
+            pow_data: None,
         })
     }
 
