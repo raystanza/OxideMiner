@@ -23,7 +23,7 @@
 
 # Enable Tari merge mining through the local minotari_merge_mining_proxy
 #tari_merge_mining = false
-#tari_proxy_url = "http://127.0.0.1:18089"
+#tari_proxy_url = "http://127.0.0.1:18081"
 # Optional Monero address to supply when the proxy requires a Monero-style get_block_template
 #tari_monero_wallet = "48..."
 

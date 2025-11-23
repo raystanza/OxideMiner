@@ -114,7 +114,10 @@ struct MoneroCompatTemplate {
     blockhashing_blob: Option<String>,
     #[serde(default)]
     blocktemplate_blob: Option<String>,
-    #[serde(default, rename = "_aux")]
+    // Minotari merge-mining proxy injects merge-mining metadata under the `_aux` key (see
+    // `MMPROXY_AUX_KEY_NAME` in the proxy sources). Some forks or tooling emit this as `aux`;
+    //  accept both spellings to avoid falsely reporting missing Tari aux data.
+    #[serde(default, alias = "_aux", alias = "aux")]
     aux: Option<MoneroAuxData>,
     #[serde(default)]
     status: Option<String>,
@@ -144,7 +147,7 @@ struct MoneroAuxChain {
 
 /// Lightweight async client for the Tari merge mining proxy.
 ///
-/// The proxy exposes a JSON-RPC endpoint (default `http://127.0.0.1:18089/json_rpc`). This client
+/// The proxy exposes a JSON-RPC endpoint (default `http://127.0.0.1:18081/json_rpc`). This client
 /// implements the minimum calls needed for merge mining per RFC-0131: fetch a template restricted
 /// to `Monero` PoW and submit a merge-mined solution tied to that template ID.
 #[derive(Clone)]
@@ -561,6 +564,7 @@ fn read_varint(bytes: &[u8], offset: &mut usize) -> Result<u64, TariClientError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json;
 
     fn encode_varint(mut value: u64) -> Vec<u8> {
         let mut out = Vec::new();
@@ -664,5 +668,70 @@ mod tests {
         let compat = MoneroCompatTemplate::default();
         let err = client.parse_monero_compat_template(compat).unwrap_err();
         assert!(matches!(err, TariClientError::MissingAuxData));
+    }
+
+    #[test]
+    fn deserializes_aux_data_with_and_without_underscore() {
+        let json_with_underscore = r#"{
+            "difficulty": 1234,
+            "height": 10,
+            "blockhashing_blob": "blob1",
+            "blocktemplate_blob": "tpl1",
+            "_aux": {
+                "base_difficulty": 999,
+                "chains": [{
+                    "id": "tari",
+                    "difficulty": 777,
+                    "height": 11,
+                    "mining_hash": "abc",
+                    "miner_reward": 42
+                }]
+            },
+            "status": "OK"
+        }"#;
+
+        let json_without_underscore = r#"{
+            "difficulty": 1111,
+            "height": 12,
+            "blockhashing_blob": "blob2",
+            "blocktemplate_blob": "tpl2",
+            "aux": {
+                "base_difficulty": 888,
+                "chains": [{
+                    "id": "tari",
+                    "difficulty": 666,
+                    "height": 13,
+                    "mining_hash": "def",
+                    "miner_reward": 43
+                }]
+            },
+            "status": "OK"
+        }"#;
+
+        let tpl_with_underscore: MoneroCompatTemplate = serde_json::from_str(json_with_underscore)
+            .expect("_aux payload should deserialize");
+        assert!(tpl_with_underscore.aux.is_some());
+        assert_eq!(
+            tpl_with_underscore
+                .aux
+                .as_ref()
+                .and_then(|a| a.chains.as_ref())
+                .and_then(|c| c.first())
+                .and_then(|c| c.difficulty),
+            Some(777)
+        );
+
+        let tpl_without_underscore: MoneroCompatTemplate = serde_json::from_str(json_without_underscore)
+            .expect("aux payload should deserialize");
+        assert!(tpl_without_underscore.aux.is_some());
+        assert_eq!(
+            tpl_without_underscore
+                .aux
+                .as_ref()
+                .and_then(|a| a.chains.as_ref())
+                .and_then(|c| c.first())
+                .and_then(|c| c.difficulty),
+            Some(666)
+        );
     }
 }
