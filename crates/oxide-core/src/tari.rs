@@ -115,6 +115,8 @@ struct MoneroCompatTemplate {
     #[serde(default)]
     height: Option<u64>,
     #[serde(default)]
+    template_id: Option<String>,
+    #[serde(default)]
     blockhashing_blob: Option<String>,
     #[serde(default)]
     blocktemplate_blob: Option<String>,
@@ -143,6 +145,8 @@ struct MoneroAuxChain {
     difficulty: Option<u64>,
     #[serde(default)]
     height: Option<u64>,
+    #[serde(default)]
+    template_id: Option<String>,
     #[serde(default)]
     mining_hash: Option<String>,
     #[serde(default)]
@@ -381,7 +385,10 @@ impl TariMergeMiningClient {
                         .or(result.difficulty),
                     chain.height.or(result.height).unwrap_or_default(),
                     chain
-                        .mining_hash
+                        .template_id
+                        .clone()
+                        .or_else(|| result.template_id.clone())
+                        .or_else(|| chain.mining_hash.clone())
                         .or_else(|| result.blockhashing_blob.clone())
                         .or_else(|| result.blocktemplate_blob.clone())
                         .unwrap_or_else(|| "tari-template".to_string()),
@@ -392,8 +399,9 @@ impl TariMergeMiningClient {
                     aux.base_difficulty.or(result.difficulty),
                     result.height.unwrap_or_default(),
                     result
-                        .blockhashing_blob
+                        .template_id
                         .clone()
+                        .or_else(|| result.blockhashing_blob.clone())
                         .or_else(|| result.blocktemplate_blob.clone())
                         .unwrap_or_else(|| "tari-template".to_string()),
                 )
@@ -404,8 +412,9 @@ impl TariMergeMiningClient {
                 result.difficulty,
                 result.height.unwrap_or_default(),
                 result
-                    .blockhashing_blob
+                    .template_id
                     .clone()
+                    .or_else(|| result.blockhashing_blob.clone())
                     .or_else(|| result.blocktemplate_blob.clone())
                     .unwrap_or_else(|| "tari-template".to_string()),
             )
@@ -747,6 +756,7 @@ mod tests {
         let compat = MoneroCompatTemplate {
             difficulty: Some(1234),
             height: Some(42),
+            template_id: None,
             blockhashing_blob: Some("blockhashing".into()),
             blocktemplate_blob: Some("blocktemplate".into()),
             status: Some("OK".into()),
@@ -756,6 +766,7 @@ mod tests {
                     id: Some("tari".into()),
                     difficulty: Some(5555),
                     height: Some(77),
+                    template_id: None,
                     mining_hash: Some("mining-hash".into()),
                     miner_reward: Some(123_456),
                 }]),
@@ -780,6 +791,7 @@ mod tests {
         let compat = MoneroCompatTemplate {
             difficulty: Some(4444),
             height: Some(88),
+            template_id: None,
             blockhashing_blob: Some("blob-id".into()),
             blocktemplate_blob: Some("tpl-id".into()),
             status: Some("OK".into()),
@@ -794,6 +806,29 @@ mod tests {
         assert_eq!(tpl.height, 88);
         assert_eq!(tpl.target_difficulty, 4444);
         assert_eq!(tpl.pow_algo, PowAlgorithm::Monero);
+    }
+
+    #[test]
+    fn prefers_template_id_when_proxy_returns_one() {
+        let client = TariMergeMiningClient::new(crate::config::TariMergeMiningConfig::default())
+            .expect("client constructs with defaults");
+
+        let compat = MoneroCompatTemplate {
+            difficulty: Some(2222),
+            height: Some(99),
+            template_id: Some("template-from-proxy".into()),
+            blockhashing_blob: Some("blob-id".into()),
+            status: Some("OK".into()),
+            ..Default::default()
+        };
+
+        let tpl = client
+            .parse_monero_compat_template(compat)
+            .expect("proxy template_id should be preferred when provided");
+
+        assert_eq!(tpl.template_id, "template-from-proxy");
+        assert_eq!(tpl.height, 99);
+        assert_eq!(tpl.target_difficulty, 2222);
     }
 
     #[test]
