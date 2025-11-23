@@ -539,11 +539,17 @@ impl TariMergeMiningClient {
         nonce_hex: &str,
         fallback_blob: Option<&str>,
     ) -> Result<String, TariClientError> {
-        let blob_hex = template
-            .monero_blocktemplate_blob
-            .as_deref()
-            .or(fallback_blob)
-            .ok_or(TariClientError::MissingMoneroBlob)?;
+        let blob_hex = if let Some(blob) = template.monero_blocktemplate_blob.as_deref() {
+            blob
+        } else if let Some(blob) = fallback_blob {
+            debug!(
+                template_id = %template.template_id,
+                "using Monero pool blob as fallback for merge-mined submission"
+            );
+            blob
+        } else {
+            return Err(TariClientError::MissingMoneroBlob);
+        };
 
         let mut blob_bytes =
             Vec::from_hex(blob_hex).map_err(|e| TariClientError::MoneroEncoding(e.to_string()))?;
