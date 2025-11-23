@@ -103,6 +103,8 @@ pub enum TariClientError {
     MissingMoneroBlob,
     #[error("failed to encode/decode Monero block: {0}")]
     MoneroEncoding(String),
+    #[error("share does not meet Tari difficulty (achieved {achieved}, target {target})")]
+    InsufficientDifficulty { achieved: u64, target: u64 },
 }
 
 /// Parsed Monero merge-mining payload extracted from `pow_data` (RFC-0131 §Merge Mining Data).
@@ -525,6 +527,12 @@ impl TariMergeMiningClient {
             "submitting merge-mined block via proxy",
         );
 
+        // Validate the share against the Tari target locally so we only submit work that the
+        // merge-mining proxy/base node can plausibly accept. Tari difficulty/target semantics use
+        // big-endian integers (RFC-0120); Monero RandomX hashes are little-endian, so convert
+        // before comparison.
+        validate_tari_pow(monero_pow_hash, &template.target, template.target_difficulty)?;
+
         let solved_blob = self.build_solved_monero_blob(template, monero_nonce_hex, monero_blob)?;
 
         // The merge-mining proxy is Monero-compatible and expects submit_block parameters to match
@@ -642,6 +650,45 @@ fn difficulty_to_target_bytes(difficulty: u64) -> Result<[u8; 32], TariClientErr
     let mut out = [0u8; 32];
     target.to_big_endian(&mut out);
     Ok(out)
+}
+
+fn validate_tari_pow(
+    monero_pow_hash: &str,
+    target: &[u8; 32],
+    target_difficulty: u64,
+) -> Result<u64, TariClientError> {
+    let pow_hash_bytes: [u8; 32] = <[u8; 32]>::from_hex(monero_pow_hash)
+        .map_err(|e| TariClientError::MoneroEncoding(e.to_string()))?;
+    let pow_val = U256::from_big_endian(&{
+        let mut be = pow_hash_bytes;
+        be.reverse();
+        be
+    });
+    if pow_val.is_zero() {
+        return Err(TariClientError::InvalidPowData);
+    }
+
+    let target_val = U256::from_big_endian(target);
+    let achieved = U256::MAX
+        .checked_div(pow_val)
+        .unwrap_or(U256::MAX)
+        .min(U256::from(u64::MAX))
+        .as_u64();
+
+    debug!(
+        achieved_difficulty = achieved,
+        target_difficulty,
+        "evaluated Tari merge-mining share locally",
+    );
+
+    if pow_val > target_val {
+        return Err(TariClientError::InsufficientDifficulty {
+            achieved,
+            target: target_difficulty,
+        });
+    }
+
+    Ok(achieved)
 }
 
 /// Parse Monero merge-mining `pow_data` sequence per RFC-0131 §Merge Mining Data. The layout is
@@ -941,5 +988,20 @@ mod tests {
                 .and_then(|c| c.difficulty),
             Some(666)
         );
+    }
+
+    #[test]
+    fn validates_pow_against_target() {
+        let target = difficulty_to_target_bytes(1_000).expect("difficulty should convert");
+        // Little-endian hash representing numeric value 1.
+        let pow_hash = "01".to_string() + &"00".repeat(31);
+        let achieved =
+            validate_tari_pow(&pow_hash, &target, 1_000).expect("meets Tari target");
+        assert!(achieved > 0);
+
+        // A large hash (all 0xFF) should fail the target check.
+        let err = validate_tari_pow(&"ff".repeat(32), &target, 1_000)
+            .expect_err("high hash should be rejected");
+        assert!(matches!(err, TariClientError::InsufficientDifficulty { .. }));
     }
 }
