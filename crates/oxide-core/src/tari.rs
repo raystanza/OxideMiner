@@ -1,6 +1,8 @@
 // OxideMiner/crates/oxide-core/src/tari.rs
 
 use crate::config::TariMergeMiningConfig;
+use hex::FromHex;
+use monero::{consensus, Block};
 use serde::{Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -43,6 +45,14 @@ pub struct MergeMiningTemplate {
     /// Parsed Monero merge-mining payload (length-checked against RFC-0131 §Merge Mining data
     /// ordering requirements).
     pub pow_data: Option<MergeMiningPowData>,
+    /// Monero block template blob returned by the proxy (hex-encoded). Required to reconstruct a
+    /// full Monero block with the found nonce for Monero-compatible `submit_block` (RFC-0132
+    /// requires the proxy to accept Monero-formatted submissions).
+    pub monero_blocktemplate_blob: Option<String>,
+    /// Reserved offset provided by the proxy/monerod for miner-reserved bytes. Stored for
+    /// completeness; blob reconstruction relies on consensus serialization instead of manual offset
+    /// patching.
+    pub monero_reserved_offset: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -89,6 +99,10 @@ pub enum TariClientError {
     MissingAuxData,
     #[error("malformed proxy response: {0}")]
     MalformedResponse(String),
+    #[error("missing Monero block template blob for submission")]
+    MissingMoneroBlob,
+    #[error("failed to encode/decode Monero block: {0}")]
+    MoneroEncoding(String),
 }
 
 /// Parsed Monero merge-mining payload extracted from `pow_data` (RFC-0131 §Merge Mining Data).
@@ -120,6 +134,8 @@ struct MoneroCompatTemplate {
     blockhashing_blob: Option<String>,
     #[serde(default)]
     blocktemplate_blob: Option<String>,
+    #[serde(default)]
+    reserved_offset: Option<u64>,
     // Minotari merge-mining proxy injects merge-mining metadata under the `_aux` key (see
     // `MMPROXY_AUX_KEY_NAME` in the proxy sources). Some forks or tooling emit this as `aux`;
     //  accept both spellings to avoid falsely reporting missing Tari aux data.
@@ -293,6 +309,8 @@ impl TariMergeMiningClient {
             pow_algo: tpl.header.pow.pow_algo,
             pow_data_hex: Some(tpl.header.pow.pow_data),
             pow_data: Some(pow_data),
+            monero_blocktemplate_blob: None,
+            monero_reserved_offset: None,
         })
     }
 
@@ -451,6 +469,8 @@ impl TariMergeMiningClient {
             pow_algo: PowAlgorithm::Monero,
             pow_data_hex: None,
             pow_data: None,
+            monero_blocktemplate_blob: result.blocktemplate_blob,
+            monero_reserved_offset: result.reserved_offset,
         })
     }
 
@@ -465,15 +485,6 @@ impl TariMergeMiningClient {
         monero_pow_hash: &str,
         monero_blob: Option<&str>,
     ) -> Result<(), TariClientError> {
-        #[derive(Serialize)]
-        struct SubmitParams<'a> {
-            template_id: &'a str,
-            monero_nonce: &'a str,
-            monero_pow_hash: &'a str,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            monero_blob: Option<&'a str>,
-        }
-
         #[derive(Serialize)]
         struct RpcRequest<'a, T> {
             jsonrpc: &'a str,
@@ -492,19 +503,24 @@ impl TariMergeMiningClient {
             message: String,
         }
 
-        // The merge-mining proxy follows the Monero JSON-RPC shape and expects params to be an
-        // array (even for structured payloads). Sending an object causes the proxy to reject the
-        // request with "params field is empty or an invalid type".
+        debug!(
+            template_id = %template.template_id,
+            monero_nonce = monero_nonce_hex,
+            monero_pow_hash = monero_pow_hash,
+            "submitting merge-mined block via proxy",
+        );
+
+        let solved_blob = self.build_solved_monero_blob(template, monero_nonce_hex, monero_blob)?;
+
+        // The merge-mining proxy is Monero-compatible and expects submit_block parameters to match
+        // monerod: an array of hex-encoded block blobs. Tari-specific metadata (template_id,
+        // pow_hash, nonce) is logged for operators but not sent as named fields to avoid `Invalid
+        // params` errors from the proxy JSON-RPC layer.
         let payload = RpcRequest {
             jsonrpc: "2.0",
             id: 1,
             method: "submit_block",
-            params: [SubmitParams {
-                template_id: &template.template_id,
-                monero_nonce: monero_nonce_hex,
-                monero_pow_hash,
-                monero_blob,
-            }],
+            params: vec![solved_blob],
         };
 
         let resp = self
@@ -520,6 +536,31 @@ impl TariMergeMiningClient {
         }
 
         Ok(())
+    }
+
+    fn build_solved_monero_blob(
+        &self,
+        template: &MergeMiningTemplate,
+        nonce_hex: &str,
+        fallback_blob: Option<&str>,
+    ) -> Result<String, TariClientError> {
+        let blob_hex = template
+            .monero_blocktemplate_blob
+            .as_deref()
+            .or(fallback_blob)
+            .ok_or(TariClientError::MissingMoneroBlob)?;
+
+        let mut blob_bytes =
+            Vec::from_hex(blob_hex).map_err(|e| TariClientError::MoneroEncoding(e.to_string()))?;
+        let mut block: Block = consensus::deserialize(&blob_bytes)
+            .map_err(|e| TariClientError::MoneroEncoding(e.to_string()))?;
+
+        let nonce_bytes = <[u8; 4]>::from_hex(nonce_hex)
+            .map_err(|e| TariClientError::MoneroEncoding(e.to_string()))?;
+        block.header.nonce = u32::from_le_bytes(nonce_bytes);
+
+        blob_bytes = consensus::serialize(&block);
+        Ok(hex::encode(blob_bytes))
     }
 
     pub fn backoff(&self) -> Duration {
@@ -763,6 +804,7 @@ mod tests {
             template_id: None,
             blockhashing_blob: Some("blockhashing".into()),
             blocktemplate_blob: Some("blocktemplate".into()),
+            reserved_offset: None,
             status: Some("OK".into()),
             aux: Some(MoneroAuxData {
                 base_difficulty: Some(9999),
@@ -785,6 +827,10 @@ mod tests {
         assert_eq!(tpl.height, 77);
         assert_eq!(tpl.target_difficulty, 5555);
         assert_eq!(tpl.pow_algo, PowAlgorithm::Monero);
+        assert_eq!(
+            tpl.monero_blocktemplate_blob.as_deref(),
+            Some("blocktemplate")
+        );
     }
 
     #[test]
@@ -798,6 +844,7 @@ mod tests {
             template_id: None,
             blockhashing_blob: Some("blob-id".into()),
             blocktemplate_blob: Some("tpl-id".into()),
+            reserved_offset: None,
             status: Some("OK".into()),
             ..Default::default()
         };
@@ -810,6 +857,7 @@ mod tests {
         assert_eq!(tpl.height, 88);
         assert_eq!(tpl.target_difficulty, 4444);
         assert_eq!(tpl.pow_algo, PowAlgorithm::Monero);
+        assert_eq!(tpl.monero_blocktemplate_blob.as_deref(), Some("tpl-id"));
     }
 
     #[test]
@@ -822,6 +870,7 @@ mod tests {
             height: Some(99),
             template_id: Some("template-from-proxy".into()),
             blockhashing_blob: Some("blob-id".into()),
+            reserved_offset: None,
             status: Some("OK".into()),
             ..Default::default()
         };
@@ -838,15 +887,6 @@ mod tests {
     #[test]
     fn submit_solution_uses_array_params() {
         #[derive(Serialize)]
-        struct SubmitParams<'a> {
-            template_id: &'a str,
-            monero_nonce: &'a str,
-            monero_pow_hash: &'a str,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            monero_blob: Option<&'a str>,
-        }
-
-        #[derive(Serialize)]
         struct RpcRequest<'a, T> {
             jsonrpc: &'a str,
             id: u64,
@@ -858,12 +898,7 @@ mod tests {
             jsonrpc: "2.0",
             id: 1,
             method: "submit_block",
-            params: [SubmitParams {
-                template_id: "tpl",
-                monero_nonce: "nonce",
-                monero_pow_hash: "hash",
-                monero_blob: Some("blob"),
-            }],
+            params: vec!["deadbeef".to_string()],
         };
 
         let value = serde_json::to_value(payload).expect("serialization should work");
@@ -872,13 +907,7 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("params should be an array");
         assert_eq!(params.len(), 1);
-        let obj = params[0]
-            .as_object()
-            .expect("first param should be an object");
-        assert_eq!(obj.get("template_id").unwrap(), "tpl");
-        assert_eq!(obj.get("monero_nonce").unwrap(), "nonce");
-        assert_eq!(obj.get("monero_pow_hash").unwrap(), "hash");
-        assert_eq!(obj.get("monero_blob").unwrap(), "blob");
+        assert_eq!(params[0].as_str().unwrap(), "deadbeef");
     }
 
     #[test]

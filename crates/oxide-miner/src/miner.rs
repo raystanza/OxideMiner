@@ -1032,19 +1032,6 @@ fn reset_session(
     monero_jobs.clear();
 }
 
-/// Re-encode the Monero job blob with the provided nonce in little-endian form. The nonce offset is
-/// 39 per the Monero stratum/job layout used during hashing. If the blob is malformed, return
-/// `None` so callers can skip including the blob in merge-mining submissions.
-fn encode_monero_blob_with_nonce(blob_hex: &str, nonce: u32) -> Option<String> {
-    let mut bytes = hex::decode(blob_hex).ok()?;
-    if bytes.len() < 39 + 4 {
-        return None;
-    }
-
-    bytes[39..39 + 4].copy_from_slice(&nonce.to_le_bytes());
-    Some(hex::encode(bytes))
-}
-
 async fn handle_shares(
     initial: Option<Share>,
     shares_rx: &mut UnboundedReceiver<Share>,
@@ -1171,15 +1158,13 @@ async fn submit_share_internal(
         "submit_share",
     );
 
-    let solved_monero_blob = monero_jobs
-        .get(&share.job_id)
-        .and_then(|job| encode_monero_blob_with_nonce(&job.blob, share.nonce));
+    let monero_blob = monero_jobs.get(&share.job_id).map(|job| job.blob.as_str());
 
     let mut reconnect_user = false;
     if let Some(client) = tari_client {
         if let Some(tpl) = tari_templates.get(&share.job_id) {
             match client
-                .submit_solution(tpl, &nonce_hex, &result_hex, solved_monero_blob.as_deref())
+                .submit_solution(tpl, &nonce_hex, &result_hex, monero_blob)
                 .await
             {
                 Ok(_) => {
@@ -1263,13 +1248,13 @@ async fn reconnect_user_pool(
             job,
             false,
             true,
-        jobs_tx,
-        valid_job_ids,
-        seen_nonces,
-        tari_templates,
-        tari_template,
-        monero_jobs,
-    );
+            jobs_tx,
+            valid_job_ids,
+            seen_nonces,
+            tari_templates,
+            tari_template,
+            monero_jobs,
+        );
         let _ = scheduler_tick(dev_scheduler, &job_id, *active_pool);
     }
 
