@@ -82,6 +82,9 @@ struct ShareContext<'a> {
     dev_scheduler: &'a mut DevFeeScheduler,
     tari_client: Option<&'a TariMergeMiningClient>,
     tari_templates: &'a mut HashMap<String, MergeMiningTemplate>,
+    /// Track the most recent Monero job blobs keyed by job_id so we can reconstruct a full block
+    /// when submitting merge-mined solutions to the Tari proxy.
+    monero_jobs: &'a mut HashMap<String, PoolJob>,
 }
 
 pub async fn run(args: Args) -> Result<()> {
@@ -421,6 +424,7 @@ pub async fn run(args: Args) -> Result<()> {
         None
     };
     let mut tari_templates: HashMap<String, MergeMiningTemplate> = HashMap::new();
+    let mut monero_jobs: HashMap<String, PoolJob> = HashMap::new();
 
     let tls = cfg.tls;
     let tls_ca_cert = cfg.tls_ca_cert.clone();
@@ -522,6 +526,7 @@ pub async fn run(args: Args) -> Result<()> {
                         &mut seen_nonces,
                         &mut tari_templates,
                         tari_template,
+                        &mut monero_jobs,
                     );
                     if scheduler_tick(&mut dev_scheduler, &job_id, active_pool) {
                         let counter = dev_scheduler.counter();
@@ -563,6 +568,7 @@ pub async fn run(args: Args) -> Result<()> {
                                         dev_scheduler: &mut dev_scheduler,
                                         tari_client: tari_client.as_ref(),
                                         tari_templates: &mut tari_templates,
+                                        monero_jobs: &mut monero_jobs,
                                     },
                                     user_connection,
                                 )
@@ -580,6 +586,7 @@ pub async fn run(args: Args) -> Result<()> {
                                     &mut seen_nonces,
                                     &mut pending_shares,
                                     &mut tari_templates,
+                                    &mut monero_jobs,
                                 );
                                 if let Some(job) = dev_job {
                                     let tari_template =
@@ -594,6 +601,7 @@ pub async fn run(args: Args) -> Result<()> {
                                         &mut seen_nonces,
                                         &mut tari_templates,
                                         tari_template,
+                                        &mut monero_jobs,
                                     );
                                     tracing::info!(job_id = %dev_job_id, "devfee activated for job");
                                     let _ = scheduler_tick(
@@ -633,6 +641,7 @@ pub async fn run(args: Args) -> Result<()> {
                                         dev_scheduler: &mut dev_scheduler,
                                         tari_client: tari_client.as_ref(),
                                         tari_templates: &mut tari_templates,
+                                        monero_jobs: &mut monero_jobs,
                                     },
                                     user_connection,
                                 )
@@ -674,6 +683,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                     &mut seen_nonces,
                                                     &mut tari_templates,
                                                     tari_template,
+                                                    &mut monero_jobs,
                                                 );
                                                 trigger_dev = scheduler_tick(&mut dev_scheduler, &job_id, active_pool);
                                                 if trigger_dev {
@@ -720,6 +730,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                     dev_scheduler: &mut dev_scheduler,
                                                     tari_client: tari_client.as_ref(),
                                                     tari_templates: &mut tari_templates,
+                                                    monero_jobs: &mut monero_jobs,
                                                 },
                                                 user_connection,
                                             )
@@ -737,6 +748,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                         &mut seen_nonces,
                                                         &mut pending_shares,
                                                         &mut tari_templates,
+                                                        &mut monero_jobs,
                                                     );
                                                     if let Some(job) = job_opt {
                                                         let tari_template =
@@ -754,6 +766,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                             &mut seen_nonces,
                                                             &mut tari_templates,
                                                             tari_template,
+                                                            &mut monero_jobs,
                                                         );
                                                         tracing::info!(job_id = %job_id, "devfee activated for job");
                                                         let _ = scheduler_tick(&mut dev_scheduler, &job_id, active_pool);
@@ -864,6 +877,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                         dev_scheduler: &mut dev_scheduler,
                                                         tari_client: tari_client.as_ref(),
                                                         tari_templates: &mut tari_templates,
+                                                        monero_jobs: &mut monero_jobs,
                                                     },
                                                     user_connection,
                                                 )
@@ -946,20 +960,25 @@ fn broadcast_job(
     seen_nonces: &mut HashMap<String, HashSet<u32>>,
     tari_templates: &mut HashMap<String, MergeMiningTemplate>,
     tari_template: Option<MergeMiningTemplate>,
+    monero_jobs: &mut HashMap<String, PoolJob>,
 ) -> String {
     if clean_jobs {
         valid_job_ids.clear();
         seen_nonces.clear();
         tari_templates.clear();
+        monero_jobs.clear();
     }
 
     job.cache_target();
     let job_id = job.job_id.clone();
+    let job_clone = job.clone();
     let _ = jobs_tx.send(WorkItem { job, is_devfee });
     valid_job_ids.insert(job_id.clone());
     if let Some(template) = tari_template {
         tari_templates.insert(job_id.clone(), template);
     }
+    // Track the Monero job blob for later Tari submissions.
+    monero_jobs.insert(job_id.clone(), job_clone);
     job_id
 }
 
@@ -1004,11 +1023,26 @@ fn reset_session(
     seen_nonces: &mut HashMap<String, HashSet<u32>>,
     pending_shares: &mut HashMap<u64, PendingShare>,
     tari_templates: &mut HashMap<String, MergeMiningTemplate>,
+    monero_jobs: &mut HashMap<String, PoolJob>,
 ) {
     valid_job_ids.clear();
     seen_nonces.clear();
     pending_shares.clear();
     tari_templates.clear();
+    monero_jobs.clear();
+}
+
+/// Re-encode the Monero job blob with the provided nonce in little-endian form. The nonce offset is
+/// 39 per the Monero stratum/job layout used during hashing. If the blob is malformed, return
+/// `None` so callers can skip including the blob in merge-mining submissions.
+fn encode_monero_blob_with_nonce(blob_hex: &str, nonce: u32) -> Option<String> {
+    let mut bytes = hex::decode(blob_hex).ok()?;
+    if bytes.len() < 39 + 4 {
+        return None;
+    }
+
+    bytes[39..39 + 4].copy_from_slice(&nonce.to_le_bytes());
+    Some(hex::encode(bytes))
 }
 
 async fn handle_shares(
@@ -1028,6 +1062,7 @@ async fn handle_shares(
         dev_scheduler,
         tari_client,
         tari_templates,
+        monero_jobs,
     } = context;
     let mut reconnect_user = false;
 
@@ -1042,6 +1077,7 @@ async fn handle_shares(
             pending_shares,
             tari_client,
             tari_templates,
+            monero_jobs,
         )
         .await;
     }
@@ -1059,6 +1095,7 @@ async fn handle_shares(
                     pending_shares,
                     tari_client,
                     tari_templates,
+                    monero_jobs,
                 )
                 .await;
             }
@@ -1102,6 +1139,7 @@ async fn submit_share_internal(
     pending_shares: &mut HashMap<u64, PendingShare>,
     tari_client: Option<&TariMergeMiningClient>,
     tari_templates: &mut HashMap<String, MergeMiningTemplate>,
+    monero_jobs: &mut HashMap<String, PoolJob>,
 ) -> bool {
     if !valid_job_ids.contains(&share.job_id) {
         tracing::debug!(
@@ -1132,10 +1170,17 @@ async fn submit_share_internal(
         "submit_share",
     );
 
+    let solved_monero_blob = monero_jobs
+        .get(&share.job_id)
+        .and_then(|job| encode_monero_blob_with_nonce(&job.blob, share.nonce));
+
     let mut reconnect_user = false;
     if let Some(client) = tari_client {
         if let Some(tpl) = tari_templates.get(&share.job_id) {
-            match client.submit_solution(tpl, &nonce_hex, &result_hex).await {
+            match client
+                .submit_solution(tpl, &nonce_hex, &result_hex, solved_monero_blob.as_deref())
+                .await
+            {
                 Ok(_) => {
                     stats.tari_accepted.fetch_add(1, Ordering::Relaxed);
                     stats.tari_height.store(tpl.height, Ordering::Relaxed);
@@ -1201,7 +1246,13 @@ async fn reconnect_user_pool(
 
     *client = new_client;
     *active_pool = ActivePool::User;
-    reset_session(valid_job_ids, seen_nonces, pending_shares, tari_templates);
+    reset_session(
+        valid_job_ids,
+        seen_nonces,
+        pending_shares,
+        tari_templates,
+        monero_jobs,
+    );
     stats.pool_connected.store(true, Ordering::Relaxed);
 
     if let Some(job) = job_opt {
@@ -1214,6 +1265,7 @@ async fn reconnect_user_pool(
             valid_job_ids,
             seen_nonces,
             tari_templates,
+            monero_jobs,
             tari_template,
         );
         let _ = scheduler_tick(dev_scheduler, &job_id, *active_pool);

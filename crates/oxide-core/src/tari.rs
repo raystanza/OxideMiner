@@ -463,12 +463,15 @@ impl TariMergeMiningClient {
         template: &MergeMiningTemplate,
         monero_nonce_hex: &str,
         monero_pow_hash: &str,
+        monero_blob: Option<&str>,
     ) -> Result<(), TariClientError> {
         #[derive(Serialize)]
         struct SubmitParams<'a> {
             template_id: &'a str,
             monero_nonce: &'a str,
             monero_pow_hash: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            monero_blob: Option<&'a str>,
         }
 
         #[derive(Serialize)]
@@ -500,6 +503,7 @@ impl TariMergeMiningClient {
                 template_id: &template.template_id,
                 monero_nonce: monero_nonce_hex,
                 monero_pow_hash,
+                monero_blob,
             }],
         };
 
@@ -838,6 +842,8 @@ mod tests {
             template_id: &'a str,
             monero_nonce: &'a str,
             monero_pow_hash: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            monero_blob: Option<&'a str>,
         }
 
         #[derive(Serialize)]
@@ -856,6 +862,7 @@ mod tests {
                 template_id: "tpl",
                 monero_nonce: "nonce",
                 monero_pow_hash: "hash",
+                monero_blob: Some("blob"),
             }],
         };
 
@@ -871,6 +878,7 @@ mod tests {
         assert_eq!(obj.get("template_id").unwrap(), "tpl");
         assert_eq!(obj.get("monero_nonce").unwrap(), "nonce");
         assert_eq!(obj.get("monero_pow_hash").unwrap(), "hash");
+        assert_eq!(obj.get("monero_blob").unwrap(), "blob");
     }
 
     #[test]
