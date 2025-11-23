@@ -1120,6 +1120,7 @@ async fn handle_shares(
                 dev_scheduler,
                 tari_client,
                 tari_templates,
+                monero_jobs,
             },
             connection,
         )
@@ -1241,6 +1242,7 @@ async fn reconnect_user_pool(
         dev_scheduler,
         tari_client,
         tari_templates,
+        monero_jobs,
     } = context;
     let (new_client, job_opt) = connect_with_retries(connection, 5, "user").await?;
 
@@ -1261,13 +1263,13 @@ async fn reconnect_user_pool(
             job,
             false,
             true,
-            jobs_tx,
-            valid_job_ids,
-            seen_nonces,
-            tari_templates,
-            monero_jobs,
-            tari_template,
-        );
+        jobs_tx,
+        valid_job_ids,
+        seen_nonces,
+        tari_templates,
+        tari_template,
+        monero_jobs,
+    );
         let _ = scheduler_tick(dev_scheduler, &job_id, *active_pool);
     }
 
