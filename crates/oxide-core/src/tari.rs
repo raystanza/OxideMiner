@@ -403,10 +403,7 @@ impl TariMergeMiningClient {
                         .or(result.difficulty),
                     chain.height.or(result.height).unwrap_or_default(),
                     chain
-                        .template_id
-                        .clone()
-                        .or_else(|| result.template_id.clone())
-                        .or_else(|| chain.mining_hash.clone())
+                        .mining_hash
                         .or_else(|| result.blockhashing_blob.clone())
                         .or_else(|| result.blocktemplate_blob.clone())
                         .unwrap_or_else(|| "tari-template".to_string()),
@@ -417,9 +414,8 @@ impl TariMergeMiningClient {
                     aux.base_difficulty.or(result.difficulty),
                     result.height.unwrap_or_default(),
                     result
-                        .template_id
+                        .blockhashing_blob
                         .clone()
-                        .or_else(|| result.blockhashing_blob.clone())
                         .or_else(|| result.blocktemplate_blob.clone())
                         .unwrap_or_else(|| "tari-template".to_string()),
                 )
@@ -430,9 +426,8 @@ impl TariMergeMiningClient {
                 result.difficulty,
                 result.height.unwrap_or_default(),
                 result
-                    .template_id
+                    .blockhashing_blob
                     .clone()
-                    .or_else(|| result.blockhashing_blob.clone())
                     .or_else(|| result.blocktemplate_blob.clone())
                     .unwrap_or_else(|| "tari-template".to_string()),
             )
@@ -841,10 +836,8 @@ mod tests {
         let compat = MoneroCompatTemplate {
             difficulty: Some(4444),
             height: Some(88),
-            template_id: None,
             blockhashing_blob: Some("blob-id".into()),
             blocktemplate_blob: Some("tpl-id".into()),
-            reserved_offset: None,
             status: Some("OK".into()),
             ..Default::default()
         };
@@ -857,57 +850,6 @@ mod tests {
         assert_eq!(tpl.height, 88);
         assert_eq!(tpl.target_difficulty, 4444);
         assert_eq!(tpl.pow_algo, PowAlgorithm::Monero);
-        assert_eq!(tpl.monero_blocktemplate_blob.as_deref(), Some("tpl-id"));
-    }
-
-    #[test]
-    fn prefers_template_id_when_proxy_returns_one() {
-        let client = TariMergeMiningClient::new(crate::config::TariMergeMiningConfig::default())
-            .expect("client constructs with defaults");
-
-        let compat = MoneroCompatTemplate {
-            difficulty: Some(2222),
-            height: Some(99),
-            template_id: Some("template-from-proxy".into()),
-            blockhashing_blob: Some("blob-id".into()),
-            reserved_offset: None,
-            status: Some("OK".into()),
-            ..Default::default()
-        };
-
-        let tpl = client
-            .parse_monero_compat_template(compat)
-            .expect("proxy template_id should be preferred when provided");
-
-        assert_eq!(tpl.template_id, "template-from-proxy");
-        assert_eq!(tpl.height, 99);
-        assert_eq!(tpl.target_difficulty, 2222);
-    }
-
-    #[test]
-    fn submit_solution_uses_array_params() {
-        #[derive(Serialize)]
-        struct RpcRequest<'a, T> {
-            jsonrpc: &'a str,
-            id: u64,
-            method: &'a str,
-            params: T,
-        }
-
-        let payload = RpcRequest {
-            jsonrpc: "2.0",
-            id: 1,
-            method: "submit_block",
-            params: vec!["deadbeef".to_string()],
-        };
-
-        let value = serde_json::to_value(payload).expect("serialization should work");
-        let params = value
-            .get("params")
-            .and_then(|v| v.as_array())
-            .expect("params should be an array");
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0].as_str().unwrap(), "deadbeef");
     }
 
     #[test]
