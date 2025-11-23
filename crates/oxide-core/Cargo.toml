@@ -17,6 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 hex = { workspace = true }
+monero = { workspace = true }
 num_cpus = { workspace = true }
 once_cell = { workspace = true }
 randomx-rs = { version = "1.4", optional = true }
