@@ -388,6 +388,7 @@ impl TariMergeMiningClient {
     ) -> Result<MergeMiningTemplate, TariClientError> {
         let mut warn_missing_aux = false;
         let mut miner_reward = None;
+
         let (target_difficulty, height, template_id) = if let Some(aux) = result.aux {
             let mut chains_iter = aux.chains.unwrap_or_default().into_iter();
             let chain = chains_iter
@@ -396,41 +397,59 @@ impl TariMergeMiningClient {
 
             if let Some(chain) = chain {
                 miner_reward = chain.miner_reward;
+
+                // Prefer explicit template IDs from aux/compat, then fall back to mining_hash and
+                // generic Monero fields. This makes use of both MoneroAuxChain::template_id and
+                // MoneroCompatTemplate::template_id so they’re no longer “dead” fields.
+                let tpl_id = chain
+                    .template_id
+                    .as_ref()
+                    .or_else(|| chain.mining_hash.as_ref())
+                    .or_else(|| result.template_id.as_ref())
+                    .or_else(|| result.blockhashing_blob.as_ref())
+                    .or_else(|| result.blocktemplate_blob.as_ref())
+                    .cloned()
+                    .unwrap_or_else(|| "tari-template".to_string());
+
                 (
                     chain
                         .difficulty
                         .or(aux.base_difficulty)
                         .or(result.difficulty),
                     chain.height.or(result.height).unwrap_or_default(),
-                    chain
-                        .mining_hash
-                        .or_else(|| result.blockhashing_blob.clone())
-                        .or_else(|| result.blocktemplate_blob.clone())
-                        .unwrap_or_else(|| "tari-template".to_string()),
+                    tpl_id,
                 )
             } else {
                 warn_missing_aux = true;
+
+                // No matching aux chain; fall back to compat-level IDs first, then generic Monero IDs.
+                let tpl_id = result
+                    .template_id
+                    .as_ref()
+                    .or_else(|| result.blockhashing_blob.as_ref())
+                    .or_else(|| result.blocktemplate_blob.as_ref())
+                    .cloned()
+                    .unwrap_or_else(|| "tari-template".to_string());
+
                 (
                     aux.base_difficulty.or(result.difficulty),
                     result.height.unwrap_or_default(),
-                    result
-                        .blockhashing_blob
-                        .clone()
-                        .or_else(|| result.blocktemplate_blob.clone())
-                        .unwrap_or_else(|| "tari-template".to_string()),
+                    tpl_id,
                 )
             }
         } else {
             warn_missing_aux = true;
-            (
-                result.difficulty,
-                result.height.unwrap_or_default(),
-                result
-                    .blockhashing_blob
-                    .clone()
-                    .or_else(|| result.blocktemplate_blob.clone())
-                    .unwrap_or_else(|| "tari-template".to_string()),
-            )
+
+            // No aux data at all; again, prefer compat template_id, then Monero fields.
+            let tpl_id = result
+                .template_id
+                .as_ref()
+                .or_else(|| result.blockhashing_blob.as_ref())
+                .or_else(|| result.blocktemplate_blob.as_ref())
+                .cloned()
+                .unwrap_or_else(|| "tari-template".to_string());
+
+            (result.difficulty, result.height.unwrap_or_default(), tpl_id)
         };
 
         if warn_missing_aux {
@@ -452,7 +471,8 @@ impl TariMergeMiningClient {
         if let Some(reward) = miner_reward {
             debug!(
                 target_difficulty,
-                reward, "received Tari aux chain reward estimate"
+                reward,
+                "received Tari aux chain reward estimate"
             );
         }
 
