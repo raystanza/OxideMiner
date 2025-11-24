@@ -1174,6 +1174,12 @@ async fn submit_share_internal(
                         .tari_difficulty
                         .store(tpl.target_difficulty, Ordering::Relaxed);
                 }
+                Err(oxide_core::tari::TariClientError::InsufficientDifficulty { .. }) => {
+                    tracing::debug!(
+                        job_id = %share.job_id,
+                        "share below Tari difficulty; not a candidate merge-mined block"
+                    );
+                }
                 Err(e) => {
                     stats.tari_rejected.fetch_add(1, Ordering::Relaxed);
                     tracing::warn!(job_id = %share.job_id, error = %e, "failed to submit Tari merge-mining solution");
