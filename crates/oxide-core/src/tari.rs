@@ -126,6 +126,10 @@ pub struct MergeMiningPowData {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct MoneroCompatTemplate {
+    // Monero difficulty reported by the proxy. This is intentionally unused for Tari difficulty
+    // selection because it reflects Monero, not Tari, work. Kept for completeness when
+    // deserializing Monero-compatible responses.
+    #[allow(dead_code)]
     #[serde(default)]
     difficulty: Option<u64>,
     #[serde(default)]
@@ -193,12 +197,14 @@ impl TariMergeMiningClient {
         let backoff = Duration::from_secs(config.backoff_secs.max(1));
         let http = reqwest::Client::builder().timeout(timeout).build()?;
 
+        let prefer_monero_compat = config.monero_wallet_address.is_some();
+
         Ok(Self {
             http,
             base_url: config.proxy_url,
             backoff,
             monero_wallet_address: config.monero_wallet_address,
-            prefer_monero_compat: Arc::new(AtomicBool::new(false)),
+            prefer_monero_compat: Arc::new(AtomicBool::new(prefer_monero_compat)),
             warned_direct_unavailable: Arc::new(AtomicBool::new(false)),
             warned_missing_aux: Arc::new(AtomicBool::new(false)),
         })
@@ -208,12 +214,7 @@ impl TariMergeMiningClient {
     /// Mining). Validates that the returned template is merge-mineable and contains PoW data.
     pub async fn fetch_template(&self) -> Result<MergeMiningTemplate, TariClientError> {
         if self.prefer_monero_compat.load(Ordering::Relaxed) {
-            match self.fetch_template_monero_compat().await {
-                Ok(tpl) => return Ok(tpl),
-                Err(err) => {
-                    debug!(error = %err, "monero-compatible template fetch failed; retrying tari method");
-                }
-            }
+            return self.fetch_template_monero_compat().await;
         }
 
         match self.fetch_template_direct().await {
@@ -222,12 +223,16 @@ impl TariMergeMiningClient {
                 self.prefer_monero_compat.store(false, Ordering::Relaxed);
                 Ok(tpl)
             }
-            Err(TariClientError::Proxy(msg)) if msg.contains("Method not found") => {
+            Err(TariClientError::Proxy(msg)) if is_method_not_found(&msg) => {
                 // Some merge-mining proxies expose only the Monero-compatible surface; fall back
                 // when the Tari JSON-RPC method is unavailable.
                 self.log_direct_method_unavailable();
                 self.prefer_monero_compat.store(true, Ordering::Relaxed);
-                self.fetch_template_monero_compat().await
+                if self.monero_wallet_address.is_some() {
+                    self.fetch_template_monero_compat().await
+                } else {
+                    Err(TariClientError::Proxy(msg))
+                }
             }
             Err(err) => {
                 // If the direct Tari method failed for another reason but a Monero wallet address
@@ -388,78 +393,40 @@ impl TariMergeMiningClient {
         &self,
         result: MoneroCompatTemplate,
     ) -> Result<MergeMiningTemplate, TariClientError> {
-        let mut warn_missing_aux = false;
-        let mut miner_reward = None;
-
-        let (target_difficulty, height, template_id) = if let Some(aux) = result.aux {
-            let mut chains_iter = aux.chains.unwrap_or_default().into_iter();
-            let chain = chains_iter
-                .find(|c| c.id.as_deref().unwrap_or_default() == "tari")
-                .or_else(|| chains_iter.next());
-
-            if let Some(chain) = chain {
-                miner_reward = chain.miner_reward;
-
-                // Prefer explicit template IDs from aux/compat, then fall back to mining_hash and
-                // generic Monero fields. This makes use of both MoneroAuxChain::template_id and
-                // MoneroCompatTemplate::template_id so they’re no longer “dead” fields.
-                let tpl_id = chain
-                    .template_id
-                    .as_ref()
-                    .or_else(|| chain.mining_hash.as_ref())
-                    .or_else(|| result.template_id.as_ref())
-                    .or_else(|| result.blockhashing_blob.as_ref())
-                    .or_else(|| result.blocktemplate_blob.as_ref())
-                    .cloned()
-                    .unwrap_or_else(|| "tari-template".to_string());
-
-                (
-                    chain
-                        .difficulty
-                        .or(aux.base_difficulty)
-                        .or(result.difficulty),
-                    chain.height.or(result.height).unwrap_or_default(),
-                    tpl_id,
-                )
-            } else {
-                warn_missing_aux = true;
-
-                // No matching aux chain; fall back to compat-level IDs first, then generic Monero IDs.
-                let tpl_id = result
-                    .template_id
-                    .as_ref()
-                    .or_else(|| result.blockhashing_blob.as_ref())
-                    .or_else(|| result.blocktemplate_blob.as_ref())
-                    .cloned()
-                    .unwrap_or_else(|| "tari-template".to_string());
-
-                (
-                    aux.base_difficulty.or(result.difficulty),
-                    result.height.unwrap_or_default(),
-                    tpl_id,
-                )
-            }
-        } else {
-            warn_missing_aux = true;
-
-            // No aux data at all; again, prefer compat template_id, then Monero fields.
-            let tpl_id = result
-                .template_id
-                .as_ref()
-                .or_else(|| result.blockhashing_blob.as_ref())
-                .or_else(|| result.blocktemplate_blob.as_ref())
-                .cloned()
-                .unwrap_or_else(|| "tari-template".to_string());
-
-            (result.difficulty, result.height.unwrap_or_default(), tpl_id)
-        };
-
-        if warn_missing_aux {
+        let aux = result.aux.ok_or_else(|| {
             self.log_missing_aux_once();
-        }
+            TariClientError::MissingAuxData
+        })?;
 
-        let target_difficulty =
-            target_difficulty.ok_or_else(|| TariClientError::InvalidDifficulty)?;
+        let mut chains_iter = aux.chains.unwrap_or_default().into_iter();
+        let chain = chains_iter
+            .find(|c| c.id.as_deref().unwrap_or_default() == "tari")
+            .ok_or_else(|| {
+                self.log_missing_aux_once();
+                TariClientError::MissingAuxData
+            })?;
+
+        let miner_reward = chain.miner_reward;
+
+        // Prefer explicit template IDs from aux/compat, then fall back to mining_hash and
+        // generic Monero fields. This makes use of both MoneroAuxChain::template_id and
+        // MoneroCompatTemplate::template_id so they’re no longer “dead” fields.
+        let template_id = chain
+            .template_id
+            .as_ref()
+            .or_else(|| chain.mining_hash.as_ref())
+            .or_else(|| result.template_id.as_ref())
+            .or_else(|| result.blockhashing_blob.as_ref())
+            .or_else(|| result.blocktemplate_blob.as_ref())
+            .cloned()
+            .unwrap_or_else(|| "tari-template".to_string());
+
+        let target_difficulty = chain
+            .difficulty
+            .or(aux.base_difficulty)
+            .ok_or_else(|| TariClientError::InvalidDifficulty)?;
+
+        let height = chain.height.or(result.height).unwrap_or_default();
         let target = difficulty_to_target_bytes(target_difficulty)?;
 
         if let Some(status) = result.status {
@@ -473,8 +440,7 @@ impl TariMergeMiningClient {
         if let Some(reward) = miner_reward {
             debug!(
                 target_difficulty,
-                reward,
-                "received Tari aux chain reward estimate"
+                reward, "received Tari aux chain reward estimate"
             );
         }
 
@@ -531,7 +497,11 @@ impl TariMergeMiningClient {
         // merge-mining proxy/base node can plausibly accept. Tari difficulty/target semantics use
         // big-endian integers (RFC-0120); Monero RandomX hashes are little-endian, so convert
         // before comparison.
-        validate_tari_pow(monero_pow_hash, &template.target, template.target_difficulty)?;
+        validate_tari_pow(
+            monero_pow_hash,
+            &template.target,
+            template.target_difficulty,
+        )?;
 
         let solved_blob = self.build_solved_monero_blob(template, monero_nonce_hex, monero_blob)?;
 
@@ -626,15 +596,15 @@ impl TariMergeMiningClient {
         // cached templates; treat this as informational to avoid log spam during steady-state
         // polling while still surfacing the first occurrence to operators.
         if !self.warned_missing_aux.swap(true, Ordering::Relaxed) {
-            warn!(
-                "merge-mining proxy response missing Tari aux data; using Monero template fields"
-            );
+            warn!("merge-mining proxy response missing Tari aux data");
         } else {
-            debug!(
-                "merge-mining proxy response missing Tari aux data; using Monero template fields"
-            );
+            debug!("merge-mining proxy response missing Tari aux data");
         }
     }
+}
+
+fn is_method_not_found(msg: &str) -> bool {
+    msg.contains("Method not found") || msg.contains("Unknown monerod rpc method")
 }
 
 /// Converts RFC-0120 difficulty to a big-endian 256-bit target: target = floor((2^256 - 1) /
@@ -677,8 +647,7 @@ fn validate_tari_pow(
 
     debug!(
         achieved_difficulty = achieved,
-        target_difficulty,
-        "evaluated Tari merge-mining share locally",
+        target_difficulty, "evaluated Tari merge-mining share locally",
     );
 
     if pow_val > target_val {
@@ -915,14 +884,11 @@ mod tests {
             ..Default::default()
         };
 
-        let tpl = client
+        let err = client
             .parse_monero_compat_template(compat)
-            .expect("fallback to monero fields should succeed when aux missing");
+            .expect_err("missing aux data must fail for Tari merge mining");
 
-        assert_eq!(tpl.template_id, "blob-id");
-        assert_eq!(tpl.height, 88);
-        assert_eq!(tpl.target_difficulty, 4444);
-        assert_eq!(tpl.pow_algo, PowAlgorithm::Monero);
+        assert!(matches!(err, TariClientError::MissingAuxData));
     }
 
     #[test]
@@ -995,13 +961,64 @@ mod tests {
         let target = difficulty_to_target_bytes(1_000).expect("difficulty should convert");
         // Little-endian hash representing numeric value 1.
         let pow_hash = "01".to_string() + &"00".repeat(31);
-        let achieved =
-            validate_tari_pow(&pow_hash, &target, 1_000).expect("meets Tari target");
+        let achieved = validate_tari_pow(&pow_hash, &target, 1_000).expect("meets Tari target");
         assert!(achieved > 0);
 
         // A large hash (all 0xFF) should fail the target check.
         let err = validate_tari_pow(&"ff".repeat(32), &target, 1_000)
             .expect_err("high hash should be rejected");
-        assert!(matches!(err, TariClientError::InsufficientDifficulty { .. }));
+        assert!(matches!(
+            err,
+            TariClientError::InsufficientDifficulty { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_compat_template_without_tari_chain() {
+        let client = TariMergeMiningClient::new(crate::config::TariMergeMiningConfig::default())
+            .expect("client constructs with defaults");
+
+        let compat = MoneroCompatTemplate {
+            difficulty: Some(9999),
+            height: Some(42),
+            aux: Some(MoneroAuxData {
+                base_difficulty: Some(7777),
+                chains: Some(vec![MoneroAuxChain {
+                    id: Some("other".into()),
+                    difficulty: Some(1234),
+                    height: Some(10),
+                    template_id: Some("wrong".into()),
+                    mining_hash: None,
+                    miner_reward: None,
+                }]),
+            }),
+            ..Default::default()
+        };
+
+        let err = client
+            .parse_monero_compat_template(compat)
+            .expect_err("non-Tari aux chain should be rejected");
+
+        assert!(matches!(err, TariClientError::MissingAuxData));
+    }
+
+    #[test]
+    fn validates_pow_against_large_target() {
+        let target_difficulty = 681_449_638_587u64;
+        let target = difficulty_to_target_bytes(target_difficulty).expect("difficulty converts");
+
+        // Very low numeric hash value should meet even a high difficulty target.
+        let pow_hash = "01".to_string() + &"00".repeat(31);
+        let achieved =
+            validate_tari_pow(&pow_hash, &target, target_difficulty).expect("meets target");
+        assert!(achieved >= target_difficulty);
+
+        // A hash just above the target boundary should fail.
+        let err = validate_tari_pow(&"ff".repeat(32), &target, target_difficulty)
+            .expect_err("hash above target should be rejected");
+        assert!(matches!(
+            err,
+            TariClientError::InsufficientDifficulty { .. }
+        ));
     }
 }

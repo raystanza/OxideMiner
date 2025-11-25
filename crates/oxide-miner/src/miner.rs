@@ -1011,6 +1011,12 @@ async fn maybe_fetch_tari_template(
                 .store(template.target_difficulty, Ordering::Relaxed);
             Some(template)
         }
+        Err(oxide_core::tari::TariClientError::MissingAuxData) => {
+            tracing::debug!(
+                "Tari merge mining template fetch failed: proxy response missing Tari aux data"
+            );
+            None
+        }
         Err(e) => {
             tracing::warn!("Tari merge mining template fetch failed: {e}");
             None
@@ -1173,6 +1179,12 @@ async fn submit_share_internal(
                     stats
                         .tari_difficulty
                         .store(tpl.target_difficulty, Ordering::Relaxed);
+                }
+                Err(oxide_core::tari::TariClientError::InsufficientDifficulty { .. }) => {
+                    tracing::debug!(
+                        job_id = %share.job_id,
+                        "share below Tari difficulty; not a candidate merge-mined block"
+                    );
                 }
                 Err(e) => {
                     stats.tari_rejected.fetch_add(1, Ordering::Relaxed);
