@@ -126,6 +126,10 @@ pub struct MergeMiningPowData {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct MoneroCompatTemplate {
+    // Monero difficulty reported by the proxy. This is intentionally unused for Tari difficulty
+    // selection because it reflects Monero, not Tari, work. Kept for completeness when
+    // deserializing Monero-compatible responses.
+    #[allow(dead_code)]
     #[serde(default)]
     difficulty: Option<u64>,
     #[serde(default)]
@@ -193,12 +197,14 @@ impl TariMergeMiningClient {
         let backoff = Duration::from_secs(config.backoff_secs.max(1));
         let http = reqwest::Client::builder().timeout(timeout).build()?;
 
+        let prefer_monero_compat = config.monero_wallet_address.is_some();
+
         Ok(Self {
             http,
             base_url: config.proxy_url,
             backoff,
             monero_wallet_address: config.monero_wallet_address,
-            prefer_monero_compat: Arc::new(AtomicBool::new(false)),
+            prefer_monero_compat: Arc::new(AtomicBool::new(prefer_monero_compat)),
             warned_direct_unavailable: Arc::new(AtomicBool::new(false)),
             warned_missing_aux: Arc::new(AtomicBool::new(false)),
         })
@@ -208,12 +214,7 @@ impl TariMergeMiningClient {
     /// Mining). Validates that the returned template is merge-mineable and contains PoW data.
     pub async fn fetch_template(&self) -> Result<MergeMiningTemplate, TariClientError> {
         if self.prefer_monero_compat.load(Ordering::Relaxed) {
-            match self.fetch_template_monero_compat().await {
-                Ok(tpl) => return Ok(tpl),
-                Err(err) => {
-                    debug!(error = %err, "monero-compatible template fetch failed; retrying tari method");
-                }
-            }
+            return self.fetch_template_monero_compat().await;
         }
 
         match self.fetch_template_direct().await {
@@ -222,12 +223,16 @@ impl TariMergeMiningClient {
                 self.prefer_monero_compat.store(false, Ordering::Relaxed);
                 Ok(tpl)
             }
-            Err(TariClientError::Proxy(msg)) if msg.contains("Method not found") => {
+            Err(TariClientError::Proxy(msg)) if is_method_not_found(&msg) => {
                 // Some merge-mining proxies expose only the Monero-compatible surface; fall back
                 // when the Tari JSON-RPC method is unavailable.
                 self.log_direct_method_unavailable();
                 self.prefer_monero_compat.store(true, Ordering::Relaxed);
-                self.fetch_template_monero_compat().await
+                if self.monero_wallet_address.is_some() {
+                    self.fetch_template_monero_compat().await
+                } else {
+                    Err(TariClientError::Proxy(msg))
+                }
             }
             Err(err) => {
                 // If the direct Tari method failed for another reason but a Monero wallet address
@@ -435,8 +440,7 @@ impl TariMergeMiningClient {
         if let Some(reward) = miner_reward {
             debug!(
                 target_difficulty,
-                reward,
-                "received Tari aux chain reward estimate"
+                reward, "received Tari aux chain reward estimate"
             );
         }
 
@@ -493,7 +497,11 @@ impl TariMergeMiningClient {
         // merge-mining proxy/base node can plausibly accept. Tari difficulty/target semantics use
         // big-endian integers (RFC-0120); Monero RandomX hashes are little-endian, so convert
         // before comparison.
-        validate_tari_pow(monero_pow_hash, &template.target, template.target_difficulty)?;
+        validate_tari_pow(
+            monero_pow_hash,
+            &template.target,
+            template.target_difficulty,
+        )?;
 
         let solved_blob = self.build_solved_monero_blob(template, monero_nonce_hex, monero_blob)?;
 
@@ -588,15 +596,15 @@ impl TariMergeMiningClient {
         // cached templates; treat this as informational to avoid log spam during steady-state
         // polling while still surfacing the first occurrence to operators.
         if !self.warned_missing_aux.swap(true, Ordering::Relaxed) {
-            warn!(
-                "merge-mining proxy response missing Tari aux data; using Monero template fields"
-            );
+            warn!("merge-mining proxy response missing Tari aux data");
         } else {
-            debug!(
-                "merge-mining proxy response missing Tari aux data; using Monero template fields"
-            );
+            debug!("merge-mining proxy response missing Tari aux data");
         }
     }
+}
+
+fn is_method_not_found(msg: &str) -> bool {
+    msg.contains("Method not found") || msg.contains("Unknown monerod rpc method")
 }
 
 /// Converts RFC-0120 difficulty to a big-endian 256-bit target: target = floor((2^256 - 1) /
@@ -639,8 +647,7 @@ fn validate_tari_pow(
 
     debug!(
         achieved_difficulty = achieved,
-        target_difficulty,
-        "evaluated Tari merge-mining share locally",
+        target_difficulty, "evaluated Tari merge-mining share locally",
     );
 
     if pow_val > target_val {
@@ -954,14 +961,16 @@ mod tests {
         let target = difficulty_to_target_bytes(1_000).expect("difficulty should convert");
         // Little-endian hash representing numeric value 1.
         let pow_hash = "01".to_string() + &"00".repeat(31);
-        let achieved =
-            validate_tari_pow(&pow_hash, &target, 1_000).expect("meets Tari target");
+        let achieved = validate_tari_pow(&pow_hash, &target, 1_000).expect("meets Tari target");
         assert!(achieved > 0);
 
         // A large hash (all 0xFF) should fail the target check.
         let err = validate_tari_pow(&"ff".repeat(32), &target, 1_000)
             .expect_err("high hash should be rejected");
-        assert!(matches!(err, TariClientError::InsufficientDifficulty { .. }));
+        assert!(matches!(
+            err,
+            TariClientError::InsufficientDifficulty { .. }
+        ));
     }
 
     #[test]
@@ -1007,6 +1016,9 @@ mod tests {
         // A hash just above the target boundary should fail.
         let err = validate_tari_pow(&"ff".repeat(32), &target, target_difficulty)
             .expect_err("hash above target should be rejected");
-        assert!(matches!(err, TariClientError::InsufficientDifficulty { .. }));
+        assert!(matches!(
+            err,
+            TariClientError::InsufficientDifficulty { .. }
+        ));
     }
 }

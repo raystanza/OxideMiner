@@ -1011,6 +1011,12 @@ async fn maybe_fetch_tari_template(
                 .store(template.target_difficulty, Ordering::Relaxed);
             Some(template)
         }
+        Err(oxide_core::tari::TariClientError::MissingAuxData) => {
+            tracing::debug!(
+                "Tari merge mining template fetch failed: proxy response missing Tari aux data"
+            );
+            None
+        }
         Err(e) => {
             tracing::warn!("Tari merge mining template fetch failed: {e}");
             None
