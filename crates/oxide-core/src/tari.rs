@@ -189,6 +189,7 @@ pub struct TariMergeMiningClient {
     prefer_monero_compat: Arc<AtomicBool>,
     warned_direct_unavailable: Arc<AtomicBool>,
     warned_missing_aux: Arc<AtomicBool>,
+    warned_missing_tari_chain: Arc<AtomicBool>,
 }
 
 impl TariMergeMiningClient {
@@ -207,6 +208,7 @@ impl TariMergeMiningClient {
             prefer_monero_compat: Arc::new(AtomicBool::new(prefer_monero_compat)),
             warned_direct_unavailable: Arc::new(AtomicBool::new(false)),
             warned_missing_aux: Arc::new(AtomicBool::new(false)),
+            warned_missing_tari_chain: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -398,13 +400,11 @@ impl TariMergeMiningClient {
             TariClientError::MissingAuxData
         })?;
 
-        let mut chains_iter = aux.chains.unwrap_or_default().into_iter();
-        let chain = chains_iter
-            .find(|c| c.id.as_deref().unwrap_or_default() == "tari")
-            .ok_or_else(|| {
-                self.log_missing_aux_once();
-                TariClientError::MissingAuxData
-            })?;
+        let chains = aux.chains.unwrap_or_default();
+        let chain = select_tari_chain(&chains).ok_or_else(|| {
+            self.log_missing_tari_chain_once(&chains);
+            TariClientError::MissingAuxData
+        })?;
 
         let miner_reward = chain.miner_reward;
 
@@ -455,6 +455,23 @@ impl TariMergeMiningClient {
             monero_blocktemplate_blob: result.blocktemplate_blob,
             monero_reserved_offset: result.reserved_offset,
         })
+    }
+
+    fn log_missing_tari_chain_once(&self, chains: &[MoneroAuxChain]) {
+        if self.warned_missing_tari_chain.swap(true, Ordering::Relaxed) {
+            return;
+        }
+
+        let ids: Vec<String> = chains.iter().filter_map(|c| c.id.clone()).collect();
+
+        if ids.is_empty() {
+            warn!("merge-mining proxy response contained no aux chains under _aux.chains");
+        } else {
+            warn!(
+                ?ids,
+                "merge-mining proxy response missing Tari aux chain id (expected one of: tari/xtr)"
+            );
+        }
     }
 
     /// Submits a merge-mined solution bound to the provided template. The parameters mirror the
@@ -764,6 +781,22 @@ fn read_varint(bytes: &[u8], offset: &mut usize) -> Result<u64, TariClientError>
     Ok(len)
 }
 
+fn select_tari_chain<'a>(chains: &'a [MoneroAuxChain]) -> Option<&'a MoneroAuxChain> {
+    const TARI_IDS: &[&str] = &["tari", "xtr", "tari-mainnet", "tari-testnet"];
+
+    for candidate in TARI_IDS {
+        if let Some(chain) = chains.iter().find(|c| {
+            c.id.as_deref()
+                .map(|id| id.eq_ignore_ascii_case(candidate))
+                .unwrap_or(false)
+        }) {
+            return Some(chain);
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,6 +901,38 @@ mod tests {
             tpl.monero_blocktemplate_blob.as_deref(),
             Some("blocktemplate")
         );
+    }
+
+    #[test]
+    fn parses_monero_compat_template_with_xtr_chain_id() {
+        let client = TariMergeMiningClient::new(crate::config::TariMergeMiningConfig::default())
+            .expect("client constructs with defaults");
+
+        let compat = MoneroCompatTemplate {
+            blocktemplate_blob: Some("tpl".into()),
+            blockhashing_blob: Some("hashing".into()),
+            aux: Some(MoneroAuxData {
+                base_difficulty: Some(10_000),
+                chains: Some(vec![MoneroAuxChain {
+                    id: Some("xtr".into()),
+                    difficulty: Some(20_000),
+                    height: Some(5),
+                    template_id: None,
+                    mining_hash: Some("aux-hash".into()),
+                    miner_reward: None,
+                }]),
+            }),
+            ..Default::default()
+        };
+
+        let tpl = client
+            .parse_monero_compat_template(compat)
+            .expect("xtr chain id should be accepted as Tari");
+
+        assert_eq!(tpl.height, 5);
+        assert_eq!(tpl.target_difficulty, 20_000);
+        assert_eq!(tpl.template_id, "aux-hash");
+        assert_eq!(tpl.monero_blocktemplate_blob.as_deref(), Some("tpl"));
     }
 
     #[test]
