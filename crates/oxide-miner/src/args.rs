@@ -17,11 +17,11 @@ use std::{
 )]
 pub struct Args {
     /// pool like "pool.supportxmr.com:5555"
-    #[arg(short = 'o', long = "url", required_unless_present = "benchmark")]
+    #[arg(short = 'o', long = "url", required_unless_present_any = ["benchmark", "tari_pool_url"])]
     pub pool: Option<String>,
 
     /// Your XMR wallet address
-    #[arg(short = 'u', long = "user", required_unless_present = "benchmark")]
+    #[arg(short = 'u', long = "user", required_unless_present_any = ["benchmark", "tari_wallet_address"])]
     pub wallet: Option<String>,
 
     /// Pool password (often 'x')
@@ -103,6 +103,10 @@ pub struct Args {
     #[arg(long = "tari-merge-mining")]
     pub tari_merge_mining: bool,
 
+    /// Tari backend selection: none, proxy, or pool
+    #[arg(long = "tari-mode", value_name = "MODE", value_parser = ["none", "proxy", "pool"], default_value = "none")]
+    pub tari_mode: String,
+
     /// URL of the minotari merge mining proxy (e.g. http://127.0.0.1:18081)
     #[arg(long = "tari-proxy-url", value_hint = ValueHint::Url, default_value = "http://127.0.0.1:18081")]
     pub tari_proxy_url: String,
@@ -111,6 +115,26 @@ pub struct Args {
     /// get_block_template fallback.
     #[arg(long = "tari-monero-wallet", value_name = "XMR_ADDRESS")]
     pub tari_monero_wallet: Option<String>,
+
+    /// Tari pool stratum URL (e.g. stratum+tcp://tarirx.pool:port)
+    #[arg(long = "tari-pool-url", value_name = "URL")]
+    pub tari_pool_url: Option<String>,
+
+    /// Tari wallet address for pool payouts
+    #[arg(long = "tari-wallet-address", value_name = "TARI_ADDRESS")]
+    pub tari_wallet_address: Option<String>,
+
+    /// Optional worker/rig identifier for Tari pool mining
+    #[arg(long = "tari-rig-id", value_name = "NAME")]
+    pub tari_rig_id: Option<String>,
+
+    /// Optional login/username for Tari pool mining
+    #[arg(long = "tari-login", value_name = "LOGIN")]
+    pub tari_login: Option<String>,
+
+    /// Optional password for Tari pool mining
+    #[arg(long = "tari-password", value_name = "PASSWORD")]
+    pub tari_password: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -133,7 +157,26 @@ pub struct ConfigFile {
     pub debug: Option<bool>,
     pub proxy: Option<String>,
     pub tari_merge_mining: Option<bool>,
+    pub tari_mode: Option<String>,
     pub tari_proxy_url: Option<String>,
+    pub tari_monero_wallet: Option<String>,
+    pub tari_pool_url: Option<String>,
+    pub tari_wallet_address: Option<String>,
+    pub tari_rig_id: Option<String>,
+    pub tari_login: Option<String>,
+    pub tari_password: Option<String>,
+    pub tari: Option<TariFileConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TariFileConfig {
+    pub mode: Option<String>,
+    pub pool_url: Option<String>,
+    pub wallet_address: Option<String>,
+    pub rig_id: Option<String>,
+    pub login: Option<String>,
+    pub password: Option<String>,
+    pub proxy_url: Option<String>,
     pub tari_monero_wallet: Option<String>,
 }
 
@@ -284,6 +327,62 @@ fn apply_config_defaults(
         }
     }
 
+    if let Some(tari_cfg) = config.tari.as_ref() {
+        if let Some(mode) = tari_cfg.mode.as_ref() {
+            if !has_arg(original_args, None, Some("tari-mode")) {
+                push_value(args, "--tari-mode", mode.as_str());
+            }
+        }
+
+        if let Some(pool) = tari_cfg.pool_url.as_ref() {
+            if !has_arg(original_args, None, Some("tari-pool-url")) {
+                push_value(args, "--tari-pool-url", pool.as_str());
+            }
+        }
+
+        if let Some(wallet) = tari_cfg.wallet_address.as_ref() {
+            if !has_arg(original_args, None, Some("tari-wallet-address")) {
+                push_value(args, "--tari-wallet-address", wallet.as_str());
+            }
+        }
+
+        if let Some(rig) = tari_cfg.rig_id.as_ref() {
+            if !has_arg(original_args, None, Some("tari-rig-id")) {
+                push_value(args, "--tari-rig-id", rig.as_str());
+            }
+        }
+
+        if let Some(login) = tari_cfg.login.as_ref() {
+            if !has_arg(original_args, None, Some("tari-login")) {
+                push_value(args, "--tari-login", login.as_str());
+            }
+        }
+
+        if let Some(password) = tari_cfg.password.as_ref() {
+            if !has_arg(original_args, None, Some("tari-password")) {
+                push_value(args, "--tari-password", password.as_str());
+            }
+        }
+
+        if let Some(proxy_url) = tari_cfg.proxy_url.as_ref() {
+            if !has_arg(original_args, None, Some("tari-proxy-url")) {
+                push_value(args, "--tari-proxy-url", proxy_url.as_str());
+            }
+        }
+
+        if let Some(wallet) = tari_cfg.tari_monero_wallet.as_ref() {
+            if !has_arg(original_args, None, Some("tari-monero-wallet")) {
+                push_value(args, "--tari-monero-wallet", wallet.as_str());
+            }
+        }
+    }
+
+    if let Some(mode) = config.tari_mode.as_ref() {
+        if !has_arg(original_args, None, Some("tari-mode")) {
+            push_value(args, "--tari-mode", mode.as_str());
+        }
+    }
+
     if let Some(proxy_url) = config.tari_proxy_url.as_ref() {
         if !has_arg(original_args, None, Some("tari-proxy-url")) {
             push_value(args, "--tari-proxy-url", proxy_url.as_str());
@@ -293,6 +392,36 @@ fn apply_config_defaults(
     if let Some(wallet) = config.tari_monero_wallet.as_ref() {
         if !has_arg(original_args, None, Some("tari-monero-wallet")) {
             push_value(args, "--tari-monero-wallet", wallet.as_str());
+        }
+    }
+
+    if let Some(pool) = config.tari_pool_url.as_ref() {
+        if !has_arg(original_args, None, Some("tari-pool-url")) {
+            push_value(args, "--tari-pool-url", pool.as_str());
+        }
+    }
+
+    if let Some(wallet) = config.tari_wallet_address.as_ref() {
+        if !has_arg(original_args, None, Some("tari-wallet-address")) {
+            push_value(args, "--tari-wallet-address", wallet.as_str());
+        }
+    }
+
+    if let Some(rig) = config.tari_rig_id.as_ref() {
+        if !has_arg(original_args, None, Some("tari-rig-id")) {
+            push_value(args, "--tari-rig-id", rig.as_str());
+        }
+    }
+
+    if let Some(login) = config.tari_login.as_ref() {
+        if !has_arg(original_args, None, Some("tari-login")) {
+            push_value(args, "--tari-login", login.as_str());
+        }
+    }
+
+    if let Some(password) = config.tari_password.as_ref() {
+        if !has_arg(original_args, None, Some("tari-password")) {
+            push_value(args, "--tari-password", password.as_str());
         }
     }
 

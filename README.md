@@ -232,6 +232,21 @@ Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all o
 | `--config <PATH>`         | Load defaults from a TOML file (defaults to `./config.toml`).                     |
 | `--benchmark`             | Run the RandomX benchmark and exit (no pool connection).                          |
 
+#### Tari backends
+
+OxideMiner supports three Tari modes selectable via CLI flags or the `[tari]` table in `config.toml`:
+
+- `none` (default): Tari disabled.
+- `proxy`: Merge mine Tari through a local `minotari_merge_mining_proxy` (requires a Minotari node).
+- `pool`: Connect directly to a Tari stratum pool (no local node required).
+
+Key Tari flags:
+
+- `--tari-mode <none|proxy|pool>` – select the backend.
+- `--tari-pool-url <STRATUM>` / `--tari-wallet-address <ADDR>` – Tari pool endpoint and payout address (pool mode).
+- `--tari-rig-id <NAME>` / `--tari-login <LOGIN>` / `--tari-password <PASS>` – optional Tari pool identity fields.
+- `--tari-proxy-url <URL>` / `--tari-monero-wallet <XMR>` – merge-mining proxy endpoint and optional Monero address (proxy mode).
+
 ### Sample `config.toml`
 
 The repository ships with [`config.toml.example`](config.toml.example). Copy it alongside the binary as `config.toml` and edit the keys you need. CLI flags always win over file settings.

@@ -5,7 +5,8 @@ use crate::http_api::run_http_api;
 use crate::stats::Stats;
 use crate::util::tiny_jitter_ms;
 use anyhow::{anyhow, Context, Result};
-use oxide_core::config::DEFAULT_BATCH_SIZE;
+use futures::future;
+use oxide_core::config::{TariMode, DEFAULT_BATCH_SIZE};
 use oxide_core::stratum::{ConnectConfig, PoolJob};
 use oxide_core::worker::{Share, WorkItem, WorkerSpawnConfig};
 use oxide_core::{
@@ -270,6 +271,13 @@ pub async fn run(args: Args) -> Result<()> {
         })
         .transpose()?;
 
+    let tari_mode = match args.tari_mode.as_str() {
+        "none" => TariMode::None,
+        "proxy" => TariMode::Proxy,
+        "pool" => TariMode::Pool,
+        other => return Err(anyhow!("unsupported --tari-mode value: {other}")),
+    };
+
     let mut cfg = Config {
         pool: args.pool.expect("pool required unless --benchmark"),
         wallet: args.wallet.expect("user required unless --benchmark"),
@@ -289,11 +297,19 @@ pub async fn run(args: Args) -> Result<()> {
         yield_between_batches: !args.no_yield,
         agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
         proxy: args.proxy.clone(),
-        tari: oxide_core::config::TariMergeMiningConfig {
-            enabled: args.tari_merge_mining,
-            proxy_url: args.tari_proxy_url.clone(),
-            monero_wallet_address: args.tari_monero_wallet.clone(),
-            ..Default::default()
+        tari: oxide_core::config::TariConfig {
+            mode: tari_mode,
+            enabled: Some(args.tari_merge_mining),
+            pool_url: args.tari_pool_url.clone(),
+            wallet_address: args.tari_wallet_address.clone(),
+            rig_id: args.tari_rig_id.clone(),
+            login: args.tari_login.clone(),
+            password: args.tari_password.clone(),
+            merge_mining: oxide_core::config::TariMergeMiningConfig {
+                proxy_url: args.tari_proxy_url.clone(),
+                monero_wallet_address: args.tari_monero_wallet.clone(),
+                ..Default::default()
+            },
         },
     };
 
@@ -402,18 +418,44 @@ pub async fn run(args: Args) -> Result<()> {
         tracing::info!("tuning override: user set batch_size={}", cfg.batch_size);
     }
 
+    let tari_mode = cfg.tari.effective_mode();
+    let stats = Arc::new(Stats::new(
+        cfg.pool.clone(),
+        cfg.tls,
+        matches!(tari_mode, TariMode::Proxy | TariMode::Pool),
+        cfg.tari.pool_url.clone(),
+    ));
+
     // Broadcast: jobs -> workers
     let (jobs_tx, _jobs_rx0) = tokio::sync::broadcast::channel(64);
     // MPSC: shares <- workers
     let (shares_tx, mut shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
 
+    let (tari_jobs_tx, tari_shares_rx, _tari_workers) = if matches!(tari_mode, TariMode::Pool) {
+        let (tx, _rx0) = tokio::sync::broadcast::channel(64);
+        let (tari_shares_tx, tari_shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
+        let workers = spawn_workers(
+            n_workers,
+            WorkerSpawnConfig {
+                jobs_tx: tx.clone(),
+                shares_tx: tari_shares_tx,
+                affinity: cfg.affinity,
+                large_pages,
+                batch_size: cfg.batch_size,
+                yield_between_batches: cfg.yield_between_batches,
+                hash_counter: stats.tari_hashes.clone(),
+            },
+        );
+        (Some(tx), Some(tari_shares_rx), Some(workers))
+    } else {
+        (None, None, None)
+    };
+
     if cfg.threads.is_none() {
         tracing::info!("auto-selected {} worker threads", n_workers);
     }
-
-    let stats = Arc::new(Stats::new(cfg.pool.clone(), cfg.tls, cfg.tari.enabled));
-    let tari_client = if cfg.tari.enabled {
-        match TariMergeMiningClient::new(cfg.tari.clone()) {
+    let tari_client = if matches!(tari_mode, TariMode::Proxy) {
+        match TariMergeMiningClient::new(cfg.tari.merge_mining_config()) {
             Ok(client) => Some(client),
             Err(e) => {
                 tracing::warn!("failed to initialize Tari merge mining client: {e}");
@@ -910,11 +952,193 @@ pub async fn run(args: Args) -> Result<()> {
         }
     });
 
+    let tari_pool_handle = match (tari_mode, tari_jobs_tx.clone(), tari_shares_rx) {
+        (TariMode::Pool, Some(tari_jobs_tx), Some(mut tari_shares_rx)) => {
+            if cfg.tari.pool_url.is_none() {
+                tracing::error!("Tari pool mode selected but no --tari-pool-url provided");
+                return Err(anyhow!("tari pool url missing"));
+            }
+
+            if cfg.tari.wallet_address.is_none() {
+                tracing::error!("Tari pool mode selected but no --tari-wallet-address provided");
+                return Err(anyhow!("tari wallet address missing"));
+            }
+
+            let tari_pool = cfg.tari.pool_url.clone().unwrap();
+            let tari_wallet = cfg.tari.wallet_address.clone().unwrap();
+            let tari_login = cfg
+                .tari
+                .login
+                .clone()
+                .unwrap_or_else(|| tari_wallet.clone());
+            let tari_pass = cfg
+                .tari
+                .password
+                .clone()
+                .unwrap_or_else(|| cfg.pass.clone().unwrap_or_else(|| "x".to_string()));
+            let tari_rig = cfg.tari.rig_id.clone();
+            let tari_agent = format!("{} (tari)", cfg.agent);
+            let tls_ca_cert = cfg.tls_ca_cert.clone();
+            let tls_cert_sha256 = cfg.tls_cert_sha256;
+            let proxy_cfg = proxy_cfg.clone();
+            let stats = stats.clone();
+
+            Some(tokio::spawn(async move {
+                let mut backoff_ms = 1_000u64;
+                loop {
+                    let login = if let Some(rig) = tari_rig.as_ref() {
+                        format!("{tari_login}.{rig}")
+                    } else {
+                        tari_login.clone()
+                    };
+
+                    let conn = PoolConnectionSettings {
+                        pool: &tari_pool,
+                        wallet: &login,
+                        pass: &tari_pass,
+                        agent: &tari_agent,
+                        tls,
+                        tls_ca_cert: tls_ca_cert.as_deref(),
+                        tls_cert_sha256: tls_cert_sha256.as_ref(),
+                        proxy: proxy_cfg.as_ref(),
+                    };
+
+                    stats.tari_pool_connected.store(false, Ordering::Relaxed);
+
+                    let (mut client, initial_job) =
+                        match StratumClient::connect_and_login(conn.as_connect_config()).await {
+                            Ok(v) => {
+                                stats.tari_pool_connected.store(true, Ordering::Relaxed);
+                                backoff_ms = 1_000;
+                                v
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Tari pool connect/login failed; retrying in {}s: {e}",
+                                    backoff_ms / 1000
+                                );
+                                sleep(Duration::from_millis(backoff_ms)).await;
+                                backoff_ms = (backoff_ms * 2).min(60_000);
+                                continue;
+                            }
+                        };
+
+                    let mut valid_job_ids: HashSet<String> = HashSet::new();
+                    let mut seen_nonces: HashMap<String, HashSet<u32>> = HashMap::new();
+                    let mut pending_shares: HashMap<u64, String> = HashMap::new();
+
+                    if let Some(job) = initial_job {
+                        let job_id = broadcast_simple_job(
+                            job,
+                            true,
+                            &tari_jobs_tx,
+                            &mut valid_job_ids,
+                            &mut seen_nonces,
+                        );
+                        tracing::info!(job_id = %job_id, "received initial Tari pool job");
+                    }
+
+                    loop {
+                        tokio::select! {
+                            maybe_share = tari_shares_rx.recv() => {
+                                let Some(share) = maybe_share else { break; };
+                                if !valid_job_ids.contains(&share.job_id) {
+                                    tracing::debug!(job_id = %share.job_id, "ignoring Tari share for stale job");
+                                    continue;
+                                }
+                                let nonce_set = seen_nonces.entry(share.job_id.clone()).or_default();
+                                if !nonce_set.insert(share.nonce) {
+                                    tracing::debug!(job_id = %share.job_id, nonce = share.nonce, "duplicate Tari nonce");
+                                    continue;
+                                }
+
+                                let nonce_hex = format!("{:08x}", share.nonce);
+                                let result_hex = hex::encode(share.result);
+                                match client.submit_share(&share.job_id, &nonce_hex, &result_hex).await {
+                                    Ok(id) => {
+                                        pending_shares.insert(id, share.job_id.clone());
+                                        tracing::debug!(job_id = %share.job_id, "submitted Tari share");
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(job_id = %share.job_id, error = %e, "failed to submit Tari share");
+                                    }
+                                }
+                            }
+                            msg = client.read_json() => {
+                                match msg {
+                                    Ok(v) => {
+                                        if v.get("method").and_then(|m| m.as_str()) == Some("job") {
+                                            if let Some(params) = v.get("params") {
+                                                if let Ok(job) = serde_json::from_value::<PoolJob>(params.clone()) {
+                                                    let clean = params
+                                                        .get("clean")
+                                                        .and_then(|c| c.as_bool())
+                                                        .unwrap_or(true);
+                                                    let job_id = broadcast_simple_job(
+                                                        job,
+                                                        clean,
+                                                        &tari_jobs_tx,
+                                                        &mut valid_job_ids,
+                                                        &mut seen_nonces,
+                                                    );
+                                                    tracing::info!(job_id = %job_id, clean_jobs = clean, "new Tari pool job");
+                                                }
+                                            }
+                                            continue;
+                                        }
+
+                                        if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
+                                            if let Some(job_id) = pending_shares.remove(&id) {
+                                                if v.get("result").is_some() {
+                                                    stats.tari_accepted.fetch_add(1, Ordering::Relaxed);
+                                                    tracing::info!(job_id = %job_id, accepted = stats.tari_accepted.load(Ordering::Relaxed), "Tari share accepted");
+                                                } else {
+                                                    stats.tari_rejected.fetch_add(1, Ordering::Relaxed);
+                                                    tracing::warn!(job_id = %job_id, rejected = stats.tari_rejected.load(Ordering::Relaxed), "Tari share rejected");
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Tari pool read error: {e}");
+                                        stats
+                                            .tari_pool_connected
+                                            .store(false, Ordering::Relaxed);
+                                        sleep(Duration::from_millis(tiny_jitter_ms())).await;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }))
+        }
+        (TariMode::Pool, _, _) => {
+            tracing::warn!("Tari pool mode enabled but Tari channels were not initialized");
+            None
+        }
+        _ => None,
+    };
+
     // Keep the runtime alive until either the pool task ends or the user presses Ctrl+C.
+    let tari_pool_future = async {
+        if let Some(handle) = tari_pool_handle {
+            handle.await.map_err(|e| e.into())
+        } else {
+            future::pending::<Result<(), anyhow::Error>>().await
+        }
+    };
+
     tokio::select! {
         res = pool_handle => {
             if let Err(e) = res {
                 tracing::error!("pool task ended unexpectedly: {e}");
+            }
+        }
+        res = tari_pool_future => {
+            if let Err(e) = res {
+                tracing::error!("Tari pool task ended unexpectedly: {e}");
             }
         }
         _ = tokio::signal::ctrl_c() => {
@@ -979,6 +1203,28 @@ fn broadcast_job(
     }
     // Track the Monero job blob for later Tari submissions.
     monero_jobs.insert(job_id.clone(), job_clone);
+    job_id
+}
+
+fn broadcast_simple_job(
+    mut job: PoolJob,
+    clean_jobs: bool,
+    jobs_tx: &tokio::sync::broadcast::Sender<WorkItem>,
+    valid_job_ids: &mut HashSet<String>,
+    seen_nonces: &mut HashMap<String, HashSet<u32>>,
+) -> String {
+    if clean_jobs {
+        valid_job_ids.clear();
+        seen_nonces.clear();
+    }
+
+    job.cache_target();
+    let job_id = job.job_id.clone();
+    let _ = jobs_tx.send(WorkItem {
+        job,
+        is_devfee: false,
+    });
+    valid_job_ids.insert(job_id.clone());
     job_id
 }
 

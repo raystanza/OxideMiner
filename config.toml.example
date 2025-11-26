@@ -21,11 +21,19 @@
 # Route pool traffic through a SOCKS5 proxy (useful for Tor/VPN privacy)
 #proxy = "socks5://127.0.0.1:9050"
 
-# Enable Tari merge mining through the local minotari_merge_mining_proxy
-#tari_merge_mining = false
-#tari_proxy_url = "http://127.0.0.1:18081"
-# Optional Monero address to supply when the proxy requires a Monero-style get_block_template
-#tari_monero_wallet = "48..."
+# Tari configuration. Choose one of three modes:
+#   none  - Tari disabled
+#   proxy - Merge mine via local minotari_merge_mining_proxy
+#   pool  - Direct Tari pool mining (no local node required)
+#[tari]
+#mode = "none"
+#pool_url = "stratum+tcp://tarirx.pool.example:4000"   # when mode = "pool"
+#wallet_address = "tari_wallet_address"                 # when mode = "pool"
+#rig_id = "rig01"                                      # optional worker name
+#login = "custom_login"                                # optional pool login override
+#password = "x"                                        # optional pool password
+#proxy_url = "http://127.0.0.1:18081"                  # when mode = "proxy"
+#tari_monero_wallet = "48..."                          # optional Monero address for proxy fallback
 
 # Number of mining threads.
 # Omit this key to auto-tune based on CPU/cache heuristics (recommended).
