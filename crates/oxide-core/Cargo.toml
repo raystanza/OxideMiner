@@ -46,3 +46,6 @@ windows-sys = { workspace = true, features = [
     "Win32_System_SystemServices",
     "Win32_System_Threading",
 ] }
+
+[dev-dependencies]
+toml = { workspace = true }

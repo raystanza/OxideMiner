@@ -37,13 +37,11 @@ pub struct Config {
     /// optional SOCKS5 proxy URL (socks5://[user:pass@]host:port)
     pub proxy: Option<String>,
     /// optional Tari merge mining support
-    pub tari: TariMergeMiningConfig,
+    pub tari: TariConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TariMergeMiningConfig {
-    #[serde(default)]
-    pub enabled: bool,
     #[serde(default = "default_proxy_url")]
     pub proxy_url: String,
     /// Optional Monero address passed to the merge-mining proxy when it expects a Monero-compatible
@@ -54,6 +52,41 @@ pub struct TariMergeMiningConfig {
     pub request_timeout_secs: u64,
     #[serde(default = "default_backoff_secs")]
     pub backoff_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TariMode {
+    None,
+    Proxy,
+    Pool,
+}
+
+impl Default for TariMode {
+    fn default() -> Self {
+        TariMode::None
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TariConfig {
+    #[serde(default)]
+    pub mode: TariMode,
+    /// Backwards compatibility for legacy boolean toggle
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub pool_url: Option<String>,
+    #[serde(default)]
+    pub wallet_address: Option<String>,
+    #[serde(default)]
+    pub rig_id: Option<String>,
+    #[serde(default)]
+    pub login: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub merge_mining: TariMergeMiningConfig,
 }
 
 fn default_proxy_url() -> String {
@@ -71,12 +104,45 @@ fn default_backoff_secs() -> u64 {
 impl Default for TariMergeMiningConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             proxy_url: default_proxy_url(),
             monero_wallet_address: None,
             request_timeout_secs: default_request_timeout_secs(),
             backoff_secs: default_backoff_secs(),
         }
+    }
+}
+
+impl Default for TariConfig {
+    fn default() -> Self {
+        Self {
+            mode: TariMode::None,
+            enabled: None,
+            pool_url: None,
+            wallet_address: None,
+            rig_id: None,
+            login: None,
+            password: None,
+            merge_mining: TariMergeMiningConfig::default(),
+        }
+    }
+}
+
+impl TariConfig {
+    pub fn effective_mode(&self) -> TariMode {
+        match self.mode {
+            TariMode::None => {
+                if self.enabled.unwrap_or(false) {
+                    TariMode::Proxy
+                } else {
+                    TariMode::None
+                }
+            }
+            mode => mode,
+        }
+    }
+
+    pub fn merge_mining_config(&self) -> TariMergeMiningConfig {
+        self.merge_mining.clone()
     }
 }
 
@@ -98,7 +164,7 @@ impl Default for Config {
             yield_between_batches: true,
             agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
             proxy: None,
-            tari: TariMergeMiningConfig::default(),
+            tari: TariConfig::default(),
         }
     }
 }
@@ -124,7 +190,40 @@ mod tests {
         assert!(cfg.yield_between_batches);
         assert!(cfg.agent.starts_with("OxideMiner/"));
         assert!(cfg.proxy.is_none());
-        assert!(!cfg.tari.enabled);
-        assert_eq!(cfg.tari.proxy_url, "http://127.0.0.1:18081");
+        assert_eq!(cfg.tari.effective_mode(), TariMode::None);
+        assert_eq!(cfg.tari.merge_mining.proxy_url, "http://127.0.0.1:18081");
+    }
+
+    #[test]
+    fn tari_enabled_flag_maps_to_proxy_mode() {
+        let cfg = TariConfig {
+            enabled: Some(true),
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.effective_mode(), TariMode::Proxy);
+    }
+
+    #[test]
+    fn tari_pool_fields_round_trip() {
+        let toml = r#"
+mode = "pool"
+pool_url = "stratum+tcp://tari.pool:4000"
+wallet_address = "tari_wallet"
+rig_id = "rig01"
+login = "customlogin"
+password = "pw"
+        "#;
+
+        let cfg: TariConfig = toml::from_str(toml).expect("valid toml");
+        assert_eq!(cfg.effective_mode(), TariMode::Pool);
+        assert_eq!(
+            cfg.pool_url.as_deref(),
+            Some("stratum+tcp://tari.pool:4000")
+        );
+        assert_eq!(cfg.wallet_address.as_deref(), Some("tari_wallet"));
+        assert_eq!(cfg.rig_id.as_deref(), Some("rig01"));
+        assert_eq!(cfg.login.as_deref(), Some("customlogin"));
+        assert_eq!(cfg.password.as_deref(), Some("pw"));
     }
 }

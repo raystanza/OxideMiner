@@ -79,7 +79,7 @@ Download a pre-built binary from the [Relases](https://github.com/raystanza/Oxid
 
 _By default OxideMiner will look for a 'config.toml' file in the same directory as the binary, but you can supply the '--config \<PATH_to_CONFIG.TOML>' argument._
 
->[CLI Screenshot](oxideminer_cli_screenshot.png)
+> [CLI Screenshot](oxideminer_cli_screenshot.png)
 
 ### Prerequisites
 
@@ -212,43 +212,130 @@ malicious mirrors and supply-chain attacks.
 
 Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all options. Key flags include:
 
-| Flag                      | Purpose                                                                           |
-| ------------------------- | --------------------------------------------------------------------------------- |
-| `-o, --url <HOST:PORT>`   | Mining pool endpoint (required unless `--benchmark`).                             |
-| `-u, --user <ADDRESS>`    | Primary Monero wallet or subaddress.                                              |
-| `-p, --pass <STRING>`     | Pool password/rig identifier (default `x`).                                       |
-| `-t, --threads <N>`       | Override auto-selected worker threads.                                            |
-| `--batch-size <N>`        | Manual hashes per batch (default auto recommendation).                            |
-| `--no-yield`              | Disable cooperative yields between batches (less friendly to shared hosts).       |
-| `--affinity`              | Pin worker threads to CPU cores.                                                  |
-| `--huge-pages`            | Request large pages for RandomX dataset (requires OS support).                    |
-| `--proxy <URL>`           | Route stratum traffic via SOCKS5 proxy. Format: `socks5://[user:pass@]host:port`. |
-| `--tls`                   | Enable TLS for the stratum connection.                                            |
-| `--tls-ca-cert <PATH>`    | Add a custom CA certificate (PEM/DER) when TLS is enabled.                        |
-| `--tls-cert-sha256 <HEX>` | Pin the pool certificate by SHA-256 fingerprint.                                  |
-| `--api-port <PORT>`       | Serve the dashboard/API on `127.0.0.1:<PORT>`.                                    |
-| `--dashboard-dir <DIR>`   | Serve dashboard assets from disk instead of embedded versions.                    |
-| `--debug`                 | Increase log verbosity and tee output to rotating files in `./logs/`.             |
-| `--config <PATH>`         | Load defaults from a TOML file (defaults to `./config.toml`).                     |
-| `--benchmark`             | Run the RandomX benchmark and exit (no pool connection).                          |
+| Flag                                | Purpose                                                                           |
+| ----------------------------------- | --------------------------------------------------------------------------------- |
+| `-o, --url <HOST:PORT>`             | Mining pool endpoint (required unless `--benchmark`).                             |
+| `-u, --user <ADDRESS>`              | Primary Monero wallet or subaddress.                                              |
+| `-p, --pass <STRING>`               | Pool password/rig identifier (default `x`).                                       |
+| `-t, --threads <N>`                 | Override auto-selected worker threads.                                            |
+| `--batch-size <N>`                  | Hashes per batch in the mining loop (default `10000`).                            |
+| `--no-yield`                        | Disable cooperative yields between batches (less friendly to shared hosts).       |
+| `--affinity`                        | Pin worker threads to CPU cores.                                                  |
+| `--huge-pages`                      | Request large pages for RandomX dataset (requires OS support).                    |
+| `--proxy <URL>`                     | Route stratum traffic via SOCKS5 proxy. Format: `socks5://[user:pass@]host:port`. |
+| `--tls`                             | Enable TLS for the stratum connection.                                            |
+| `--tls-ca-cert <PATH>`              | Add a custom CA certificate (PEM/DER) when TLS is enabled.                        |
+| `--tls-cert-sha256 <HEX>`           | Pin the pool certificate by SHA-256 fingerprint.                                  |
+| `--api-port <PORT>`                 | Serve the dashboard/API on `127.0.0.1:<PORT>`.                                    |
+| `--dashboard-dir <DIR>`             | Serve dashboard assets from disk instead of embedded versions.                    |
+| `--debug`                           | Increase log verbosity and tee output to rotating files in `./logs/`.             |
+| `--config <PATH>`                   | Load defaults from a TOML file (defaults to `./config.toml`).                     |
+| `--benchmark`                       | Run the RandomX benchmark and exit (no pool connection).                          |
+| `--tari-mode <none / proxy / pool>` | Tari backend mode.                                                                |
+| `--tari-pool-url <STRATUM>`         | Tari pool endpoint                                                                |
+| `--tari-wallet-address <ADDR>`      | Tari payout address (**pool** mode).                                              |
+| `--tari-rig-id <NAME>`              | Tari rig identifier (Optional)                                                    |
+| `--tari-login <LOGIN>`              | Tari pool login (Optional)                                                        |
+| `--tari-password <PASS>`            | Tari pool password (Optional)                                                     |
+| `--tari-proxy-url <URL>`            | Tari merge-mining proxy endpoint (**proxy** mode).                                |
+| `--tari-monero-wallet <XMR>`        | Fallback Monero wallet address (**proxy** mode).                                  |
+
+Every flag has a matching `config.toml` key. If you set both, **CLI flags always win** over file settings.
+
+#### Tari backends
+
+OxideMiner supports three Tari modes selectable via CLI flags or the `[tari]` table in `config.toml`:
+
+- `none` (default): Tari disabled.
+- `proxy`: Merge mine Tari through a local `minotari_merge_mining_proxy` (requires a Minotari node).
+- `pool`: Connect directly to a Tari stratum pool (no local node required).
+
+For more detailed examples, see the `[tari]` section in [`config.toml.example`](config.toml.example).
 
 ### Sample `config.toml`
 
-The repository ships with [`config.toml.example`](config.toml.example). Copy it alongside the binary as `config.toml` and edit the keys you need. CLI flags always win over file settings.
+The repository ships with [`config.toml.example`](config.toml.example).
+Copy it alongside the binary as `config.toml` and uncomment/edit the keys you need.
+
+General rules:
+
+- If you **omit** a key, OxideMiner uses a sensible built-in default or auto-tuned behavior.
+- **CLI flags override** anything in `config.toml`.
+- When in doubt, start with the smallest possible config and expand as needed.
+
+Below are three common setups.
+
+#### 1. Monero only (typical pool mining)
+
+This is the simplest configuration. Put this in `config.toml`:
 
 ```toml
-# Save as config.toml next to the oxide-miner binary
-pool = "pool.supportxmr.com:5555"
-wallet = "48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaaVYMpBBd2QQUiTY84qaSXJYVPS"
-pass = "rig001"
-threads = 8          # omit to auto-tune
-api_port = 8080      # enable HTTP dashboard
-huge_pages = true    # request HugeTLB / large pages if OS allows it
-# dashboard_dir = "./crates/oxide-miner/assets"   # serve custom UI while developing
-# tls = true
-# tls_ca_cert = "/etc/ssl/certs/ca-certificates.crt"
-# tls_cert_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# Monero-only example
+pool   = "pool.supportxmr.com:5555"   # Your Monero pool host:port
+wallet = "<YOUR_XMR_ADDRESS>"        # Your primary Monero wallet or subaddress
+pass   = "x"                         # Pool password / worker name (often 'x')
+
+# Optional tuning / UX
+# threads    = 8       # omit to let OxideMiner auto-tune based on CPU/cache
+# api_port   = 8080    # enable HTTP API + dashboard on 127.0.0.1:8080
+# huge_pages = true    # try HugeTLB / large pages if OS allows it
+# affinity   = true    # pin worker threads to CPU cores
 ```
+
+You can run the same thing via CLI only:
+
+```bash
+oxide-miner -o pool.supportxmr.com:5555 -u <YOUR_XMR_ADDRESS> -p x
+```
+
+...but putting it in `config.toml` is nicer for long-running rigs.
+
+#### 2. Monero + Tari via merge-mining proxy (`mode = "proxy"`)
+
+Use this when you have a Minotari node and `minotari_merge_mining_proxy` running locally and want to merge mine Tari alongside your normal Monero pool.
+
+```toml
+# Normal Monero pool config
+pool   = "pool.supportxmr.com:5555"
+wallet = "<YOUR_XMR_ADDRESS>"
+pass   = "x"
+
+[tari]
+# Enable Tari via merge-mining proxy
+mode       = "proxy"
+
+# Where your minotari_merge_mining_proxy is listening
+proxy_url  = "http://127.0.0.1:18081"
+
+# Monero address for proxy fallback (if the proxy only exposes
+# a Monero-style get_block_template endpoint)
+tari_monero_wallet = "<YOUR_XMR_ADDRESS>"
+```
+
+This keeps your existing Monero pool setup and layers Tari on top via the proxy.
+
+#### 3. Tari pool only (`mode = "pool"`)
+
+Use this when you want to mine **only Tari** against a dedicated Tari stratum pool (no local node required). In this case you can skip the Monero `pool` / `wallet` keys entirely.
+
+```toml
+# Tari pool-only example
+[tari]
+mode          = "pool"
+
+# Tari stratum endpoint
+pool_url      = "stratum+tcp://tarirx.pool.example:4000"
+
+# IMPORTANT: This should be your one-sided Tari address (NOT an emoji address)
+wallet_address = "<YOUR_TARI_ONE_SIDED_ADDRESS>"
+
+# Optional identity fields shown in the pool dashboard (if supported)
+# rig_id   = "rig01"
+# login    = "custom_login"
+# password = "x"
+```
+
+For all other knobs (TLS, SOCKS5 proxy, batch size, logging, dashboard, huge pages, etc.) see the comments in [`config.toml.example`](config.toml.example). It is the authoritative, commented reference for everything OxideMiner can read from `config.toml`.
 
 ### Configuration warnings
 

@@ -14,17 +14,21 @@ pub struct Stats {
     pub tari_accepted: AtomicU64,
     pub tari_rejected: AtomicU64,
     pub tari_enabled: bool,
+    pub tari_pool: Option<String>,
     pub tari_height: AtomicU64,
     pub tari_difficulty: AtomicU64,
     /// Total hashes computed since startup.
     pub hashes: Arc<AtomicU64>,
+    /// Hashes computed for the Tari pool (if enabled).
+    pub tari_hashes: Arc<AtomicU64>,
     pub pool_connected: AtomicBool,
+    pub tari_pool_connected: AtomicBool,
     pub tls: bool,
     pub pool: String,
 }
 
 impl Stats {
-    pub fn new(pool: String, tls: bool, tari_enabled: bool) -> Self {
+    pub fn new(pool: String, tls: bool, tari_enabled: bool, tari_pool: Option<String>) -> Self {
         Self {
             start: Instant::now(),
             accepted: AtomicU64::new(0),
@@ -34,10 +38,13 @@ impl Stats {
             tari_accepted: AtomicU64::new(0),
             tari_rejected: AtomicU64::new(0),
             tari_enabled,
+            tari_pool,
             tari_height: AtomicU64::new(0),
             tari_difficulty: AtomicU64::new(0),
             hashes: Arc::new(AtomicU64::new(0)),
+            tari_hashes: Arc::new(AtomicU64::new(0)),
             pool_connected: AtomicBool::new(false),
+            tari_pool_connected: AtomicBool::new(false),
             tls,
             pool,
         }
@@ -48,6 +55,15 @@ impl Stats {
         let elapsed = self.start.elapsed().as_secs_f64();
         if elapsed > 0.0 {
             self.hashes.load(Ordering::Relaxed) as f64 / elapsed
+        } else {
+            0.0
+        }
+    }
+
+    pub fn tari_hashrate(&self) -> f64 {
+        let elapsed = self.start.elapsed().as_secs_f64();
+        if elapsed > 0.0 {
+            self.tari_hashes.load(Ordering::Relaxed) as f64 / elapsed
         } else {
             0.0
         }
@@ -68,7 +84,7 @@ mod tests {
 
     #[test]
     fn stats_initializes_counters() {
-        let stats = Stats::new("pool".into(), true, false);
+        let stats = Stats::new("pool".into(), true, false, None);
         assert_eq!(stats.accepted.load(Ordering::Relaxed), 0);
         assert_eq!(stats.rejected.load(Ordering::Relaxed), 0);
         assert_eq!(stats.dev_accepted.load(Ordering::Relaxed), 0);
@@ -76,13 +92,14 @@ mod tests {
         assert_eq!(stats.tari_accepted.load(Ordering::Relaxed), 0);
         assert_eq!(stats.tari_rejected.load(Ordering::Relaxed), 0);
         assert!(stats.hashrate() >= 0.0);
+        assert!(stats.tari_hashrate() >= 0.0);
         assert!(stats.tls);
         assert_eq!(stats.pool, "pool");
     }
 
     #[test]
     fn hashrate_uses_elapsed_time() {
-        let stats = Stats::new("pool".into(), false, false);
+        let stats = Stats::new("pool".into(), false, false, None);
         // Replace hashes with a pre-filled counter for deterministic check
         stats.hashes.store(1000, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
@@ -101,10 +118,13 @@ mod tests {
             tari_accepted: AtomicU64::new(0),
             tari_rejected: AtomicU64::new(0),
             tari_enabled: false,
+            tari_pool: None,
             tari_height: AtomicU64::new(0),
             tari_difficulty: AtomicU64::new(0),
             hashes: Arc::new(AtomicU64::new(0)),
+            tari_hashes: Arc::new(AtomicU64::new(0)),
             pool_connected: AtomicBool::new(false),
+            tari_pool_connected: AtomicBool::new(false),
             tls: false,
             pool: String::new(),
         };
@@ -113,7 +133,7 @@ mod tests {
 
     #[test]
     fn mining_duration_tracks_elapsed_time() {
-        let stats = Stats::new("pool".into(), false, false);
+        let stats = Stats::new("pool".into(), false, false, None);
         std::thread::sleep(Duration::from_millis(5));
         let elapsed = stats.mining_duration();
         assert!(elapsed >= Duration::from_millis(5));

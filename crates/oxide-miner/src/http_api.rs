@@ -140,9 +140,16 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             let dev_rej = s.dev_rejected.load(Ordering::Relaxed);
                             let tari_acc = s.tari_accepted.load(Ordering::Relaxed);
                             let tari_rej = s.tari_rejected.load(Ordering::Relaxed);
+                            let tari_hashes = s.tari_hashes.load(Ordering::Relaxed);
                             let hashes = s.hashes.load(Ordering::Relaxed);
                             let hashrate = s.hashrate();
+                            let tari_hashrate = s.tari_hashrate();
                             let connected = if s.pool_connected.load(Ordering::Relaxed) {
+                                1
+                            } else {
+                                0
+                            };
+                            let tari_connected = if s.tari_pool_connected.load(Ordering::Relaxed) {
                                 1
                             } else {
                                 0
@@ -150,7 +157,9 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             let tls = if s.tls { 1 } else { 0 };
                             use std::fmt::Write;
                             writeln!(body, "oxide_hashes_total {}", hashes).ok();
+                            writeln!(body, "oxide_tari_hashes_total {}", tari_hashes).ok();
                             writeln!(body, "oxide_hashrate {}", hashrate).ok();
+                            writeln!(body, "oxide_tari_hashrate {}", tari_hashrate).ok();
                             writeln!(body, "oxide_shares_accepted_total {}", accepted).ok();
                             writeln!(body, "oxide_shares_rejected_total {}", rejected).ok();
                             writeln!(body, "oxide_devfee_shares_accepted_total {}", dev_acc).ok();
@@ -158,6 +167,7 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             writeln!(body, "oxide_tari_shares_accepted_total {}", tari_acc).ok();
                             writeln!(body, "oxide_tari_shares_rejected_total {}", tari_rej).ok();
                             writeln!(body, "oxide_pool_connected {}", connected).ok();
+                            writeln!(body, "oxide_tari_pool_connected {}", tari_connected).ok();
                             writeln!(body, "oxide_tls_enabled {}", tls).ok();
                             writeln!(body, "version {}", env!("CARGO_PKG_VERSION")).ok();
                             writeln!(
@@ -201,7 +211,9 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             let tari_height = s.tari_height.load(Ordering::Relaxed);
                             let tari_difficulty = s.tari_difficulty.load(Ordering::Relaxed);
                             let hashes = s.hashes.load(Ordering::Relaxed);
+                            let tari_hashes = s.tari_hashes.load(Ordering::Relaxed);
                             let hashrate = s.hashrate();
+                            let tari_hashrate = s.tari_hashrate();
                             let mining_duration = s.mining_duration();
                             let system_uptime = system_uptime_seconds();
                             let build = json!({
@@ -214,9 +226,13 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
 
                             let resp_body = json!({
                                 "hashrate": hashrate,
+                                "tari_hashrate": tari_hashrate,
                                 "hashes_total": hashes,
+                                "tari_hashes_total": tari_hashes,
                                 "pool": s.pool,
                                 "connected": s.pool_connected.load(Ordering::Relaxed),
+                                "tari_pool": s.tari_pool.clone(),
+                                "tari_connected": s.tari_pool_connected.load(Ordering::Relaxed),
                                 "tls": s.tls,
                                 "version": env!("CARGO_PKG_VERSION"),
                                 "build": build,
@@ -313,7 +329,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false, false));
+        let stats = Arc::new(Stats::new("pool".into(), false, false, None));
         stats.accepted.store(5, Ordering::Relaxed);
         stats.rejected.store(2, Ordering::Relaxed);
         stats.dev_accepted.store(1, Ordering::Relaxed);
@@ -358,7 +374,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false, false));
+        let stats = Arc::new(Stats::new("pool".into(), false, false, None));
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("img")).unwrap();
@@ -407,7 +423,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false, false));
+        let stats = Arc::new(Stats::new("pool".into(), false, false, None));
         let server = tokio::spawn(run_http_api(port, stats, None));
         sleep(Duration::from_millis(50)).await;
 
