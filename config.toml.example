@@ -90,6 +90,10 @@
 # Optional: custom pool password (often "x" or similar).
 #password = "x"
 
+# Hashing algorithm for Tari pool mode: "randomx" (default) or "sha3x".
+# SHA3x is only supported when `mode = "pool"`.
+#algorithm = "randomx"
+
 ## ---------------------------------------------------------------------------
 ## Merge-mining proxy mode (mode = "proxy")
 ## ---------------------------------------------------------------------------

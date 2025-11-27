@@ -8,13 +8,15 @@ use anyhow::{anyhow, Context, Result};
 use futures::future;
 use oxide_core::config::{TariMode, DEFAULT_BATCH_SIZE};
 use oxide_core::stratum::{ConnectConfig, PoolJob};
-use oxide_core::worker::{Share, WorkItem, WorkerSpawnConfig};
+use oxide_core::worker::{Share, TariWorkerSpawnConfig, WorkItem, WorkerSpawnConfig};
 use oxide_core::{
-    autotune_snapshot, spawn_workers, Config, DevFeeScheduler, HugePageStatus, MergeMiningTemplate,
-    ProxyConfig, StratumClient, TariMergeMiningClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
+    autotune_snapshot, spawn_tari_workers, spawn_workers, Config, DevFeeScheduler, HugePageStatus,
+    MergeMiningTemplate, ProxyConfig, StratumClient, TariAlgorithm, TariMergeMiningClient,
+    DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::{atomic::Ordering, Arc};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{sleep, Duration};
@@ -70,6 +72,15 @@ impl<'a> PoolConnectionSettings<'a> {
             proxy: self.proxy,
         }
     }
+}
+
+fn validate_tari_algorithm_for_mode(mode: TariMode, algorithm: TariAlgorithm) -> Result<()> {
+    if matches!(mode, TariMode::Proxy) && algorithm == TariAlgorithm::Sha3x {
+        return Err(anyhow!(
+            "SHA3x is not supported in Tari proxy mode; use RandomX or switch to Tari pool mode"
+        ));
+    }
+    Ok(())
 }
 
 struct ShareContext<'a> {
@@ -278,6 +289,21 @@ pub async fn run(args: Args) -> Result<()> {
         other => return Err(anyhow!("unsupported --tari-mode value: {other}")),
     };
 
+    let tari_algorithm = args
+        .tari_algorithm
+        .as_deref()
+        .map(TariAlgorithm::from_str)
+        .unwrap_or_else(|| Ok(TariAlgorithm::default_randomx()))?;
+
+    if matches!(tari_mode, TariMode::None) && tari_algorithm != TariAlgorithm::RandomX {
+        tracing::warn!(
+            algo = %tari_algorithm,
+            "ignoring Tari algorithm selection because Tari mining is disabled",
+        );
+    }
+
+    validate_tari_algorithm_for_mode(tari_mode, tari_algorithm)?;
+
     let mut cfg = Config {
         pool: args.pool.expect("pool required unless --benchmark"),
         wallet: args.wallet.expect("user required unless --benchmark"),
@@ -305,6 +331,7 @@ pub async fn run(args: Args) -> Result<()> {
             rig_id: args.tari_rig_id.clone(),
             login: args.tari_login.clone(),
             password: args.tari_password.clone(),
+            algorithm: tari_algorithm,
             merge_mining: oxide_core::config::TariMergeMiningConfig {
                 proxy_url: args.tari_proxy_url.clone(),
                 monero_wallet_address: args.tari_monero_wallet.clone(),
@@ -434,9 +461,9 @@ pub async fn run(args: Args) -> Result<()> {
     let (tari_jobs_tx, tari_shares_rx, _tari_workers) = if matches!(tari_mode, TariMode::Pool) {
         let (tx, _rx0) = tokio::sync::broadcast::channel(64);
         let (tari_shares_tx, tari_shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
-        let workers = spawn_workers(
+        let workers = spawn_tari_workers(
             n_workers,
-            WorkerSpawnConfig {
+            TariWorkerSpawnConfig {
                 jobs_tx: tx.clone(),
                 shares_tx: tari_shares_tx,
                 affinity: cfg.affinity,
@@ -444,8 +471,9 @@ pub async fn run(args: Args) -> Result<()> {
                 batch_size: cfg.batch_size,
                 yield_between_batches: cfg.yield_between_batches,
                 hash_counter: stats.tari_hashes.clone(),
+                algorithm: cfg.tari.algorithm,
             },
-        );
+        )?;
         (Some(tx), Some(tari_shares_rx), Some(workers))
     } else {
         (None, None, None)
@@ -1147,6 +1175,26 @@ pub async fn run(args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tari_proxy_rejects_sha3x() {
+        let err = validate_tari_algorithm_for_mode(TariMode::Proxy, TariAlgorithm::Sha3x)
+            .expect_err("proxy mode must reject sha3x");
+        assert!(err
+            .to_string()
+            .contains("SHA3x is not supported in Tari proxy mode"));
+    }
+
+    #[test]
+    fn tari_pool_allows_sha3x() {
+        validate_tari_algorithm_for_mode(TariMode::Pool, TariAlgorithm::Sha3x)
+            .expect("pool mode should allow sha3x");
+    }
 }
 
 fn warn_huge_page_limit(status: &HugePageStatus, dataset_bytes: u64) {

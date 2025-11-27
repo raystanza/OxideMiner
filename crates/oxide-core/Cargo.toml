@@ -30,6 +30,7 @@ rustls-pemfile = { workspace = true }
 ring = { workspace = true }
 rustls = { workspace = true }
 rustls_webpki = { workspace = true }
+sha3 = { workspace = true }
 clap = { workspace = true }
 tokio-socks = { workspace = true }
 url = { workspace = true }

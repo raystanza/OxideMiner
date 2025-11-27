@@ -107,6 +107,10 @@ pub struct Args {
     #[arg(long = "tari-mode", value_name = "MODE", value_parser = ["none", "proxy", "pool"], default_value = "none")]
     pub tari_mode: String,
 
+    /// Tari algorithm when in Tari pool mode (randomx or sha3x)
+    #[arg(long = "tari-algorithm", short = 'A', value_name = "ALGO", value_parser = ["randomx", "sha3x"])]
+    pub tari_algorithm: Option<String>,
+
     /// URL of the minotari merge mining proxy (e.g. http://127.0.0.1:18081)
     #[arg(long = "tari-proxy-url", value_hint = ValueHint::Url, default_value = "http://127.0.0.1:18081")]
     pub tari_proxy_url: String,
@@ -166,6 +170,7 @@ pub struct ConfigFile {
     pub tari_login: Option<String>,
     pub tari_password: Option<String>,
     pub tari: Option<TariFileConfig>,
+    pub tari_algorithm: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -178,6 +183,7 @@ pub struct TariFileConfig {
     pub password: Option<String>,
     pub proxy_url: Option<String>,
     pub tari_monero_wallet: Option<String>,
+    pub algorithm: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -364,6 +370,12 @@ fn apply_config_defaults(
             }
         }
 
+        if let Some(algorithm) = tari_cfg.algorithm.as_ref() {
+            if !has_arg(original_args, None, Some("tari-algorithm")) {
+                push_value(args, "--tari-algorithm", algorithm.as_str());
+            }
+        }
+
         if let Some(proxy_url) = tari_cfg.proxy_url.as_ref() {
             if !has_arg(original_args, None, Some("tari-proxy-url")) {
                 push_value(args, "--tari-proxy-url", proxy_url.as_str());
@@ -380,6 +392,12 @@ fn apply_config_defaults(
     if let Some(mode) = config.tari_mode.as_ref() {
         if !has_arg(original_args, None, Some("tari-mode")) {
             push_value(args, "--tari-mode", mode.as_str());
+        }
+    }
+
+    if let Some(algo) = config.tari_algorithm.as_ref() {
+        if !has_arg(original_args, None, Some("tari-algorithm")) {
+            push_value(args, "--tari-algorithm", algo.as_str());
         }
     }
 
@@ -539,6 +557,17 @@ mod tests {
     use std::{ffi::OsString, fs};
     use tempfile::NamedTempFile;
 
+    fn write_temp_config(contents: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!("oxide-config-{nanos}.toml"));
+        fs::write(&path, contents).expect("write config");
+        path
+    }
+
     #[test]
     fn benchmark_mode_parses_without_pool_or_wallet() {
         assert!(Args::try_parse_from(["test", "--benchmark"]).is_ok());
@@ -575,6 +604,72 @@ mod tests {
     fn batch_size_is_none_when_flag_missing() {
         let args = Args::try_parse_from(["test", "-o", "pool:5555", "-u", "wallet"]).unwrap();
         assert_eq!(args.batch_size, None);
+    }
+
+    #[test]
+    fn config_file_sets_tari_algorithm() {
+        let path = write_temp_config(
+            r#"
+[tari]
+mode = "pool"
+algorithm = "sha3x"
+"#,
+        );
+
+        let args = vec![
+            "oxide-miner",
+            "--config",
+            path.to_str().unwrap(),
+            "--url",
+            "pool:1234",
+            "--user",
+            "wallet",
+            "--tari-mode",
+            "pool",
+            "--tari-pool-url",
+            "stratum+tcp://tari.pool:4000",
+            "--tari-wallet-address",
+            "tari_wallet",
+        ];
+
+        let parsed = parse_with_config_from(args).expect("args parse");
+        assert_eq!(parsed.args.tari_algorithm.as_deref(), Some("sha3x"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn cli_overrides_tari_algorithm() {
+        let path = write_temp_config(
+            r#"
+[tari]
+mode = "pool"
+algorithm = "sha3x"
+"#,
+        );
+
+        let args = vec![
+            "oxide-miner",
+            "--config",
+            path.to_str().unwrap(),
+            "--url",
+            "pool:1234",
+            "--user",
+            "wallet",
+            "--tari-mode",
+            "pool",
+            "--tari-pool-url",
+            "stratum+tcp://tari.pool:4000",
+            "--tari-wallet-address",
+            "tari_wallet",
+            "--tari-algorithm",
+            "randomx",
+        ];
+
+        let parsed = parse_with_config_from(args).expect("args parse");
+        assert_eq!(parsed.args.tari_algorithm.as_deref(), Some("randomx"));
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]

@@ -232,6 +232,7 @@ Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all o
 | `--config <PATH>`                   | Load defaults from a TOML file (defaults to `./config.toml`).                     |
 | `--benchmark`                       | Run the RandomX benchmark and exit (no pool connection).                          |
 | `--tari-mode <none / proxy / pool>` | Tari backend mode.                                                                |
+| `--tari-algorithm <randomx / sha3x>`| Tari hashing algorithm (**pool** mode).                                           |
 | `--tari-pool-url <STRATUM>`         | Tari pool endpoint                                                                |
 | `--tari-wallet-address <ADDR>`      | Tari payout address (**pool** mode).                                              |
 | `--tari-rig-id <NAME>`              | Tari rig identifier (Optional)                                                    |
@@ -249,6 +250,10 @@ OxideMiner supports three Tari modes selectable via CLI flags or the `[tari]` ta
 - `none` (default): Tari disabled.
 - `proxy`: Merge mine Tari through a local `minotari_merge_mining_proxy` (requires a Minotari node).
 - `pool`: Connect directly to a Tari stratum pool (no local node required).
+
+When using Tari **pool** mode you can choose the hashing algorithm with `--tari-algorithm` or
+`tari.algorithm` in `config.toml`. `sha3x` is only supported in pool mode; merge-mining via the
+proxy continues to use RandomX.
 
 For more detailed examples, see the `[tari]` section in [`config.toml.example`](config.toml.example).
 
