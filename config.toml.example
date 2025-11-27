@@ -1,82 +1,194 @@
 # OxideMiner configuration (TOML)
-# Save as ./config.toml next to the oxide-miner binary. You can also point to a different file with --config PATH.
-# Any CLI flag can still override these values. Omit a key to use the built-in default / auto behavior.
+# =============================================================================
+# HOW TO USE THIS FILE
+# -----------------------------------------------------------------------------
+# 1. Copy this file next to the `oxide-miner` binary.
+# 2. Rename it to:  config.toml
+# 3. Uncomment the lines you actually want to use (remove the leading '#').
 #
-# Minimal example (uncomment & edit the next 3 lines to get started):
-# pool = "pool.supportxmr.com:5555"    # Your pool host:port
-# wallet = "<YOUR_XMR_ADDRESS>"        # Your primary XMR wallet address
-# pass = "x"                           # Pool password / miner name (many pools accept 'x')
+# General notes:
+# - If you omit a key, OxideMiner will use its built-in default / auto behavior.
+# - Any CLI flag overrides the value from this file.
+# - When in doubt, leave options commented and only set what you understand.
+#
+# NOTE: You can NOT mine multiple pools at the same time with a single OxideMiner
+# instance.
+#
+# =============================================================================
+# QUICKSTART (MOST COMMON USE CASE)
+# =============================================================================
+# For a simple Monero-only setup, the only things you *must* set are:
+#
+# pool   = "pool.supportxmr.com:5555"   # Your Monero pool host:port
+# wallet = "<YOUR_XMR_ADDRESS>"        # Your primary Monero wallet address
+# pass   = "x"                         # Pool password / worker name (often 'x')
+#
+# Save the file and run:
+#   ./oxide-miner
+#
+# You can refine things later with the sections below.
+# =============================================================================
 
-# --- Connection ---
 
-# Replace with the mining pool of your choice (host:port)
+# =============================================================================
+# MONERO BACKEND
+# =============================================================================
+# You can configure Monero either via the simple top-level keys above
+# (pool / wallet / pass) or via the structured [monero] table below.
+# The [monero] table is recommended if you also use Tari or want to be explicit.
+
+#[monero]
+# Replace with the mining pool of your choice (host:port).
 #pool = "pool.supportxmr.com:3333"
 
-# Replace with your Monero wallet address (primary)
+# Replace with your primary Monero wallet address.
+# (The example below is a random address and will NOT receive your payouts.)
 #wallet = "48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaaVYMpBBd2QQUiTY84qaSXJYVPS"
 
-# Optional password / miner name
+# Optional pool password / worker name (many pools accept plain "x").
 #pass = "x"
 
-# Route pool traffic through a SOCKS5 proxy (useful for Tor/VPN privacy)
-#proxy = "socks5://127.0.0.1:9050"
 
-# Tari configuration. Choose one of three modes:
-#   none  - Tari disabled
-#   proxy - Merge mine via local minotari_merge_mining_proxy
-#   pool  - Direct Tari pool mining (no local node required)
+# =============================================================================
+# TARI BACKEND (OPTIONAL)
+# =============================================================================
+# OxideMiner can also mine Tari in addition to, or instead of, Monero.
+# You can select one of three Tari backends (equivalent to --tari-* CLI flags):
+#
+#   "none"  - Tari disabled (default)
+#   "proxy" - Merge mine via a local minotari_merge_mining_proxy (needs node)
+#   "pool"  - Direct Tari stratum pool mining (no local node required)
+#
+# Notes:
+# - In "pool" mode you can mine against a Tari pool only by setting
+#   `pool_url` and `wallet_address` even if you skip Monero config.
+# - In "proxy" mode the miner talks to the merge-mining proxy at `proxy_url`.
+#   If your proxy only exposes a Monero-compatible get_block_template,
+#   set `tari_monero_wallet` so the miner can fall back cleanly.
+#   (See README section "Tari backends" for details.)
+
 #[tari]
+# Available modes: "none" | "proxy" | "pool"
 #mode = "none"
-#pool_url = "stratum+tcp://tarirx.pool.example:4000"   # when mode = "pool"
-#wallet_address = "tari_wallet_address"                 # when mode = "pool"
-#rig_id = "rig01"                                      # optional worker name
-#login = "custom_login"                                # optional pool login override
-#password = "x"                                        # optional pool password
-#proxy_url = "http://127.0.0.1:18081"                  # when mode = "proxy"
-#tari_monero_wallet = "48..."                          # optional Monero address for proxy fallback
+
+## ---------------------------------------------------------------------------
+## Pool mode (mode = "pool")
+## ---------------------------------------------------------------------------
+# URL of your Tari mining pool (stratum or stratum+tcp).
+#pool_url = "stratum+tcp://tarirx.pool.example:4000"
+
+# Tari wallet address used for pool payouts.
+# IMPORTANT: this should be your one-sided Tari address, NOT an emoji address.
+#wallet_address = "tari_wallet_address"
+
+# Optional: worker/rig name shown in pool dashboard (if supported).
+#rig_id = "rig01"
+
+# Optional: custom pool login / username (if pool uses separate login).
+#login = "custom_login"
+
+# Optional: custom pool password (often "x" or similar).
+#password = "x"
+
+## ---------------------------------------------------------------------------
+## Merge-mining proxy mode (mode = "proxy")
+## ---------------------------------------------------------------------------
+# Base URL of your local minotari_merge_mining_proxy.
+# Typically this runs on the same machine as the miner or node.
+#proxy_url = "http://127.0.0.1:18081"
+
+# Optional Monero address for proxy fallback. Used if the proxy only exposes
+# a Monero-style get_block_template endpoint.
+#tari_monero_wallet = "48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaaVYMpBBd2QQUiTY84qaSXJYVPS"
+
+
+# =============================================================================
+# CORE MINING OPTIONS
+# =============================================================================
 
 # Number of mining threads.
-# Omit this key to auto-tune based on CPU/cache heuristics (recommended).
-# For maximum performace set this to the total number of threads your cpu(s) have.
+# - Omit this key (recommended) to let OxideMiner auto-tune thread count
+#   based on CPU topology and cache size.
+# - For manual tuning, set this to the total number of logical CPU threads.
 #threads = 8
 
-# Enable TLS for the pool connection. If true, you may also specify a CA bundle/cert
-# or pin the pool's leaf/server certificate by its SHA-256 fingerprint.
+# Route pool traffic through a SOCKS5 proxy.
+# Common use case: run your miner over Tor or a VPN without system-wide proxy.
+# Example for Tor:
+#proxy = "socks5://127.0.0.1:9050"
+
+# Enable TLS for the pool connection.
+# - If true, OxideMiner will connect via TLS (e.g., pool port 443 or 5555).
+# - You may also specify a custom CA bundle or pin the pool certificate.
 #tls = true
 
-# Path to a PEM bundle or CA certificate file to trust (only used when tls = true).
+# Path to a PEM bundle or CA certificate file to trust (used only when tls = true).
+# On most Linux systems this is something like:
+#   /etc/ssl/certs/ca-certificates.crt
 #tls_ca_cert = "/etc/ssl/certs/ca-certificates.crt"
 
 # Hex-encoded SHA-256 fingerprint of the expected **leaf** certificate (64 hex chars).
-# If set, the connection will be pinned to this certificate. Use with care.
+# If set, the connection will be pinned to this certificate.
+# Use with care: if the pool rotates certificates, you must update this value.
 #tls_cert_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-# --- HTTP API & Dashboard ---
 
-# Expose a simple HTTP API on this TCP port (e.g., /metrics and /api/stats endpoints).
+# =============================================================================
+# HTTP API & DASHBOARD
+# =============================================================================
+
+# Expose a simple HTTP API on this TCP port.
+# Endpoints include:
+#   /api/stats  - current hashrate, job info, etc.
+#   /metrics    - Prometheus metrics (if enabled)
 #api_port = 8080
 
 # Serve dashboard files from this directory instead of the embedded assets.
-# Useful for local development of the UI.
+# Useful when developing or customizing the web UI locally.
 #dashboard_dir = "./crates/oxide-miner/assets"
 
-# --- Performance & Scheduling ---
 
-# Pin worker threads to CPU cores (reduces OS scheduling jitter). Off by default.
+# =============================================================================
+# PERFORMANCE & SCHEDULING
+# =============================================================================
+
+# Pin worker threads to specific CPU cores.
+# - Can reduce scheduling jitter and slightly improve hashrate.
+# - May not play well with other heavy workloads on the same machine.
 #affinity = true
 
-# Request huge/large pages for the RandomX dataset. This often improves hashrate,
-# but requires OS configuration/privileges (Linux hugepages, Windows SeLockMemoryPrivilege).
+# Request huge/large pages for the RandomX dataset.
+# - Often improves hashrate significantly.
+# - Requires OS configuration:
+#   - Linux: configure hugepages and allow the mining user to use them.
+#   - Windows: grant SeLockMemoryPrivilege to the mining account.
 #huge_pages = true
 
-# Number of hashes per batch in the mining loop. Higher = fewer yields, less overhead,
-# but increased latency to respond to new jobs. Defaults to 10000.
+# Number of hashes per batch in the mining loop.
+# - Higher values:
+#     * Fewer yields / lower overhead
+#     * Higher latency when responding to new jobs
+# - Lower values:
+#     * More responsive to new jobs
+#     * Slightly more scheduling overhead
+# Default: 10000
 #batch_size = 10000
 
-# Disable cooperative yields between hash batches. Keep this **false** to be nice
-# to other processes. (Internally this maps to yield_between_batches = true.)
+# Cooperative yielding between hash batches.
+# Internally the miner has a "yield between batches" behavior that keeps the
+# system responsive. This flag inverts that behavior:
+#
+#   no_yield = false  -> yield between batches (recommended default)
+#   no_yield = true   -> do NOT yield; may increase hashrate at the cost of
+#                        system responsiveness.
 no_yield = false
 
-# Enable verbose debug logs. When enabled, logs are also written to ./logs/
-# with daily rotation.
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+# Enable verbose debug logs.
+# - When true, detailed logs are written to ./logs/ with daily rotation.
+# - This is useful for troubleshooting but slightly noisy for long runs.
 debug = false
