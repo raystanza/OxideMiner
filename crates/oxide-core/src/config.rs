@@ -1,5 +1,6 @@
 // OxideMiner/crates/oxide-core/src/config.rs
 
+use crate::tari_algo::TariAlgorithm;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -8,9 +9,9 @@ pub const DEFAULT_BATCH_SIZE: usize = 10_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// pool like "pool.example.com:3333"
-    pub pool: String,
+    pub pool: Option<String>,
     /// Monero wallet address (primary)
-    pub wallet: String,
+    pub wallet: Option<String>,
     /// optional password; many pools accept "x"
     pub pass: Option<String>,
     /// number of mining threads (None = auto decide later using CPU/cache heuristics)
@@ -85,6 +86,8 @@ pub struct TariConfig {
     pub login: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
+    #[serde(default = "TariAlgorithm::default_randomx")]
+    pub algorithm: TariAlgorithm,
     #[serde(default)]
     pub merge_mining: TariMergeMiningConfig,
 }
@@ -122,6 +125,7 @@ impl Default for TariConfig {
             rig_id: None,
             login: None,
             password: None,
+            algorithm: TariAlgorithm::default_randomx(),
             merge_mining: TariMergeMiningConfig::default(),
         }
     }
@@ -149,8 +153,8 @@ impl TariConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            pool: "pool.example.com:3333".into(),
-            wallet: "<YOUR_XMR_ADDRESS>".into(),
+            pool: Some("pool.example.com:3333".into()),
+            wallet: Some("<YOUR_XMR_ADDRESS>".into()),
             pass: Some("x".into()),
             threads: None,
             enable_devfee: true,
@@ -176,8 +180,8 @@ mod tests {
     #[test]
     fn default_config_values() {
         let cfg = Config::default();
-        assert_eq!(cfg.pool, "pool.example.com:3333");
-        assert_eq!(cfg.wallet, "<YOUR_XMR_ADDRESS>");
+        assert_eq!(cfg.pool.as_deref(), Some("pool.example.com:3333"));
+        assert_eq!(cfg.wallet.as_deref(), Some("<YOUR_XMR_ADDRESS>"));
         assert_eq!(cfg.pass.as_deref(), Some("x"));
         assert!(cfg.enable_devfee);
         assert!(!cfg.tls);
@@ -192,6 +196,7 @@ mod tests {
         assert!(cfg.proxy.is_none());
         assert_eq!(cfg.tari.effective_mode(), TariMode::None);
         assert_eq!(cfg.tari.merge_mining.proxy_url, "http://127.0.0.1:18081");
+        assert_eq!(cfg.tari.algorithm, TariAlgorithm::RandomX);
     }
 
     #[test]
@@ -225,5 +230,19 @@ password = "pw"
         assert_eq!(cfg.rig_id.as_deref(), Some("rig01"));
         assert_eq!(cfg.login.as_deref(), Some("customlogin"));
         assert_eq!(cfg.password.as_deref(), Some("pw"));
+        assert_eq!(cfg.algorithm, TariAlgorithm::RandomX);
+    }
+
+    #[test]
+    fn tari_algorithm_deserializes() {
+        let toml = r#"
+mode = "pool"
+pool_url = "stratum+tcp://tari.pool:4000"
+wallet_address = "tari_wallet"
+algorithm = "sha3x"
+"#;
+
+        let cfg: TariConfig = toml::from_str(toml).expect("valid toml");
+        assert_eq!(cfg.algorithm, TariAlgorithm::Sha3x);
     }
 }

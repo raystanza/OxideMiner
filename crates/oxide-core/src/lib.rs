@@ -6,6 +6,7 @@ pub mod devfee;
 pub mod stratum;
 pub mod system;
 pub mod tari;
+pub mod tari_algo;
 pub mod worker;
 
 pub use benchmark::run_benchmark;
@@ -19,4 +20,9 @@ pub use system::{
     AutoTuneSnapshot, CacheHierarchy, CacheLevel, CpuFeatures, HugePageStatus,
 };
 pub use tari::{MergeMiningTemplate, TariMergeMiningClient};
-pub use worker::{spawn_workers, Share, WorkItem, WorkerSpawnConfig};
+pub use tari_algo::{
+    make_tari_hasher_factory, TariAlgorithm, TariHashAlgorithm, TariHasherFactory,
+};
+pub use worker::{
+    spawn_tari_workers, spawn_workers, Share, TariWorkerSpawnConfig, WorkItem, WorkerSpawnConfig,
+};

@@ -8,13 +8,15 @@ use anyhow::{anyhow, Context, Result};
 use futures::future;
 use oxide_core::config::{TariMode, DEFAULT_BATCH_SIZE};
 use oxide_core::stratum::{ConnectConfig, PoolJob};
-use oxide_core::worker::{Share, WorkItem, WorkerSpawnConfig};
+use oxide_core::worker::{Share, TariWorkerSpawnConfig, WorkItem, WorkerSpawnConfig};
 use oxide_core::{
-    autotune_snapshot, spawn_workers, Config, DevFeeScheduler, HugePageStatus, MergeMiningTemplate,
-    ProxyConfig, StratumClient, TariMergeMiningClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
+    autotune_snapshot, spawn_tari_workers, spawn_workers, Config, DevFeeScheduler, HugePageStatus,
+    MergeMiningTemplate, ProxyConfig, StratumClient, TariAlgorithm, TariMergeMiningClient,
+    DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::{atomic::Ordering, Arc};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{sleep, Duration};
@@ -39,6 +41,7 @@ impl ActivePool {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct PendingShare {
     is_devfee: bool,
@@ -68,6 +71,74 @@ impl<'a> PoolConnectionSettings<'a> {
             custom_ca_path: self.tls_ca_cert,
             pinned_cert_sha256: self.tls_cert_sha256,
             proxy: self.proxy,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PoolRequirements {
+    monero_pool: Option<String>,
+    monero_wallet: Option<String>,
+    tari_pool: Option<String>,
+    tari_wallet: Option<String>,
+}
+
+fn validate_tari_algorithm_for_mode(mode: TariMode, algorithm: TariAlgorithm) -> Result<()> {
+    if matches!(mode, TariMode::Proxy) && algorithm == TariAlgorithm::Sha3x {
+        return Err(anyhow!(
+            "SHA3x is not supported in Tari proxy mode; use RandomX or switch to Tari pool mode"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_pool_requirements(args: &Args, tari_mode: TariMode) -> Result<PoolRequirements> {
+    let tari_pool = args.tari_pool_url.clone();
+    let tari_wallet = args.tari_wallet_address.clone();
+
+    match tari_mode {
+        TariMode::Pool => {
+            let tari_pool = tari_pool.ok_or_else(|| {
+                anyhow!("Tari pool mode requires --tari-pool-url or [tari].pool_url")
+            })?;
+            let tari_wallet = tari_wallet.ok_or_else(|| {
+                anyhow!("Tari pool mode requires --tari-wallet-address or [tari].wallet_address")
+            })?;
+
+            match (&args.pool, &args.wallet) {
+                (Some(pool), Some(wallet)) => Ok(PoolRequirements {
+                    monero_pool: Some(pool.clone()),
+                    monero_wallet: Some(wallet.clone()),
+                    tari_pool: Some(tari_pool),
+                    tari_wallet: Some(tari_wallet),
+                }),
+                (None, None) => Ok(PoolRequirements {
+                    monero_pool: None,
+                    monero_wallet: None,
+                    tari_pool: Some(tari_pool),
+                    tari_wallet: Some(tari_wallet),
+                }),
+                _ => Err(anyhow!(
+                    "Provide both --url and --user together for Monero mining or omit both when using Tari pool mode"
+                )),
+            }
+        }
+        TariMode::None | TariMode::Proxy => {
+            let pool = args
+                .pool
+                .clone()
+                .ok_or_else(|| anyhow!("--url <POOL> is required for Monero mining"))?;
+            let wallet = args
+                .wallet
+                .clone()
+                .ok_or_else(|| anyhow!("--user <WALLET> is required for Monero mining"))?;
+
+            Ok(PoolRequirements {
+                monero_pool: Some(pool),
+                monero_wallet: Some(wallet),
+                tari_pool,
+                tari_wallet,
+            })
         }
     }
 }
@@ -278,9 +349,26 @@ pub async fn run(args: Args) -> Result<()> {
         other => return Err(anyhow!("unsupported --tari-mode value: {other}")),
     };
 
+    let pool_requirements = validate_pool_requirements(&args, tari_mode)?;
+
+    let tari_algorithm = args
+        .tari_algorithm
+        .as_deref()
+        .map(TariAlgorithm::from_str)
+        .unwrap_or_else(|| Ok(TariAlgorithm::default_randomx()))?;
+
+    if matches!(tari_mode, TariMode::None) && tari_algorithm != TariAlgorithm::RandomX {
+        tracing::warn!(
+            algo = %tari_algorithm,
+            "ignoring Tari algorithm selection because Tari mining is disabled",
+        );
+    }
+
+    validate_tari_algorithm_for_mode(tari_mode, tari_algorithm)?;
+
     let mut cfg = Config {
-        pool: args.pool.expect("pool required unless --benchmark"),
-        wallet: args.wallet.expect("user required unless --benchmark"),
+        pool: pool_requirements.monero_pool.clone(),
+        wallet: pool_requirements.monero_wallet.clone(),
         pass: Some(args.pass),
         threads: args.threads,
         enable_devfee: true,
@@ -300,11 +388,12 @@ pub async fn run(args: Args) -> Result<()> {
         tari: oxide_core::config::TariConfig {
             mode: tari_mode,
             enabled: Some(args.tari_merge_mining),
-            pool_url: args.tari_pool_url.clone(),
-            wallet_address: args.tari_wallet_address.clone(),
+            pool_url: pool_requirements.tari_pool.clone(),
+            wallet_address: pool_requirements.tari_wallet.clone(),
             rig_id: args.tari_rig_id.clone(),
             login: args.tari_login.clone(),
             password: args.tari_password.clone(),
+            algorithm: tari_algorithm,
             merge_mining: oxide_core::config::TariMergeMiningConfig {
                 proxy_url: args.tari_proxy_url.clone(),
                 monero_wallet_address: args.tari_monero_wallet.clone(),
@@ -420,23 +509,18 @@ pub async fn run(args: Args) -> Result<()> {
 
     let tari_mode = cfg.tari.effective_mode();
     let stats = Arc::new(Stats::new(
-        cfg.pool.clone(),
+        cfg.pool.clone().or_else(|| cfg.tari.pool_url.clone()),
         cfg.tls,
         matches!(tari_mode, TariMode::Proxy | TariMode::Pool),
         cfg.tari.pool_url.clone(),
     ));
 
-    // Broadcast: jobs -> workers
-    let (jobs_tx, _jobs_rx0) = tokio::sync::broadcast::channel(64);
-    // MPSC: shares <- workers
-    let (shares_tx, mut shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
-
     let (tari_jobs_tx, tari_shares_rx, _tari_workers) = if matches!(tari_mode, TariMode::Pool) {
         let (tx, _rx0) = tokio::sync::broadcast::channel(64);
         let (tari_shares_tx, tari_shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
-        let workers = spawn_workers(
+        let workers = spawn_tari_workers(
             n_workers,
-            WorkerSpawnConfig {
+            TariWorkerSpawnConfig {
                 jobs_tx: tx.clone(),
                 shares_tx: tari_shares_tx,
                 affinity: cfg.affinity,
@@ -444,8 +528,9 @@ pub async fn run(args: Args) -> Result<()> {
                 batch_size: cfg.batch_size,
                 yield_between_batches: cfg.yield_between_batches,
                 hash_counter: stats.tari_hashes.clone(),
+                algorithm: cfg.tari.algorithm,
             },
-        );
+        )?;
         (Some(tx), Some(tari_shares_rx), Some(workers))
     } else {
         (None, None, None)
@@ -468,27 +553,11 @@ pub async fn run(args: Args) -> Result<()> {
     let mut tari_templates: HashMap<String, MergeMiningTemplate> = HashMap::new();
     let mut monero_jobs: HashMap<String, PoolJob> = HashMap::new();
 
+    let monero_enabled = cfg.pool.is_some() && cfg.wallet.is_some();
+
     let tls = cfg.tls;
     let tls_ca_cert = cfg.tls_ca_cert.clone();
     let tls_cert_sha256 = cfg.tls_cert_sha256;
-
-    let _workers = spawn_workers(
-        n_workers,
-        WorkerSpawnConfig {
-            jobs_tx: jobs_tx.clone(),
-            shares_tx,
-            affinity: cfg.affinity,
-            large_pages,
-            batch_size: cfg.batch_size,
-            yield_between_batches: cfg.yield_between_batches,
-            hash_counter: stats.hashes.clone(),
-        },
-    );
-
-    let main_pool = cfg.pool.clone();
-    let user_wallet = cfg.wallet.clone();
-    let pass = cfg.pass.clone().unwrap_or_else(|| "x".into());
-    let agent = cfg.agent.clone();
 
     tracing::info!("dev fee enabled at {} bps (1%)", DEV_FEE_BASIS_POINTS);
 
@@ -504,173 +573,130 @@ pub async fn run(args: Args) -> Result<()> {
     // Snapshot flags for the async task
     // Pool IO task with reconnect loop
     let proxy_cfg = proxy_cfg.clone();
-    let pool_handle = tokio::spawn({
-        let jobs_tx = jobs_tx.clone();
-        let stats = stats.clone();
-        let main_pool = main_pool.clone();
-        let user_wallet = user_wallet.clone();
-        let pass = pass.clone();
-        let agent = agent.clone();
-        let proxy_cfg = proxy_cfg.clone();
+    let pool_handle = if monero_enabled {
+        let (jobs_tx, _jobs_rx0) = tokio::sync::broadcast::channel(64);
+        // MPSC: shares <- workers
+        let (shares_tx, shares_rx) = tokio::sync::mpsc::unbounded_channel::<Share>();
 
-        async move {
-            let tls_ca_cert = tls_ca_cert.clone();
-            let tls_cert_sha256 = tls_cert_sha256;
-            let mut backoff_ms = 1_000u64;
-            let mut dev_scheduler = DevFeeScheduler::new();
+        let _workers = spawn_workers(
+            n_workers,
+            WorkerSpawnConfig {
+                jobs_tx: jobs_tx.clone(),
+                shares_tx,
+                affinity: cfg.affinity,
+                large_pages,
+                batch_size: cfg.batch_size,
+                yield_between_batches: cfg.yield_between_batches,
+                hash_counter: stats.hashes.clone(),
+            },
+        );
 
-            loop {
-                let user_connection = PoolConnectionSettings {
-                    pool: &main_pool,
-                    wallet: &user_wallet,
-                    pass: &pass,
-                    agent: &agent,
-                    tls,
-                    tls_ca_cert: tls_ca_cert.as_deref(),
-                    tls_cert_sha256: tls_cert_sha256.as_ref(),
-                    proxy: proxy_cfg.as_ref(),
-                };
-                stats.pool_connected.store(false, Ordering::Relaxed);
-                let (mut client, initial_job) =
-                    match StratumClient::connect_and_login(user_connection.as_connect_config())
-                        .await
-                    {
-                        Ok(v) => {
-                            backoff_ms = 1_000;
-                            stats.pool_connected.store(true, Ordering::Relaxed);
-                            v
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "connect/login failed; retrying in {}s: {e}",
-                                backoff_ms / 1000
-                            );
-                            sleep(Duration::from_millis(backoff_ms)).await;
-                            backoff_ms = (backoff_ms * 2).min(60_000);
-                            continue;
-                        }
-                    };
+        let main_pool = cfg
+            .pool
+            .clone()
+            .expect("monero pool should exist when enabled");
+        let user_wallet = cfg
+            .wallet
+            .clone()
+            .expect("monero wallet should exist when enabled");
+        let pass = cfg.pass.clone().unwrap_or_else(|| "x".into());
+        let agent = cfg.agent.clone();
 
-                let mut valid_job_ids: HashSet<String> = HashSet::new();
-                let mut seen_nonces: HashMap<String, HashSet<u32>> = HashMap::new();
-                let mut pending_shares: HashMap<u64, PendingShare> = HashMap::new();
-                let mut active_pool = ActivePool::User;
+        Some(tokio::spawn({
+            let jobs_tx = jobs_tx.clone();
+            let mut shares_rx = shares_rx;
+            let stats = stats.clone();
+            let main_pool = main_pool.clone();
+            let user_wallet = user_wallet.clone();
+            let pass = pass.clone();
+            let agent = agent.clone();
+            let proxy_cfg = proxy_cfg.clone();
 
-                if let Some(job) = initial_job {
-                    let tari_template =
-                        maybe_fetch_tari_template(tari_client.as_ref(), &stats).await;
-                    let job_id = broadcast_job(
-                        job,
-                        active_pool.is_dev(),
-                        true,
-                        &jobs_tx,
-                        &mut valid_job_ids,
-                        &mut seen_nonces,
-                        &mut tari_templates,
-                        tari_template,
-                        &mut monero_jobs,
-                    );
-                    if scheduler_tick(&mut dev_scheduler, &job_id, active_pool) {
-                        let counter = dev_scheduler.counter();
-                        let interval = dev_scheduler.interval();
-                        tracing::info!(
-                            job_id = %job_id,
-                            counter,
-                            interval,
-                            "devfee activation triggered (initial job)"
-                        );
-                        match connect_with_retries(
-                            PoolConnectionSettings {
-                                pool: &main_pool,
-                                wallet: DEV_WALLET_ADDRESS,
-                                pass: &pass,
-                                agent: &agent,
-                                tls,
-                                tls_ca_cert: tls_ca_cert.as_deref(),
-                                tls_cert_sha256: tls_cert_sha256.as_ref(),
-                                proxy: proxy_cfg.as_ref(),
-                            },
-                            3,
-                            "devfee",
-                        )
-                        .await
-                        {
-                            Ok((new_client, dev_job)) => {
-                                if let Err(e) = handle_shares(
-                                    None,
-                                    &mut shares_rx,
-                                    ShareContext {
-                                        client: &mut client,
-                                        stats: &stats,
-                                        active_pool: &mut active_pool,
-                                        valid_job_ids: &mut valid_job_ids,
-                                        seen_nonces: &mut seen_nonces,
-                                        pending_shares: &mut pending_shares,
-                                        jobs_tx: &jobs_tx,
-                                        dev_scheduler: &mut dev_scheduler,
-                                        tari_client: tari_client.as_ref(),
-                                        tari_templates: &mut tari_templates,
-                                        monero_jobs: &mut monero_jobs,
-                                    },
-                                    user_connection,
-                                )
-                                .await
-                                {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "failed to flush pending shares before devfee switch"
-                                    );
-                                }
-                                client = new_client;
-                                active_pool = ActivePool::Dev;
-                                reset_session(
-                                    &mut valid_job_ids,
-                                    &mut seen_nonces,
-                                    &mut pending_shares,
-                                    &mut tari_templates,
-                                    &mut monero_jobs,
-                                );
-                                if let Some(job) = dev_job {
-                                    let tari_template =
-                                        maybe_fetch_tari_template(tari_client.as_ref(), &stats)
-                                            .await;
-                                    let dev_job_id = broadcast_job(
-                                        job,
-                                        true,
-                                        true,
-                                        &jobs_tx,
-                                        &mut valid_job_ids,
-                                        &mut seen_nonces,
-                                        &mut tari_templates,
-                                        tari_template,
-                                        &mut monero_jobs,
-                                    );
-                                    tracing::info!(job_id = %dev_job_id, "devfee activated for job");
-                                    let _ = scheduler_tick(
-                                        &mut dev_scheduler,
-                                        &dev_job_id,
-                                        active_pool,
-                                    );
-                                } else {
-                                    tracing::debug!("devfee activated; awaiting first job");
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "devfee connect failed");
-                                dev_scheduler.revert_last_job();
-                            }
-                        }
-                    }
-                }
+            async move {
+                let tls_ca_cert = tls_ca_cert.clone();
+                let tls_cert_sha256 = tls_cert_sha256;
+                let mut backoff_ms = 1_000u64;
+                let mut dev_scheduler = DevFeeScheduler::new();
 
                 loop {
-                    tokio::select! {
-                        biased;
-                        maybe_share = shares_rx.recv() => {
-                            match maybe_share {
-                                Some(share) => {
+                    let user_connection = PoolConnectionSettings {
+                        pool: &main_pool,
+                        wallet: &user_wallet,
+                        pass: &pass,
+                        agent: &agent,
+                        tls,
+                        tls_ca_cert: tls_ca_cert.as_deref(),
+                        tls_cert_sha256: tls_cert_sha256.as_ref(),
+                        proxy: proxy_cfg.as_ref(),
+                    };
+                    stats.pool_connected.store(false, Ordering::Relaxed);
+                    let (mut client, initial_job) =
+                        match StratumClient::connect_and_login(user_connection.as_connect_config())
+                            .await
+                        {
+                            Ok(v) => {
+                                backoff_ms = 1_000;
+                                stats.pool_connected.store(true, Ordering::Relaxed);
+                                v
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "connect/login failed; retrying in {}s: {e}",
+                                    backoff_ms / 1000
+                                );
+                                sleep(Duration::from_millis(backoff_ms)).await;
+                                backoff_ms = (backoff_ms * 2).min(60_000);
+                                continue;
+                            }
+                        };
+
+                    let mut valid_job_ids: HashSet<String> = HashSet::new();
+                    let mut seen_nonces: HashMap<String, HashSet<u32>> = HashMap::new();
+                    let mut pending_shares: HashMap<u64, PendingShare> = HashMap::new();
+                    let mut active_pool = ActivePool::User;
+
+                    if let Some(job) = initial_job {
+                        let tari_template =
+                            maybe_fetch_tari_template(tari_client.as_ref(), &stats).await;
+                        let job_id = broadcast_job(
+                            job,
+                            active_pool.is_dev(),
+                            true,
+                            &jobs_tx,
+                            &mut valid_job_ids,
+                            &mut seen_nonces,
+                            &mut tari_templates,
+                            tari_template,
+                            &mut monero_jobs,
+                        );
+                        if scheduler_tick(&mut dev_scheduler, &job_id, active_pool) {
+                            let counter = dev_scheduler.counter();
+                            let interval = dev_scheduler.interval();
+                            tracing::info!(
+                                job_id = %job_id,
+                                counter,
+                                interval,
+                                "devfee activation triggered (initial job)"
+                            );
+                            match connect_with_retries(
+                                PoolConnectionSettings {
+                                    pool: &main_pool,
+                                    wallet: DEV_WALLET_ADDRESS,
+                                    pass: &pass,
+                                    agent: &agent,
+                                    tls,
+                                    tls_ca_cert: tls_ca_cert.as_deref(),
+                                    tls_cert_sha256: tls_cert_sha256.as_ref(),
+                                    proxy: proxy_cfg.as_ref(),
+                                },
+                                3,
+                                "devfee",
+                            )
+                            .await
+                            {
+                                Ok((new_client, dev_job)) => {
                                     if let Err(e) = handle_shares(
-                                        Some(share),
+                                        None,
                                         &mut shares_rx,
                                         ShareContext {
                                             client: &mut client,
@@ -678,279 +704,249 @@ pub async fn run(args: Args) -> Result<()> {
                                             active_pool: &mut active_pool,
                                             valid_job_ids: &mut valid_job_ids,
                                             seen_nonces: &mut seen_nonces,
-                                        pending_shares: &mut pending_shares,
-                                        jobs_tx: &jobs_tx,
-                                        dev_scheduler: &mut dev_scheduler,
-                                        tari_client: tari_client.as_ref(),
-                                        tari_templates: &mut tari_templates,
-                                        monero_jobs: &mut monero_jobs,
-                                    },
-                                    user_connection,
-                                )
+                                            pending_shares: &mut pending_shares,
+                                            jobs_tx: &jobs_tx,
+                                            dev_scheduler: &mut dev_scheduler,
+                                            tari_client: tari_client.as_ref(),
+                                            tari_templates: &mut tari_templates,
+                                            monero_jobs: &mut monero_jobs,
+                                        },
+                                        user_connection,
+                                    )
                                     .await
                                     {
-                                        tracing::warn!("reconnect failed (devfee -> user): {e}");
-                                        stats.pool_connected.store(false, Ordering::Relaxed);
-                                        break;
+                                        tracing::warn!(
+                                            error = %e,
+                                            "failed to flush pending shares before devfee switch"
+                                        );
                                     }
-                                    continue;
-                                }
-                                None => {
-                                    tracing::warn!("shares channel closed (no workers alive); stopping pool task to avoid reconnect storm");
-                                    return;
-                                }
-                            }
-                        }
-
-                        msg = client.read_json() => {
-                            match msg {
-                                Ok(v) => {
-                                    if v.get("method").and_then(|m| m.as_str()) == Some("job") {
-                                        let mut trigger_dev = false;
-                                        let mut trigger_job_id = String::new();
-                                        if let Some(params) = v.get("params") {
-                                            if let Ok(job) = serde_json::from_value::<PoolJob>(params.clone()) {
-                                                let clean = params.get("clean_jobs").and_then(|x| x.as_bool()).unwrap_or(true);
-                                                let tari_template = maybe_fetch_tari_template(
-                                                    tari_client.as_ref(),
-                                                    &stats,
-                                                )
+                                    client = new_client;
+                                    active_pool = ActivePool::Dev;
+                                    reset_session(
+                                        &mut valid_job_ids,
+                                        &mut seen_nonces,
+                                        &mut pending_shares,
+                                        &mut tari_templates,
+                                        &mut monero_jobs,
+                                    );
+                                    if let Some(job) = dev_job {
+                                        let tari_template =
+                                            maybe_fetch_tari_template(tari_client.as_ref(), &stats)
                                                 .await;
-                                                let job_id = broadcast_job(
-                                                    job,
-                                                    active_pool.is_dev(),
-                                                    clean,
-                                                    &jobs_tx,
-                                                    &mut valid_job_ids,
-                                                    &mut seen_nonces,
-                                                    &mut tari_templates,
-                                                    tari_template,
-                                                    &mut monero_jobs,
-                                                );
-                                                trigger_dev = scheduler_tick(&mut dev_scheduler, &job_id, active_pool);
-                                                if trigger_dev {
-                                                    trigger_job_id = job_id;
-                                                }
-                                            }
-                                        }
-
-                                        if trigger_dev {
-                                            let counter = dev_scheduler.counter();
-                                            let interval = dev_scheduler.interval();
-                                            tracing::info!(
-                                                job_id = %trigger_job_id,
-                                                counter,
-                                                interval,
-                                                "devfee activation triggered"
-                                            );
-                                            match connect_with_retries(
-                                                PoolConnectionSettings {
-                                                    pool: &main_pool,
-                                                    wallet: DEV_WALLET_ADDRESS,
-                                                    pass: &pass,
-                                                    agent: &agent,
-                                                    tls,
-                                                    tls_ca_cert: tls_ca_cert.as_deref(),
-                                                    tls_cert_sha256: tls_cert_sha256.as_ref(),
-                                                    proxy: proxy_cfg.as_ref(),
-                                                },
-                                                3,
-                                                "devfee",
-                                            ).await {
-                                                Ok((new_client, job_opt)) => {
-                                                    if let Err(e) = handle_shares(
-                                                        None,
-                                                        &mut shares_rx,
-                                                        ShareContext {
-                                                            client: &mut client,
-                                                            stats: &stats,
-                                                            active_pool: &mut active_pool,
-                                                            valid_job_ids: &mut valid_job_ids,
-                                                            seen_nonces: &mut seen_nonces,
-                                                    pending_shares: &mut pending_shares,
-                                                    jobs_tx: &jobs_tx,
-                                                    dev_scheduler: &mut dev_scheduler,
-                                                    tari_client: tari_client.as_ref(),
-                                                    tari_templates: &mut tari_templates,
-                                                    monero_jobs: &mut monero_jobs,
-                                                },
-                                                user_connection,
-                                            )
-                                                    .await
-                                                    {
-                                                        tracing::warn!(
-                                                            error = %e,
-                                                            "failed to flush pending shares before devfee switch"
-                                                        );
-                                                    }
-                                                    client = new_client;
-                                                    active_pool = ActivePool::Dev;
-                                                    reset_session(
-                                                        &mut valid_job_ids,
-                                                        &mut seen_nonces,
-                                                        &mut pending_shares,
-                                                        &mut tari_templates,
-                                                        &mut monero_jobs,
-                                                    );
-                                                    if let Some(job) = job_opt {
-                                                        let tari_template =
-                                                            maybe_fetch_tari_template(
-                                                                tari_client.as_ref(),
-                                                                &stats,
-                                                            )
-                                                            .await;
-                                                        let job_id = broadcast_job(
-                                                            job,
-                                                            true,
-                                                            true,
-                                                            &jobs_tx,
-                                                            &mut valid_job_ids,
-                                                            &mut seen_nonces,
-                                                            &mut tari_templates,
-                                                            tari_template,
-                                                            &mut monero_jobs,
-                                                        );
-                                                        tracing::info!(job_id = %job_id, "devfee activated for job");
-                                                        let _ = scheduler_tick(&mut dev_scheduler, &job_id, active_pool);
-                                                    } else {
-                                                        tracing::debug!("devfee activated; awaiting first job");
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!(error = %e, "devfee connect failed");
-                                                    dev_scheduler.revert_last_job();
-                                                }
-                                            }
-                                        }
-                                        continue;
-                                    }
-
-                                    if let Some(id) = v.get("id").and_then(|x| x.as_u64()) {
-                                        if let Some(pending) = pending_shares.remove(&id) {
-                                            let is_dev = pending.is_devfee;
-                                            let mut reconnect_user = false;
-
-                                            if let Some(res) = v.get("result") {
-                                                let ok = res.get("status").and_then(|s| s.as_str()) == Some("OK")
-                                                    || res.as_bool() == Some(true);
-                                                if ok {
-                                                    if is_dev {
-                                                        stats.dev_accepted.fetch_add(1, Ordering::Relaxed);
-                                                        tracing::info!(
-                                                            dev_accepted = stats.dev_accepted.load(Ordering::Relaxed),
-                                                            dev_rejected = stats.dev_rejected.load(Ordering::Relaxed),
-                                                            job_id = %pending.job_id,
-                                                            "dev share accepted"
-                                                        );
-                                                        reconnect_user = true;
-                                                    } else {
-                                                        stats.accepted.fetch_add(1, Ordering::Relaxed);
-                                                        tracing::info!(
-                                                            accepted = stats.accepted.load(Ordering::Relaxed),
-                                                            rejected = stats.rejected.load(Ordering::Relaxed),
-                                                            job_id = %pending.job_id,
-                                                            "share accepted"
-                                                        );
-                                                    }
-                                                } else if is_dev {
-                                                    stats.dev_rejected.fetch_add(1, Ordering::Relaxed);
-                                                    tracing::warn!(
-                                                        dev_accepted = stats.dev_accepted.load(Ordering::Relaxed),
-                                                        dev_rejected = stats.dev_rejected.load(Ordering::Relaxed),
-                                                        job_id = %pending.job_id,
-                                                        "dev share rejected"
-                                                    );
-                                                    reconnect_user = true;
-                                                } else {
-                                                    stats.rejected.fetch_add(1, Ordering::Relaxed);
-                                                    tracing::warn!(
-                                                        accepted = stats.accepted.load(Ordering::Relaxed),
-                                                        rejected = stats.rejected.load(Ordering::Relaxed),
-                                                        job_id = %pending.job_id,
-                                                        "share rejected"
-                                                    );
-                                                }
-                                            } else if let Some(err) = v.get("error") {
-                                                if is_dev {
-                                                    stats.dev_rejected.fetch_add(1, Ordering::Relaxed);
-                                                    tracing::warn!(
-                                                        dev_accepted = stats.dev_accepted.load(Ordering::Relaxed),
-                                                        dev_rejected = stats.dev_rejected.load(Ordering::Relaxed),
-                                                        job_id = %pending.job_id,
-                                                        error = %err,
-                                                        "dev share rejected"
-                                                    );
-                                                    reconnect_user = true;
-                                                } else {
-                                                    stats.rejected.fetch_add(1, Ordering::Relaxed);
-                                                    tracing::warn!(
-                                                        accepted = stats.accepted.load(Ordering::Relaxed),
-                                                        rejected = stats.rejected.load(Ordering::Relaxed),
-                                                        job_id = %pending.job_id,
-                                                        error = %err,
-                                                        "share rejected"
-                                                    );
-                                                }
-                                            } else if is_dev {
-                                                stats.dev_rejected.fetch_add(1, Ordering::Relaxed);
-                                                tracing::warn!(
-                                                    job_id = %pending.job_id,
-                                                    "dev share response missing result; treating as reject"
-                                                );
-                                                reconnect_user = true;
-                                            } else {
-                                                stats.rejected.fetch_add(1, Ordering::Relaxed);
-                                                tracing::warn!(
-                                                    job_id = %pending.job_id,
-                                                    "share response missing result; treating as reject"
-                                                );
-                                            }
-
-                                            if reconnect_user && matches!(active_pool, ActivePool::Dev) {
-                                                if let Err(e) = reconnect_user_pool(
-                                                    ShareContext {
-                                                        client: &mut client,
-                                                        stats: &stats,
-                                                        active_pool: &mut active_pool,
-                                                        valid_job_ids: &mut valid_job_ids,
-                                                        seen_nonces: &mut seen_nonces,
-                                                        pending_shares: &mut pending_shares,
-                                                        jobs_tx: &jobs_tx,
-                                                        dev_scheduler: &mut dev_scheduler,
-                                                        tari_client: tari_client.as_ref(),
-                                                        tari_templates: &mut tari_templates,
-                                                        monero_jobs: &mut monero_jobs,
-                                                    },
-                                                    user_connection,
-                                                )
-                                                .await
-                                                {
-                                                    tracing::warn!("reconnect failed (devfee -> user): {e}");
-                                                    stats.pool_connected.store(false, Ordering::Relaxed);
-                                                    break;
-                                                }
-                                            }
-                                            continue;
-                                        }
-                                    }
-
-                                    if let Some(err) = v.get("error") {
-                                        tracing::warn!(error = %err, "pool error response");
+                                        let dev_job_id = broadcast_job(
+                                            job,
+                                            true,
+                                            true,
+                                            &jobs_tx,
+                                            &mut valid_job_ids,
+                                            &mut seen_nonces,
+                                            &mut tari_templates,
+                                            tari_template,
+                                            &mut monero_jobs,
+                                        );
+                                        tracing::info!(job_id = %dev_job_id, "devfee activated for job");
+                                        let _ = scheduler_tick(
+                                            &mut dev_scheduler,
+                                            &dev_job_id,
+                                            active_pool,
+                                        );
+                                    } else {
+                                        tracing::debug!("devfee activated; awaiting first job");
                                     }
                                 }
                                 Err(e) => {
-                                    tracing::error!("pool read error: {e}; reconnecting");
-                                    sleep(Duration::from_millis(tiny_jitter_ms())).await;
-                                    stats.pool_connected.store(false, Ordering::Relaxed);
-                                    break;
+                                    tracing::warn!(error = %e, "devfee connect failed");
+                                    dev_scheduler.revert_last_job();
                                 }
                             }
                         }
                     }
-                } // inner loop
-            } // outer reconnect loop
-        }
-    });
+
+                    loop {
+                        tokio::select! {
+                            biased;
+                            maybe_share = shares_rx.recv() => {
+                                match maybe_share {
+                                    Some(share) => {
+                                        if let Err(e) = handle_shares(
+                                            Some(share),
+                                            &mut shares_rx,
+                                            ShareContext {
+                                                client: &mut client,
+                                                stats: &stats,
+                                                active_pool: &mut active_pool,
+                                                valid_job_ids: &mut valid_job_ids,
+                                                seen_nonces: &mut seen_nonces,
+                                                pending_shares: &mut pending_shares,
+                                                jobs_tx: &jobs_tx,
+                                                dev_scheduler: &mut dev_scheduler,
+                                                tari_client: tari_client.as_ref(),
+                                                tari_templates: &mut tari_templates,
+                                                monero_jobs: &mut monero_jobs,
+                                            },
+                                            user_connection,
+                                        )
+                                        .await
+                                        {
+                                            tracing::warn!(
+                                                error = %e,
+                                                "error handling share; reconnecting"
+                                            );
+                                            stats.pool_connected.store(false, Ordering::Relaxed);
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                    None => {
+                                        tracing::warn!("shares channel closed (no workers alive); stopping pool task to avoid reconnect storm");
+                                        return;
+                                    }
+                                }
+                            }
+
+                            msg = client.read_json() => {
+                                match msg {
+                                    Ok(v) => {
+                                        if v.get("method").and_then(|m| m.as_str()) == Some("job") {
+                                            let mut trigger_dev = false;
+                                            let mut trigger_job_id = String::new();
+                                            if let Some(params) = v.get("params") {
+                                                if let Ok(job) = serde_json::from_value::<PoolJob>(params.clone()) {
+                                                    let clean = params.get("clean_jobs").and_then(|x| x.as_bool()).unwrap_or(true);
+                                                    let tari_template = maybe_fetch_tari_template(
+                                                        tari_client.as_ref(),
+                                                        &stats,
+                                                    )
+                                                    .await;
+                                                    let job_id = broadcast_job(
+                                                        job,
+                                                        active_pool.is_dev(),
+                                                        clean,
+                                                        &jobs_tx,
+                                                        &mut valid_job_ids,
+                                                        &mut seen_nonces,
+                                                        &mut tari_templates,
+                                                        tari_template,
+                                                        &mut monero_jobs,
+                                                    );
+                                                    trigger_dev = scheduler_tick(&mut dev_scheduler, &job_id, active_pool);
+                                                    if trigger_dev {
+                                                        trigger_job_id = job_id;
+                                                    }
+                                                }
+                                            }
+
+                                            if trigger_dev {
+                                                let counter = dev_scheduler.counter();
+                                                let interval = dev_scheduler.interval();
+                                                tracing::info!(
+                                                    job_id = %trigger_job_id,
+                                                    counter,
+                                                    interval,
+                                                    "devfee activation triggered"
+                                                );
+                                                match connect_with_retries(
+                                                    PoolConnectionSettings {
+                                                        pool: &main_pool,
+                                                        wallet: DEV_WALLET_ADDRESS,
+                                                        pass: &pass,
+                                                        agent: &agent,
+                                                        tls,
+                                                        tls_ca_cert: tls_ca_cert.as_deref(),
+                                                        tls_cert_sha256: tls_cert_sha256.as_ref(),
+                                                        proxy: proxy_cfg.as_ref(),
+                                                    },
+                                                    3,
+                                                    "devfee",
+                                                ).await {
+                                                    Ok((new_client, job_opt)) => {
+                                                        if let Err(e) = handle_shares(
+                                                            None,
+                                                            &mut shares_rx,
+                                                            ShareContext {
+                                                                client: &mut client,
+                                                                stats: &stats,
+                                                                active_pool: &mut active_pool,
+                                                                valid_job_ids: &mut valid_job_ids,
+                                                                seen_nonces: &mut seen_nonces,
+                                                                pending_shares: &mut pending_shares,
+                                                                jobs_tx: &jobs_tx,
+                                                                dev_scheduler: &mut dev_scheduler,
+                                                                tari_client: tari_client.as_ref(),
+                                                                tari_templates: &mut tari_templates,
+                                                                monero_jobs: &mut monero_jobs,
+                                                            },
+                                                            user_connection,
+                                                        )
+                                                        .await
+                                                        {
+                                                            tracing::warn!(
+                                                                error = %e,
+                                                                "failed to flush pending shares before devfee switch"
+                                                            );
+                                                        }
+                                                        client = new_client;
+                                                        active_pool = ActivePool::Dev;
+                                                        reset_session(
+                                                            &mut valid_job_ids,
+                                                            &mut seen_nonces,
+                                                            &mut pending_shares,
+                                                            &mut tari_templates,
+                                                            &mut monero_jobs,
+                                                        );
+                                                        if let Some(job) = job_opt {
+                                                            let tari_template =
+                                                                maybe_fetch_tari_template(
+                                                                    tari_client.as_ref(),
+                                                                    &stats,
+                                                                )
+                                                                .await;
+                                                            let job_id = broadcast_job(
+                                                                job,
+                                                                true,
+                                                                true,
+                                                                &jobs_tx,
+                                                                &mut valid_job_ids,
+                                                                &mut seen_nonces,
+                                                                &mut tari_templates,
+                                                                tari_template,
+                                                                &mut monero_jobs,
+                                                            );
+                                                            tracing::info!(job_id = %job_id, "devfee activated for job");
+                                                            let _ = scheduler_tick(&mut dev_scheduler, &job_id, active_pool);
+                                                        } else {
+                                                            tracing::debug!("devfee activated; awaiting first job");
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(error = %e, "devfee connect failed");
+                                                        dev_scheduler.revert_last_job();
+                                                    }
+                                                }
+                                            }
+                                        } else if v.get("result").is_none() {
+                                            if let Some(err) = v.get("error") {
+                                                tracing::warn!(error = %err, "pool error response");
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("pool read error: {e}; reconnecting");
+                                        sleep(Duration::from_millis(tiny_jitter_ms())).await;
+                                        stats.pool_connected.store(false, Ordering::Relaxed);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+    } else {
+        tracing::info!("Monero pool URL and wallet not provided; Monero stratum mining disabled");
+        None
+    };
 
     let tari_pool_handle = match (tari_mode, tari_jobs_tx.clone(), tari_shares_rx) {
         (TariMode::Pool, Some(tari_jobs_tx), Some(mut tari_shares_rx)) => {
@@ -1130,8 +1126,16 @@ pub async fn run(args: Args) -> Result<()> {
         }
     };
 
+    let pool_future = async {
+        if let Some(handle) = pool_handle {
+            handle.await.map_err(|e| e.into())
+        } else {
+            future::pending::<Result<(), anyhow::Error>>().await
+        }
+    };
+
     tokio::select! {
-        res = pool_handle => {
+        res = pool_future => {
             if let Err(e) = res {
                 tracing::error!("pool task ended unexpectedly: {e}");
             }
@@ -1147,6 +1151,63 @@ pub async fn run(args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::args::Args;
+    use clap::Parser;
+
+    #[test]
+    fn tari_proxy_rejects_sha3x() {
+        let err = validate_tari_algorithm_for_mode(TariMode::Proxy, TariAlgorithm::Sha3x)
+            .expect_err("proxy mode must reject sha3x");
+        assert!(err
+            .to_string()
+            .contains("SHA3x is not supported in Tari proxy mode"));
+    }
+
+    #[test]
+    fn tari_pool_allows_sha3x() {
+        validate_tari_algorithm_for_mode(TariMode::Pool, TariAlgorithm::Sha3x)
+            .expect("pool mode should allow sha3x");
+    }
+
+    #[test]
+    fn tari_pool_mode_allows_missing_monero_pool() {
+        let args = Args::parse_from([
+            "test",
+            "--tari-mode",
+            "pool",
+            "--tari-pool-url",
+            "stratum+tcp://tari.pool:4000",
+            "--tari-wallet-address",
+            "tari_wallet",
+        ]);
+
+        let reqs =
+            validate_pool_requirements(&args, TariMode::Pool).expect("valid tari pool inputs");
+        assert!(reqs.monero_pool.is_none());
+        assert!(reqs.monero_wallet.is_none());
+        assert_eq!(
+            reqs.tari_pool.as_deref(),
+            Some("stratum+tcp://tari.pool:4000")
+        );
+        assert_eq!(reqs.tari_wallet.as_deref(), Some("tari_wallet"));
+    }
+
+    #[test]
+    fn tari_pool_mode_requires_tari_fields() {
+        let args = Args::parse_from(["test", "--tari-mode", "pool"]);
+        assert!(validate_pool_requirements(&args, TariMode::Pool).is_err());
+    }
+
+    #[test]
+    fn monero_fields_required_outside_tari_pool() {
+        let args = Args::parse_from(["test"]);
+        assert!(validate_pool_requirements(&args, TariMode::None).is_err());
+    }
 }
 
 fn warn_huge_page_limit(status: &HugePageStatus, dataset_bytes: u64) {

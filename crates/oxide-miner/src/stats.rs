@@ -24,11 +24,16 @@ pub struct Stats {
     pub pool_connected: AtomicBool,
     pub tari_pool_connected: AtomicBool,
     pub tls: bool,
-    pub pool: String,
+    pub pool: Option<String>,
 }
 
 impl Stats {
-    pub fn new(pool: String, tls: bool, tari_enabled: bool, tari_pool: Option<String>) -> Self {
+    pub fn new(
+        pool: Option<String>,
+        tls: bool,
+        tari_enabled: bool,
+        tari_pool: Option<String>,
+    ) -> Self {
         Self {
             start: Instant::now(),
             accepted: AtomicU64::new(0),
@@ -84,7 +89,7 @@ mod tests {
 
     #[test]
     fn stats_initializes_counters() {
-        let stats = Stats::new("pool".into(), true, false, None);
+        let stats = Stats::new(Some("pool".into()), true, false, None);
         assert_eq!(stats.accepted.load(Ordering::Relaxed), 0);
         assert_eq!(stats.rejected.load(Ordering::Relaxed), 0);
         assert_eq!(stats.dev_accepted.load(Ordering::Relaxed), 0);
@@ -94,12 +99,12 @@ mod tests {
         assert!(stats.hashrate() >= 0.0);
         assert!(stats.tari_hashrate() >= 0.0);
         assert!(stats.tls);
-        assert_eq!(stats.pool, "pool");
+        assert_eq!(stats.pool.as_deref(), Some("pool"));
     }
 
     #[test]
     fn hashrate_uses_elapsed_time() {
-        let stats = Stats::new("pool".into(), false, false, None);
+        let stats = Stats::new(Some("pool".into()), false, false, None);
         // Replace hashes with a pre-filled counter for deterministic check
         stats.hashes.store(1000, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
@@ -126,14 +131,14 @@ mod tests {
             pool_connected: AtomicBool::new(false),
             tari_pool_connected: AtomicBool::new(false),
             tls: false,
-            pool: String::new(),
+            pool: None,
         };
         assert_eq!(manual.hashrate(), 0.0);
     }
 
     #[test]
     fn mining_duration_tracks_elapsed_time() {
-        let stats = Stats::new("pool".into(), false, false, None);
+        let stats = Stats::new(Some("pool".into()), false, false, None);
         std::thread::sleep(Duration::from_millis(5));
         let elapsed = stats.mining_duration();
         assert!(elapsed >= Duration::from_millis(5));

@@ -1,6 +1,6 @@
 // OxideMiner/crates/oxide-core/src/worker.rs
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::stratum::PoolJob;
+use crate::tari_algo::{make_tari_hasher_factory, TariAlgorithm, TariHasherFactory};
 
 #[derive(Clone, Debug)]
 pub struct WorkItem {
@@ -91,6 +92,78 @@ pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::Jo
             })
         })
         .collect()
+}
+
+#[derive(Clone)]
+pub struct TariWorkerSpawnConfig {
+    pub jobs_tx: broadcast::Sender<WorkItem>,
+    pub shares_tx: mpsc::UnboundedSender<Share>,
+    pub affinity: bool,
+    pub large_pages: bool,
+    pub batch_size: usize,
+    pub yield_between_batches: bool,
+    pub hash_counter: Arc<AtomicU64>,
+    pub algorithm: TariAlgorithm,
+}
+
+/// Spawn Tari workers capable of hashing with the selected Tari algorithm.
+pub fn spawn_tari_workers(
+    n: usize,
+    config: TariWorkerSpawnConfig,
+) -> Result<Vec<tokio::task::JoinHandle<()>>> {
+    let TariWorkerSpawnConfig {
+        jobs_tx,
+        shares_tx,
+        affinity,
+        large_pages,
+        batch_size,
+        yield_between_batches,
+        hash_counter,
+        algorithm,
+    } = config;
+
+    #[cfg(feature = "randomx")]
+    if matches!(algorithm, TariAlgorithm::RandomX) {
+        let _ = engine::set_large_pages(large_pages);
+    }
+
+    let factory = make_tari_hasher_factory(algorithm, n)?;
+    let core_ids = if affinity {
+        core_affinity::get_core_ids()
+    } else {
+        None
+    };
+
+    Ok((0..n)
+        .map(|i| {
+            let mut rx = jobs_tx.subscribe();
+            let shares_tx = shares_tx.clone();
+            let core_ids = core_ids.clone();
+            let hc = hash_counter.clone();
+            let factory = factory.clone();
+            tokio::spawn(async move {
+                if let Some(ref ids) = core_ids {
+                    if let Some(id) = ids.get(i % ids.len()) {
+                        core_affinity::set_for_current(*id);
+                    }
+                }
+                if let Err(e) = tari_worker_loop(
+                    i,
+                    n,
+                    batch_size,
+                    yield_between_batches,
+                    &mut rx,
+                    shares_tx,
+                    hc,
+                    factory,
+                )
+                .await
+                {
+                    tracing::warn!(worker = i, error = ?e, "Tari worker exited");
+                }
+            })
+        })
+        .collect())
 }
 
 #[cfg(feature = "randomx")]
@@ -400,7 +473,7 @@ mod engine {
 }
 
 #[cfg(feature = "randomx")]
-pub use engine::{create_vm_for_dataset, ensure_fullmem_dataset, hash, set_large_pages};
+pub use engine::{create_vm_for_dataset, ensure_fullmem_dataset, hash, set_large_pages, Vm};
 
 #[cfg(feature = "randomx")]
 async fn randomx_worker_loop(
@@ -537,6 +610,120 @@ async fn randomx_worker_loop(
                 }
                 hash_counter.fetch_add(local_hashes, Ordering::Relaxed);
             }
+            if need_yield || yield_between_batches {
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+}
+
+async fn tari_worker_loop(
+    worker_id: usize,
+    worker_count: usize,
+    batch_size: usize,
+    yield_between_batches: bool,
+    rx: &mut broadcast::Receiver<WorkItem>,
+    shares_tx: mpsc::UnboundedSender<Share>,
+    hash_counter: Arc<AtomicU64>,
+    factory: Arc<dyn TariHasherFactory>,
+) -> Result<()> {
+    let mut work: Option<WorkItem> = None;
+    let mut hasher = factory.create()?;
+
+    let mut current_job: Option<PoolJob> = None;
+    let mut blob_cache: Vec<u8> = Vec::new();
+
+    loop {
+        if work.is_none() {
+            work = Some(rx.recv().await.map_err(|_| anyhow!("job channel closed"))?);
+            continue;
+        }
+
+        let j = work.as_ref().unwrap().job.clone();
+        let is_devfee = work.as_ref().unwrap().is_devfee;
+
+        if current_job.as_ref().map(|job| &job.job_id) != Some(&j.job_id) {
+            blob_cache =
+                hex::decode(&j.blob).map_err(|e| anyhow!("invalid Tari job blob hex: {e}"))?;
+            if blob_cache.len() < 39 + 4 {
+                tracing::warn!(
+                    worker = worker_id,
+                    blob_len = blob_cache.len(),
+                    "Tari job blob too short to hold nonce at offset 39; skipping job"
+                );
+                work = None;
+                continue;
+            }
+            hasher.prepare_for_job(&j, worker_count)?;
+            current_job = Some(j.clone());
+        }
+
+        let mut nonce: u32 = ((worker_id as u32) * (worker_count as u32))
+            + (SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+                % 0xFFFF_0000);
+
+        'mine: loop {
+            match rx.try_recv() {
+                Ok(next) => {
+                    work = Some(next);
+                    break 'mine;
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    return Err(anyhow!("job channel closed"));
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        worker = worker_id,
+                        skipped,
+                        "Tari job channel lagged; resyncing to latest job"
+                    );
+                    work = None;
+                    break 'mine;
+                }
+            }
+            let mut need_yield = false;
+            let mut local_hashes: u64 = 0;
+            for i in 0..batch_size {
+                put_u32_le(&mut blob_cache, 39, nonce);
+                let digest = hasher.hash_header(&blob_cache);
+                local_hashes += 1;
+                if let Some(job) = current_job.as_ref() {
+                    if meets_target(&digest, job) {
+                        let le_hex = hex::encode(digest);
+                        let mut be_bytes = digest;
+                        be_bytes.reverse();
+                        let be_hex = hex::encode(be_bytes);
+                        tracing::info!(
+                            worker = worker_id,
+                            job_id = %job.job_id,
+                            nonce,
+                            hash_le = %le_hex,
+                            hash_be = %be_hex,
+                            target = %job.target,
+                            "Tari share found",
+                        );
+                        let _ = shares_tx.send(Share {
+                            job_id: job.job_id.clone(),
+                            nonce,
+                            result: digest,
+                            is_devfee,
+                        });
+                        nonce = nonce.wrapping_add(worker_count as u32);
+                        need_yield = true;
+                        break;
+                    }
+                }
+                nonce = nonce.wrapping_add(worker_count as u32);
+                if yield_between_batches && (i % 1024 == 1023) {
+                    need_yield = true;
+                    break;
+                }
+            }
+            hash_counter.fetch_add(local_hashes, Ordering::Relaxed);
             if need_yield || yield_between_batches {
                 tokio::task::yield_now().await;
             }
