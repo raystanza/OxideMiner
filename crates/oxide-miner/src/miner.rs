@@ -96,7 +96,7 @@ fn validate_pool_requirements(args: &Args, tari_mode: TariMode) -> Result<PoolRe
     let tari_pool = args.tari_pool_url.clone();
     let tari_wallet = args.tari_wallet_address.clone();
 
-    match tari_mode {
+    let (tari_pool, tari_wallet) = match tari_mode {
         TariMode::Pool => {
             let tari_pool = tari_pool.ok_or_else(|| {
                 anyhow!("Tari pool mode requires --tari-pool-url or [tari].pool_url")
@@ -105,42 +105,38 @@ fn validate_pool_requirements(args: &Args, tari_mode: TariMode) -> Result<PoolRe
                 anyhow!("Tari pool mode requires --tari-wallet-address or [tari].wallet_address")
             })?;
 
-            match (&args.pool, &args.wallet) {
-                (Some(pool), Some(wallet)) => Ok(PoolRequirements {
-                    monero_pool: Some(pool.clone()),
-                    monero_wallet: Some(wallet.clone()),
-                    tari_pool: Some(tari_pool),
-                    tari_wallet: Some(tari_wallet),
-                }),
-                (None, None) => Ok(PoolRequirements {
-                    monero_pool: None,
-                    monero_wallet: None,
-                    tari_pool: Some(tari_pool),
-                    tari_wallet: Some(tari_wallet),
-                }),
-                _ => Err(anyhow!(
-                    "Provide both --url and --user together for Monero mining or omit both when using Tari pool mode"
-                )),
-            }
+            (Some(tari_pool), Some(tari_wallet))
         }
-        TariMode::None | TariMode::Proxy => {
-            let pool = args
-                .pool
-                .clone()
-                .ok_or_else(|| anyhow!("--url <POOL> is required for Monero mining"))?;
-            let wallet = args
-                .wallet
-                .clone()
-                .ok_or_else(|| anyhow!("--user <WALLET> is required for Monero mining"))?;
+        TariMode::None | TariMode::Proxy => (tari_pool, tari_wallet),
+    };
 
-            Ok(PoolRequirements {
-                monero_pool: Some(pool),
-                monero_wallet: Some(wallet),
-                tari_pool,
-                tari_wallet,
-            })
-        }
-    }
+    // Monero mining is required when Tari mode is not pool, or when the user provided
+    // any Monero-specific CLI args (so we don't silently ignore partial inputs).
+    let monero_requested = matches!(tari_mode, TariMode::None | TariMode::Proxy)
+        || args.pool.is_some()
+        || args.wallet.is_some();
+
+    let (monero_pool, monero_wallet) = if monero_requested {
+        let pool = args
+            .pool
+            .clone()
+            .ok_or_else(|| anyhow!("--url <POOL> is required for Monero mining"))?;
+        let wallet = args
+            .wallet
+            .clone()
+            .ok_or_else(|| anyhow!("--user <WALLET> is required for Monero mining"))?;
+
+        (Some(pool), Some(wallet))
+    } else {
+        (None, None)
+    };
+
+    Ok(PoolRequirements {
+        monero_pool,
+        monero_wallet,
+        tari_pool,
+        tari_wallet,
+    })
 }
 
 struct ShareContext<'a> {
@@ -1200,13 +1196,28 @@ mod tests {
     #[test]
     fn tari_pool_mode_requires_tari_fields() {
         let args = Args::parse_from(["test", "--tari-mode", "pool"]);
-        assert!(validate_pool_requirements(&args, TariMode::Pool).is_err());
+        let err = validate_pool_requirements(&args, TariMode::Pool).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Tari pool mode requires --tari-pool-url"));
     }
 
     #[test]
-    fn monero_fields_required_outside_tari_pool() {
-        let args = Args::parse_from(["test"]);
-        assert!(validate_pool_requirements(&args, TariMode::None).is_err());
+    fn monero_url_is_required_when_mining_monero() {
+        let args = Args::parse_from(["test", "--user", "wallet_only"]);
+        let err = validate_pool_requirements(&args, TariMode::None).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("--url <POOL> is required for Monero mining"));
+    }
+
+    #[test]
+    fn monero_wallet_is_required_when_mining_monero() {
+        let args = Args::parse_from(["test", "--url", "pool.only"]);
+        let err = validate_pool_requirements(&args, TariMode::None).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("--user <WALLET> is required for Monero mining"));
     }
 }
 
