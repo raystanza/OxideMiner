@@ -74,6 +74,8 @@
 ## ---------------------------------------------------------------------------
 ## Pool mode (mode = "pool")
 ## ---------------------------------------------------------------------------
+# When mode = "pool", Monero pool/user credentials are optional; only the Tari
+# pool_url and wallet_address below are required.
 # URL of your Tari mining pool (stratum or stratum+tcp).
 #pool_url = "stratum+tcp://tarirx.pool.example:4000"
 

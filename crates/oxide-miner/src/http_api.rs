@@ -329,7 +329,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false, false, None));
+        let stats = Arc::new(Stats::new(Some("pool".into()), false, false, None));
         stats.accepted.store(5, Ordering::Relaxed);
         stats.rejected.store(2, Ordering::Relaxed);
         stats.dev_accepted.store(1, Ordering::Relaxed);
@@ -374,7 +374,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false, false, None));
+        let stats = Arc::new(Stats::new(Some("pool".into()), false, false, None));
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("img")).unwrap();
@@ -423,7 +423,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false, false, None));
+        let stats = Arc::new(Stats::new(Some("pool".into()), false, false, None));
         let server = tokio::spawn(run_http_api(port, stats, None));
         sleep(Duration::from_millis(50)).await;
 

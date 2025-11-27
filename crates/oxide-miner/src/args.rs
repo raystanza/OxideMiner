@@ -17,11 +17,11 @@ use std::{
 )]
 pub struct Args {
     /// pool like "pool.supportxmr.com:5555"
-    #[arg(short = 'o', long = "url", required_unless_present_any = ["benchmark", "tari_pool_url"])]
+    #[arg(short = 'o', long = "url")]
     pub pool: Option<String>,
 
     /// Your XMR wallet address
-    #[arg(short = 'u', long = "user", required_unless_present_any = ["benchmark", "tari_wallet_address"])]
+    #[arg(short = 'u', long = "user")]
     pub wallet: Option<String>,
 
     /// Pool password (often 'x')
@@ -574,15 +574,14 @@ mod tests {
     }
 
     #[test]
-    fn mining_mode_parses_with_pool_and_wallet() {
-        assert!(Args::try_parse_from(["test", "-o", "pool:5555", "-u", "wallet"]).is_ok());
-    }
+    fn mining_mode_parses_with_or_without_pool_fields() {
+        let parsed = Args::try_parse_from(["test", "-o", "pool:5555", "-u", "wallet"]).unwrap();
+        assert_eq!(parsed.pool.as_deref(), Some("pool:5555"));
+        assert_eq!(parsed.wallet.as_deref(), Some("wallet"));
 
-    #[test]
-    fn mining_mode_missing_pool_or_wallet_fails() {
-        assert!(Args::try_parse_from(["test"]).is_err());
-        assert!(Args::try_parse_from(["test", "-o", "pool:5555"]).is_err());
-        assert!(Args::try_parse_from(["test", "-u", "wallet"]).is_err());
+        let parsed = Args::try_parse_from(["test"]).unwrap();
+        assert!(parsed.pool.is_none());
+        assert!(parsed.wallet.is_none());
     }
 
     #[test]

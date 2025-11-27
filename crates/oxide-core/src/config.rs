@@ -9,9 +9,9 @@ pub const DEFAULT_BATCH_SIZE: usize = 10_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// pool like "pool.example.com:3333"
-    pub pool: String,
+    pub pool: Option<String>,
     /// Monero wallet address (primary)
-    pub wallet: String,
+    pub wallet: Option<String>,
     /// optional password; many pools accept "x"
     pub pass: Option<String>,
     /// number of mining threads (None = auto decide later using CPU/cache heuristics)
@@ -153,8 +153,8 @@ impl TariConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            pool: "pool.example.com:3333".into(),
-            wallet: "<YOUR_XMR_ADDRESS>".into(),
+            pool: Some("pool.example.com:3333".into()),
+            wallet: Some("<YOUR_XMR_ADDRESS>".into()),
             pass: Some("x".into()),
             threads: None,
             enable_devfee: true,
@@ -180,8 +180,8 @@ mod tests {
     #[test]
     fn default_config_values() {
         let cfg = Config::default();
-        assert_eq!(cfg.pool, "pool.example.com:3333");
-        assert_eq!(cfg.wallet, "<YOUR_XMR_ADDRESS>");
+        assert_eq!(cfg.pool.as_deref(), Some("pool.example.com:3333"));
+        assert_eq!(cfg.wallet.as_deref(), Some("<YOUR_XMR_ADDRESS>"));
         assert_eq!(cfg.pass.as_deref(), Some("x"));
         assert!(cfg.enable_devfee);
         assert!(!cfg.tls);
