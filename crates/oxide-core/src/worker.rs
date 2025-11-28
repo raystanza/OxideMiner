@@ -156,6 +156,7 @@ pub fn spawn_tari_workers(
                     shares_tx,
                     hc,
                     factory,
+                    algorithm,
                 )
                 .await
                 {
@@ -281,9 +282,9 @@ mod engine {
 
         LARGE_PAGES.store(true, Ordering::Relaxed);
         if let Some(page) = status.page_size_bytes {
-            tracing::info!(page_size_bytes = page, "RandomX large pages enabled",);
+            tracing::info!(page_size_bytes = page, "Large pages enabled",);
         } else {
-            tracing::info!("RandomX large pages enabled");
+            tracing::info!("Large pages enabled");
         }
         true
     }
@@ -626,12 +627,14 @@ async fn tari_worker_loop(
     shares_tx: mpsc::UnboundedSender<Share>,
     hash_counter: Arc<AtomicU64>,
     factory: Arc<dyn TariHasherFactory>,
+    algorithm: TariAlgorithm,
 ) -> Result<()> {
     let mut work: Option<WorkItem> = None;
     let mut hasher = factory.create()?;
 
     let mut current_job: Option<PoolJob> = None;
     let mut blob_cache: Vec<u8> = Vec::new();
+    let mut nonce_offset: Option<usize> = None;
 
     loop {
         if work.is_none() {
@@ -645,15 +648,28 @@ async fn tari_worker_loop(
         if current_job.as_ref().map(|job| &job.job_id) != Some(&j.job_id) {
             blob_cache =
                 hex::decode(&j.blob).map_err(|e| anyhow!("invalid Tari job blob hex: {e}"))?;
-            if blob_cache.len() < 39 + 4 {
-                tracing::warn!(
-                    worker = worker_id,
-                    blob_len = blob_cache.len(),
-                    "Tari job blob too short to hold nonce at offset 39; skipping job"
-                );
-                work = None;
-                continue;
+
+            match tari_nonce_offset(&blob_cache, algorithm) {
+                Ok(offset) => {
+                    if blob_cache.len() < offset + 4 {
+                        tracing::warn!(
+                            worker = worker_id,
+                            blob_len = blob_cache.len(),
+                            offset,
+                            "Tari job blob too short to hold nonce; skipping job"
+                        );
+                        work = None;
+                        continue;
+                    }
+                    nonce_offset = Some(offset);
+                }
+                Err(e) => {
+                    tracing::warn!(worker = worker_id, error = %e, "Tari job nonce layout invalid");
+                    work = None;
+                    continue;
+                }
             }
+
             hasher.prepare_for_job(&j, worker_count)?;
             current_job = Some(j.clone());
         }
@@ -687,8 +703,9 @@ async fn tari_worker_loop(
             }
             let mut need_yield = false;
             let mut local_hashes: u64 = 0;
+            let offset = nonce_offset.expect("nonce offset set when job cached");
             for i in 0..batch_size {
-                put_u32_le(&mut blob_cache, 39, nonce);
+                put_u32_le(&mut blob_cache, offset, nonce);
                 let digest = hasher.hash_header(&blob_cache);
                 local_hashes += 1;
                 if let Some(job) = current_job.as_ref() {
@@ -726,6 +743,33 @@ async fn tari_worker_loop(
             hash_counter.fetch_add(local_hashes, Ordering::Relaxed);
             if need_yield || yield_between_batches {
                 tokio::task::yield_now().await;
+            }
+        }
+    }
+}
+
+fn tari_nonce_offset(blob: &[u8], algorithm: TariAlgorithm) -> Result<usize> {
+    match algorithm {
+        TariAlgorithm::Sha3x => {
+            if blob.len() < 4 {
+                Err(anyhow!(
+                    "Tari SHA3x blob too short to hold nonce (len={})",
+                    blob.len()
+                ))
+            } else {
+                Ok(blob.len().saturating_sub(4))
+            }
+        }
+        TariAlgorithm::RandomX => {
+            if blob.len() >= 39 + 4 {
+                Ok(39)
+            } else if blob.len() >= 4 {
+                Ok(blob.len().saturating_sub(4))
+            } else {
+                Err(anyhow!(
+                    "Tari RandomX blob too short to hold nonce (len={})",
+                    blob.len()
+                ))
             }
         }
     }
@@ -786,6 +830,13 @@ mod tests {
     use super::*;
     use std::sync::{atomic::AtomicU64, Arc};
     use tokio::sync::{broadcast, mpsc};
+
+    #[test]
+    fn tari_nonce_offset_prefers_tail_for_sha3x() {
+        let blob = vec![0u8; 32];
+        let offset = tari_nonce_offset(&blob, TariAlgorithm::Sha3x).expect("offset");
+        assert_eq!(offset, 28);
+    }
 
     #[tokio::test]
     async fn spawns_correct_number_of_workers() {

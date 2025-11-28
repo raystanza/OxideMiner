@@ -24,7 +24,7 @@ pub struct Stats {
     pub pool_connected: AtomicBool,
     pub tari_pool_connected: AtomicBool,
     pub tls: bool,
-    pub pool: Option<String>,
+    pub monero_pool: Option<String>,
 }
 
 impl Stats {
@@ -51,7 +51,7 @@ impl Stats {
             pool_connected: AtomicBool::new(false),
             tari_pool_connected: AtomicBool::new(false),
             tls,
-            pool,
+            monero_pool: pool,
         }
     }
 
@@ -99,7 +99,7 @@ mod tests {
         assert!(stats.hashrate() >= 0.0);
         assert!(stats.tari_hashrate() >= 0.0);
         assert!(stats.tls);
-        assert_eq!(stats.pool.as_deref(), Some("pool"));
+        assert_eq!(stats.monero_pool.as_deref(), Some("pool"));
     }
 
     #[test]
@@ -131,7 +131,7 @@ mod tests {
             pool_connected: AtomicBool::new(false),
             tari_pool_connected: AtomicBool::new(false),
             tls: false,
-            pool: None,
+            monero_pool: None,
         };
         assert_eq!(manual.hashrate(), 0.0);
     }

@@ -17,16 +17,16 @@ use std::{
 )]
 pub struct Args {
     /// pool like "pool.supportxmr.com:5555"
-    #[arg(short = 'o', long = "url")]
-    pub pool: Option<String>,
+    #[arg(short = 'o', long = "monero-url", alias = "url")]
+    pub monero_pool: Option<String>,
 
     /// Your XMR wallet address
-    #[arg(short = 'u', long = "user")]
-    pub wallet: Option<String>,
+    #[arg(short = 'u', long = "monero-wallet", alias = "user")]
+    pub monero_wallet: Option<String>,
 
     /// Pool password (often 'x')
-    #[arg(short = 'p', long = "pass", default_value = "x")]
-    pub pass: String,
+    #[arg(short = 'p', long = "monero-pass", alias = "pass", default_value = "x")]
+    pub monero_pass: String,
 
     /// Number of threads (omit for auto)
     #[arg(
@@ -121,12 +121,16 @@ pub struct Args {
     pub tari_monero_wallet: Option<String>,
 
     /// Tari pool stratum URL (e.g. stratum+tcp://tarirx.pool:port)
-    #[arg(long = "tari-pool-url", value_name = "URL")]
-    pub tari_pool_url: Option<String>,
+    #[arg(long = "tari-pool", alias = "tari-pool-url", value_name = "URL")]
+    pub tari_pool: Option<String>,
 
     /// Tari wallet address for pool payouts
-    #[arg(long = "tari-wallet-address", value_name = "TARI_ADDRESS")]
-    pub tari_wallet_address: Option<String>,
+    #[arg(
+        long = "tari-wallet",
+        alias = "tari-wallet-address",
+        value_name = "TARI_ADDRESS"
+    )]
+    pub tari_wallet: Option<String>,
 
     /// Optional worker/rig identifier for Tari pool mining
     #[arg(long = "tari-rig-id", value_name = "NAME")]
@@ -143,11 +147,12 @@ pub struct Args {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConfigFile {
-    #[serde(alias = "url")]
-    pub pool: Option<String>,
-    #[serde(alias = "user")]
-    pub wallet: Option<String>,
-    pub pass: Option<String>,
+    #[serde(alias = "url", alias = "pool")]
+    pub monero_pool: Option<String>,
+    #[serde(alias = "user", alias = "wallet")]
+    pub monero_wallet: Option<String>,
+    #[serde(alias = "pass")]
+    pub monero_pass: Option<String>,
     pub threads: Option<usize>,
     pub tls: Option<bool>,
     pub tls_ca_cert: Option<PathBuf>,
@@ -164,8 +169,10 @@ pub struct ConfigFile {
     pub tari_mode: Option<String>,
     pub tari_proxy_url: Option<String>,
     pub tari_monero_wallet: Option<String>,
-    pub tari_pool_url: Option<String>,
-    pub tari_wallet_address: Option<String>,
+    #[serde(alias = "tari_pool_url", alias = "pool_url")]
+    pub tari_pool: Option<String>,
+    #[serde(alias = "tari_wallet_address", alias = "wallet_address")]
+    pub tari_wallet: Option<String>,
     pub tari_rig_id: Option<String>,
     pub tari_login: Option<String>,
     pub tari_password: Option<String>,
@@ -176,8 +183,10 @@ pub struct ConfigFile {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TariFileConfig {
     pub mode: Option<String>,
-    pub pool_url: Option<String>,
-    pub wallet_address: Option<String>,
+    #[serde(alias = "pool_url")]
+    pub tari_pool: Option<String>,
+    #[serde(alias = "wallet_address")]
+    pub tari_wallet: Option<String>,
     pub rig_id: Option<String>,
     pub login: Option<String>,
     pub password: Option<String>,
@@ -309,21 +318,27 @@ fn apply_config_defaults(
     original_args: &[OsString],
     args: &mut Vec<OsString>,
 ) {
-    if let Some(pool) = config.pool.as_ref() {
-        if !has_arg(original_args, Some("o"), Some("url")) {
-            push_value(args, "--url", pool.as_str());
+    if let Some(pool) = config.monero_pool.as_ref() {
+        if !has_arg(original_args, Some("o"), Some("monero-url"))
+            && !has_arg(original_args, Some("o"), Some("url"))
+        {
+            push_value(args, "--monero-url", pool.as_str());
         }
     }
 
-    if let Some(wallet) = config.wallet.as_ref() {
-        if !has_arg(original_args, Some("u"), Some("user")) {
-            push_value(args, "--user", wallet.as_str());
+    if let Some(wallet) = config.monero_wallet.as_ref() {
+        if !has_arg(original_args, Some("u"), Some("monero-wallet"))
+            && !has_arg(original_args, Some("u"), Some("user"))
+        {
+            push_value(args, "--monero-wallet", wallet.as_str());
         }
     }
 
-    if let Some(pass) = config.pass.as_ref() {
-        if !has_arg(original_args, Some("p"), Some("pass")) {
-            push_value(args, "--pass", pass.as_str());
+    if let Some(pass) = config.monero_pass.as_ref() {
+        if !has_arg(original_args, Some("p"), Some("monero-pass"))
+            && !has_arg(original_args, Some("p"), Some("pass"))
+        {
+            push_value(args, "--monero-pass", pass.as_str());
         }
     }
 
@@ -340,15 +355,19 @@ fn apply_config_defaults(
             }
         }
 
-        if let Some(pool) = tari_cfg.pool_url.as_ref() {
-            if !has_arg(original_args, None, Some("tari-pool-url")) {
-                push_value(args, "--tari-pool-url", pool.as_str());
+        if let Some(pool) = tari_cfg.tari_pool.as_ref() {
+            if !has_arg(original_args, None, Some("tari-pool"))
+                && !has_arg(original_args, None, Some("tari-pool-url"))
+            {
+                push_value(args, "--tari-pool", pool.as_str());
             }
         }
 
-        if let Some(wallet) = tari_cfg.wallet_address.as_ref() {
-            if !has_arg(original_args, None, Some("tari-wallet-address")) {
-                push_value(args, "--tari-wallet-address", wallet.as_str());
+        if let Some(wallet) = tari_cfg.tari_wallet.as_ref() {
+            if !has_arg(original_args, None, Some("tari-wallet"))
+                && !has_arg(original_args, None, Some("tari-wallet-address"))
+            {
+                push_value(args, "--tari-wallet", wallet.as_str());
             }
         }
 
@@ -413,15 +432,19 @@ fn apply_config_defaults(
         }
     }
 
-    if let Some(pool) = config.tari_pool_url.as_ref() {
-        if !has_arg(original_args, None, Some("tari-pool-url")) {
-            push_value(args, "--tari-pool-url", pool.as_str());
+    if let Some(pool) = config.tari_pool.as_ref() {
+        if !has_arg(original_args, None, Some("tari-pool"))
+            && !has_arg(original_args, None, Some("tari-pool-url"))
+        {
+            push_value(args, "--tari-pool", pool.as_str());
         }
     }
 
-    if let Some(wallet) = config.tari_wallet_address.as_ref() {
-        if !has_arg(original_args, None, Some("tari-wallet-address")) {
-            push_value(args, "--tari-wallet-address", wallet.as_str());
+    if let Some(wallet) = config.tari_wallet.as_ref() {
+        if !has_arg(original_args, None, Some("tari-wallet"))
+            && !has_arg(original_args, None, Some("tari-wallet-address"))
+        {
+            push_value(args, "--tari-wallet", wallet.as_str());
         }
     }
 
@@ -576,12 +599,12 @@ mod tests {
     #[test]
     fn mining_mode_parses_with_or_without_pool_fields() {
         let parsed = Args::try_parse_from(["test", "-o", "pool:5555", "-u", "wallet"]).unwrap();
-        assert_eq!(parsed.pool.as_deref(), Some("pool:5555"));
-        assert_eq!(parsed.wallet.as_deref(), Some("wallet"));
+        assert_eq!(parsed.monero_pool.as_deref(), Some("pool:5555"));
+        assert_eq!(parsed.monero_wallet.as_deref(), Some("wallet"));
 
         let parsed = Args::try_parse_from(["test"]).unwrap();
-        assert!(parsed.pool.is_none());
-        assert!(parsed.wallet.is_none());
+        assert!(parsed.monero_pool.is_none());
+        assert!(parsed.monero_wallet.is_none());
     }
 
     #[test]
@@ -619,15 +642,15 @@ algorithm = "sha3x"
             "oxide-miner",
             "--config",
             path.to_str().unwrap(),
-            "--url",
+            "--monero-url",
             "pool:1234",
-            "--user",
+            "--monero-wallet",
             "wallet",
             "--tari-mode",
             "pool",
-            "--tari-pool-url",
+            "--tari-pool",
             "stratum+tcp://tari.pool:4000",
-            "--tari-wallet-address",
+            "--tari-wallet",
             "tari_wallet",
         ];
 
@@ -651,15 +674,15 @@ algorithm = "sha3x"
             "oxide-miner",
             "--config",
             path.to_str().unwrap(),
-            "--url",
+            "--monero-url",
             "pool:1234",
-            "--user",
+            "--monero-wallet",
             "wallet",
             "--tari-mode",
             "pool",
-            "--tari-pool-url",
+            "--tari-pool",
             "stratum+tcp://tari.pool:4000",
-            "--tari-wallet-address",
+            "--tari-wallet",
             "tari_wallet",
             "--tari-algorithm",
             "randomx",
@@ -704,7 +727,7 @@ algorithm = "sha3x"
         let config = NamedTempFile::new().unwrap();
         fs::write(
             config.path(),
-            "pool = \"configpool:5555\"\nwallet = \"configwallet\"\npass = \"configpass\"\nthreads = 8\ndebug = true\n",
+            "monero_pool = \"configpool:5555\"\nmonero_wallet = \"configwallet\"\nmonero_pass = \"configpass\"\nthreads = 8\ndebug = true\n",
         )
         .unwrap();
 
@@ -715,9 +738,9 @@ algorithm = "sha3x"
         ];
 
         let parsed = parse_with_config_from(args).unwrap();
-        assert_eq!(parsed.args.pool.as_deref(), Some("configpool:5555"));
-        assert_eq!(parsed.args.wallet.as_deref(), Some("configwallet"));
-        assert_eq!(parsed.args.pass, "configpass");
+        assert_eq!(parsed.args.monero_pool.as_deref(), Some("configpool:5555"));
+        assert_eq!(parsed.args.monero_wallet.as_deref(), Some("configwallet"));
+        assert_eq!(parsed.args.monero_pass, "configpass");
         assert_eq!(parsed.args.threads, Some(8));
         assert!(parsed.args.debug);
     }
@@ -728,9 +751,9 @@ algorithm = "sha3x"
         fs::write(
             config.path(),
             r#"
-pool = "configpool:5555"
-wallet = "configwallet"
-pass = "configpass"
+monero_pool = "configpool:5555"
+monero_wallet = "configwallet"
+monero_pass = "configpass"
 threads = 2
 batch_size = 5000
         "#,
@@ -743,7 +766,7 @@ batch_size = 5000
             config.path().as_os_str().to_os_string(),
             OsString::from("--threads"),
             OsString::from("4"),
-            OsString::from("--pass"),
+            OsString::from("--monero-pass"),
             OsString::from("cli-pass"),
             OsString::from("--batch-size"),
             OsString::from("7500"),
@@ -751,10 +774,10 @@ batch_size = 5000
 
         let parsed = parse_with_config_from(args).unwrap();
         assert_eq!(parsed.args.threads, Some(4));
-        assert_eq!(parsed.args.pass, "cli-pass");
+        assert_eq!(parsed.args.monero_pass, "cli-pass");
         assert_eq!(parsed.args.batch_size, Some(7_500));
-        assert_eq!(parsed.args.pool.as_deref(), Some("configpool:5555"));
-        assert_eq!(parsed.args.wallet.as_deref(), Some("configwallet"));
+        assert_eq!(parsed.args.monero_pool.as_deref(), Some("configpool:5555"));
+        assert_eq!(parsed.args.monero_wallet.as_deref(), Some("configwallet"));
     }
 
     #[test]
