@@ -19,9 +19,9 @@
 # =============================================================================
 # For a simple Monero-only setup, the only things you *must* set are:
 #
-# pool   = "pool.supportxmr.com:5555"   # Your Monero pool host:port
-# wallet = "<YOUR_XMR_ADDRESS>"        # Your primary Monero wallet address
-# pass   = "x"                         # Pool password / worker name (often 'x')
+# monero_pool   = "pool.supportxmr.com:5555"   # Your Monero pool host:port
+# monero_wallet = "<YOUR_XMR_ADDRESS>"        # Your primary Monero wallet address
+# monero_pass   = "x"                         # Pool password / worker name (often 'x')
 #
 # Save the file and run:
 #   ./oxide-miner
@@ -34,19 +34,20 @@
 # MONERO BACKEND
 # =============================================================================
 # You can configure Monero either via the simple top-level keys above
-# (pool / wallet / pass) or via the structured [monero] table below.
-# The [monero] table is recommended if you also use Tari or want to be explicit.
+# (monero_pool / monero_wallet / monero_pass) or via the structured [monero]
+# table below. The [monero] table is recommended if you also use Tari or want to
+# be explicit.
 
 #[monero]
 # Replace with the mining pool of your choice (host:port).
-#pool = "pool.supportxmr.com:3333"
+#monero_pool = "pool.supportxmr.com:3333"
 
 # Replace with your primary Monero wallet address.
 # (The example below is a random address and will NOT receive your payouts.)
-#wallet = "48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaaVYMpBBd2QQUiTY84qaSXJYVPS"
+#monero_wallet = "48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaaVYMpBBd2QQUiTY84qaSXJYVPS"
 
 # Optional pool password / worker name (many pools accept plain "x").
-#pass = "x"
+#monero_pass = "x"
 
 
 # =============================================================================
@@ -61,7 +62,7 @@
 #
 # Notes:
 # - In "pool" mode you can mine against a Tari pool only by setting
-#   `pool_url` and `wallet_address` even if you skip Monero config.
+#   `tari_pool` and `tari_wallet` even if you skip Monero config.
 # - In "proxy" mode the miner talks to the merge-mining proxy at `proxy_url`.
 #   If your proxy only exposes a Monero-compatible get_block_template,
 #   set `tari_monero_wallet` so the miner can fall back cleanly.
@@ -75,13 +76,13 @@
 ## Pool mode (mode = "pool")
 ## ---------------------------------------------------------------------------
 # When mode = "pool", Monero pool/user credentials are optional; only the Tari
-# pool_url and wallet_address below are required.
+# tari_pool and tari_wallet below are required.
 # URL of your Tari mining pool (stratum or stratum+tcp).
-#pool_url = "stratum+tcp://tarirx.pool.example:4000"
+#tari_pool = "stratum+tcp://tarirx.pool.example:4000"
 
 # Tari wallet address used for pool payouts.
 # IMPORTANT: this should be your one-sided Tari address, NOT an emoji address.
-#wallet_address = "tari_wallet_address"
+#tari_wallet = "tari_wallet_address"
 
 # Optional: worker/rig name shown in pool dashboard (if supported).
 #rig_id = "rig01"

@@ -9,11 +9,11 @@ pub const DEFAULT_BATCH_SIZE: usize = 10_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// pool like "pool.example.com:3333"
-    pub pool: Option<String>,
+    pub monero_pool: Option<String>,
     /// Monero wallet address (primary)
-    pub wallet: Option<String>,
+    pub monero_wallet: Option<String>,
     /// optional password; many pools accept "x"
-    pub pass: Option<String>,
+    pub monero_pass: Option<String>,
     /// number of mining threads (None = auto decide later using CPU/cache heuristics)
     pub threads: Option<usize>,
     /// fixed 1% dev fee (always enabled)
@@ -153,9 +153,9 @@ impl TariConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            pool: Some("pool.example.com:3333".into()),
-            wallet: Some("<YOUR_XMR_ADDRESS>".into()),
-            pass: Some("x".into()),
+            monero_pool: Some("pool.example.com:3333".into()),
+            monero_wallet: Some("<YOUR_XMR_ADDRESS>".into()),
+            monero_pass: Some("x".into()),
             threads: None,
             enable_devfee: true,
             tls: false,
@@ -180,9 +180,9 @@ mod tests {
     #[test]
     fn default_config_values() {
         let cfg = Config::default();
-        assert_eq!(cfg.pool.as_deref(), Some("pool.example.com:3333"));
-        assert_eq!(cfg.wallet.as_deref(), Some("<YOUR_XMR_ADDRESS>"));
-        assert_eq!(cfg.pass.as_deref(), Some("x"));
+        assert_eq!(cfg.monero_pool.as_deref(), Some("pool.example.com:3333"));
+        assert_eq!(cfg.monero_wallet.as_deref(), Some("<YOUR_XMR_ADDRESS>"));
+        assert_eq!(cfg.monero_pass.as_deref(), Some("x"));
         assert!(cfg.enable_devfee);
         assert!(!cfg.tls);
         assert!(cfg.tls_ca_cert.is_none());

@@ -229,7 +229,7 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                                 "tari_hashrate": tari_hashrate,
                                 "hashes_total": hashes,
                                 "tari_hashes_total": tari_hashes,
-                                "pool": s.pool,
+                                "pool": s.monero_pool.clone(),
                                 "connected": s.pool_connected.load(Ordering::Relaxed),
                                 "tari_pool": s.tari_pool.clone(),
                                 "tari_connected": s.tari_pool_connected.load(Ordering::Relaxed),

@@ -110,16 +110,16 @@ fn tari_mode_from_args(args: &Args) -> Result<TariMode> {
 
 fn validate_pool_requirements(args: &Args) -> Result<PoolRequirements> {
     let tari_mode = tari_mode_from_args(args)?;
-    let tari_pool = args.tari_pool_url.clone();
-    let tari_wallet = args.tari_wallet_address.clone();
+    let tari_pool = args.tari_pool.clone();
+    let tari_wallet = args.tari_wallet.clone();
 
     let (tari_pool, tari_wallet) = match tari_mode {
         TariMode::Pool => {
             let tari_pool = tari_pool.ok_or_else(|| {
-                anyhow!("Tari pool mode requires --tari-pool-url or [tari].pool_url")
+                anyhow!("Tari pool mode requires --tari-pool or [tari].tari_pool")
             })?;
             let tari_wallet = tari_wallet.ok_or_else(|| {
-                anyhow!("Tari pool mode requires --tari-wallet-address or [tari].wallet_address")
+                anyhow!("Tari pool mode requires --tari-wallet or [tari].tari_wallet")
             })?;
 
             (Some(tari_pool), Some(tari_wallet))
@@ -130,18 +130,17 @@ fn validate_pool_requirements(args: &Args) -> Result<PoolRequirements> {
     // Monero mining is required when Tari mode is not pool, or when the user provided
     // any Monero-specific CLI args (so we don't silently ignore partial inputs).
     let monero_requested = matches!(tari_mode, TariMode::None | TariMode::Proxy)
-        || args.pool.is_some()
-        || args.wallet.is_some();
+        || args.monero_pool.is_some()
+        || args.monero_wallet.is_some();
 
     let (monero_pool, monero_wallet) = if monero_requested {
         let pool = args
-            .pool
+            .monero_pool
             .clone()
-            .ok_or_else(|| anyhow!("--url <POOL> is required for Monero mining"))?;
-        let wallet = args
-            .wallet
-            .clone()
-            .ok_or_else(|| anyhow!("--user <WALLET> is required for Monero mining"))?;
+            .ok_or_else(|| anyhow!("--monero-url/--url <POOL> is required for Monero mining"))?;
+        let wallet = args.monero_wallet.clone().ok_or_else(|| {
+            anyhow!("--monero-wallet/--user <WALLET> is required for Monero mining")
+        })?;
 
         (Some(pool), Some(wallet))
     } else {
@@ -375,9 +374,9 @@ pub async fn run(args: Args) -> Result<()> {
     validate_tari_algorithm_for_mode(tari_mode, tari_algorithm)?;
 
     let mut cfg = Config {
-        pool: pool_requirements.monero_pool.clone(),
-        wallet: pool_requirements.monero_wallet.clone(),
-        pass: Some(args.pass),
+        monero_pool: pool_requirements.monero_pool.clone(),
+        monero_wallet: pool_requirements.monero_wallet.clone(),
+        monero_pass: Some(args.monero_pass),
         threads: args.threads,
         enable_devfee: true,
         tls: args.tls,
@@ -517,7 +516,9 @@ pub async fn run(args: Args) -> Result<()> {
 
     let tari_mode = cfg.tari.effective_mode();
     let stats = Arc::new(Stats::new(
-        cfg.pool.clone().or_else(|| cfg.tari.pool_url.clone()),
+        cfg.monero_pool
+            .clone()
+            .or_else(|| cfg.tari.pool_url.clone()),
         cfg.tls,
         matches!(tari_mode, TariMode::Proxy | TariMode::Pool),
         cfg.tari.pool_url.clone(),
@@ -561,7 +562,7 @@ pub async fn run(args: Args) -> Result<()> {
     let mut tari_templates: HashMap<String, MergeMiningTemplate> = HashMap::new();
     let mut monero_jobs: HashMap<String, PoolJob> = HashMap::new();
 
-    let monero_enabled = cfg.pool.is_some() && cfg.wallet.is_some();
+    let monero_enabled = cfg.monero_pool.is_some() && cfg.monero_wallet.is_some();
 
     let tls = cfg.tls;
     let tls_ca_cert = cfg.tls_ca_cert.clone();
@@ -600,14 +601,14 @@ pub async fn run(args: Args) -> Result<()> {
         );
 
         let main_pool = cfg
-            .pool
+            .monero_pool
             .clone()
             .expect("monero pool should exist when enabled");
         let user_wallet = cfg
-            .wallet
+            .monero_wallet
             .clone()
             .expect("monero wallet should exist when enabled");
-        let pass = cfg.pass.clone().unwrap_or_else(|| "x".into());
+        let pass = cfg.monero_pass.clone().unwrap_or_else(|| "x".into());
         let agent = cfg.agent.clone();
 
         Some(tokio::spawn({
@@ -959,12 +960,12 @@ pub async fn run(args: Args) -> Result<()> {
     let tari_pool_handle = match (tari_mode, tari_jobs_tx.clone(), tari_shares_rx) {
         (TariMode::Pool, Some(tari_jobs_tx), Some(mut tari_shares_rx)) => {
             if cfg.tari.pool_url.is_none() {
-                tracing::error!("Tari pool mode selected but no --tari-pool-url provided");
+                tracing::error!("Tari pool mode selected but no --tari-pool provided");
                 return Err(anyhow!("tari pool url missing"));
             }
 
             if cfg.tari.wallet_address.is_none() {
-                tracing::error!("Tari pool mode selected but no --tari-wallet-address provided");
+                tracing::error!("Tari pool mode selected but no --tari-wallet provided");
                 return Err(anyhow!("tari wallet address missing"));
             }
 
@@ -979,7 +980,7 @@ pub async fn run(args: Args) -> Result<()> {
                 .tari
                 .password
                 .clone()
-                .unwrap_or_else(|| cfg.pass.clone().unwrap_or_else(|| "x".to_string()));
+                .unwrap_or_else(|| cfg.monero_pass.clone().unwrap_or_else(|| "x".to_string()));
             let tari_rig = cfg.tari.rig_id.clone();
             let tari_agent = format!("{} (tari)", cfg.agent);
             let tls_ca_cert = cfg.tls_ca_cert.clone();
@@ -1190,9 +1191,9 @@ mod tests {
             "test",
             "--tari-mode",
             "pool",
-            "--tari-pool-url",
+            "--tari-pool",
             "stratum+tcp://tari.pool:4000",
-            "--tari-wallet-address",
+            "--tari-wallet",
             "tari_wallet",
         ]);
 
@@ -1212,25 +1213,25 @@ mod tests {
         let err = validate_pool_requirements(&args).unwrap_err();
         assert!(err
             .to_string()
-            .contains("Tari pool mode requires --tari-pool-url"));
+            .contains("Tari pool mode requires --tari-pool"));
     }
 
     #[test]
     fn monero_url_is_required_when_mining_monero() {
-        let args = Args::parse_from(["test", "--user", "wallet_only"]);
+        let args = Args::parse_from(["test", "--monero-wallet", "wallet_only"]);
         let err = validate_pool_requirements(&args).unwrap_err();
         assert!(err
             .to_string()
-            .contains("--url <POOL> is required for Monero mining"));
+            .contains("--monero-url/--url <POOL> is required for Monero mining"));
     }
 
     #[test]
     fn monero_wallet_is_required_when_mining_monero() {
-        let args = Args::parse_from(["test", "--url", "pool.only"]);
+        let args = Args::parse_from(["test", "--monero-url", "pool.only"]);
         let err = validate_pool_requirements(&args).unwrap_err();
         assert!(err
             .to_string()
-            .contains("--user <WALLET> is required for Monero mining"));
+            .contains("--monero-wallet/--user <WALLET> is required for Monero mining"));
     }
 
     #[test]
@@ -1240,8 +1241,8 @@ mod tests {
         let cfg = r#"
 [tari]
 mode = "pool"
-pool_url = "xtm-sha3x-us.kryptex.network:7039"
-wallet_address = "tari_wallet_cfg"
+tari_pool = "xtm-sha3x-us.kryptex.network:7039"
+tari_wallet = "tari_wallet_cfg"
 "#;
         fs::write(&cfg_path, cfg).expect("write config");
 
@@ -1253,14 +1254,14 @@ wallet_address = "tari_wallet_cfg"
         .expect("parse from config");
 
         assert!(warnings.is_empty());
-        assert_eq!(args.pool, None);
-        assert_eq!(args.wallet, None);
+        assert_eq!(args.monero_pool, None);
+        assert_eq!(args.monero_wallet, None);
         assert_eq!(args.tari_mode, "pool");
         assert_eq!(
-            args.tari_pool_url.as_deref(),
+            args.tari_pool.as_deref(),
             Some("xtm-sha3x-us.kryptex.network:7039")
         );
-        assert_eq!(args.tari_wallet_address.as_deref(), Some("tari_wallet_cfg"));
+        assert_eq!(args.tari_wallet.as_deref(), Some("tari_wallet_cfg"));
 
         let reqs = validate_pool_requirements(&args).expect("valid tari-only config");
         assert!(reqs.monero_pool.is_none());
@@ -1295,7 +1296,7 @@ mode = "pool"
         let err = validate_pool_requirements(&args).unwrap_err();
         assert!(err
             .to_string()
-            .contains("Tari pool mode requires --tari-pool-url or [tari].pool_url"));
+            .contains("Tari pool mode requires --tari-pool or [tari].tari_pool"));
     }
 }
 

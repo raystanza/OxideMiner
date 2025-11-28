@@ -113,9 +113,9 @@ Supply your pool, wallet, and optional password. Leave threads and batch size un
 # Example: plaintext stratum connection with HTTP dashboard on 127.0.0.1:8080
 
 oxide-miner \
-  --url <Your.Pool.of.Choice:Port> \
-  --user <YOUR_MONERO_WALLET> \
-  --pass rig001 \
+  --monero-url <Your.Pool.of.Choice:Port> \
+  --monero-wallet <YOUR_MONERO_WALLET> \
+  --monero-pass rig001 \
   --api-port 8080
 ```
 
@@ -214,9 +214,9 @@ Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all o
 
 | Flag                                | Purpose                                                                           |
 | ----------------------------------- | --------------------------------------------------------------------------------- |
-| `-o, --url <HOST:PORT>`             | Mining pool endpoint (required unless `--benchmark`).                             |
-| `-u, --user <ADDRESS>`              | Primary Monero wallet or subaddress.                                              |
-| `-p, --pass <STRING>`               | Pool password/rig identifier (default `x`).                                       |
+| `-o, --monero-url <HOST:PORT>`      | Mining pool endpoint (alias: `--url`; required unless `--benchmark`).             |
+| `-u, --monero-wallet <ADDRESS>`     | Primary Monero wallet or subaddress (alias: `--user`).                            |
+| `-p, --monero-pass <STRING>`        | Pool password/rig identifier (alias: `--pass`, default `x`).                      |
 | `-t, --threads <N>`                 | Override auto-selected worker threads.                                            |
 | `--batch-size <N>`                  | Hashes per batch in the mining loop (default `10000`).                            |
 | `--no-yield`                        | Disable cooperative yields between batches (less friendly to shared hosts).       |
@@ -233,8 +233,8 @@ Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all o
 | `--benchmark`                       | Run the RandomX benchmark and exit (no pool connection).                          |
 | `--tari-mode <none / proxy / pool>` | Tari backend mode.                                                                |
 | `--tari-algorithm <randomx / sha3x>`| Tari hashing algorithm (**pool** mode).                                           |
-| `--tari-pool-url <STRATUM>`         | Tari pool endpoint                                                                |
-| `--tari-wallet-address <ADDR>`      | Tari payout address (**pool** mode).                                              |
+| `--tari-pool <STRATUM>`             | Tari pool endpoint (alias: `--tari-pool-url`).                                    |
+| `--tari-wallet <ADDR>`              | Tari payout address (**pool** mode; alias: `--tari-wallet-address`).              |
 | `--tari-rig-id <NAME>`              | Tari rig identifier (Optional)                                                    |
 | `--tari-login <LOGIN>`              | Tari pool login (Optional)                                                        |
 | `--tari-password <PASS>`            | Tari pool password (Optional)                                                     |
@@ -321,7 +321,7 @@ This keeps your existing Monero pool setup and layers Tari on top via the proxy.
 
 #### 3. Tari pool only (`mode = "pool"`)
 
-Use this when you want to mine **only Tari** against a dedicated Tari stratum pool (no local node required). In this case you can skip the Monero `pool` / `wallet` keys entirely.
+Use this when you want to mine **only Tari** against a dedicated Tari stratum pool (no local node required). In this case you can skip the Monero `monero_pool` / `monero_wallet` keys entirely.
 
 ```toml
 # Tari pool-only example
@@ -329,10 +329,10 @@ Use this when you want to mine **only Tari** against a dedicated Tari stratum po
 mode          = "pool"
 
 # Tari stratum endpoint
-pool_url      = "stratum+tcp://tarirx.pool.example:4000"
+tari_pool      = "stratum+tcp://tarirx.pool.example:4000"
 
 # IMPORTANT: This should be your one-sided Tari address (NOT an emoji address)
-wallet_address = "<YOUR_TARI_ONE_SIDED_ADDRESS>"
+tari_wallet = "<YOUR_TARI_ONE_SIDED_ADDRESS>"
 
 # Optional identity fields shown in the pool dashboard (if supported)
 # rig_id   = "rig01"
