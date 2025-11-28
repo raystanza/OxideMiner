@@ -673,7 +673,16 @@ async fn tari_worker_loop(
             }
 
             match parse_tari_target(&j.target) {
-                Ok(target) => current_target = Some(target),
+                Ok(target) => {
+                    tracing::debug!(
+                        worker = worker_id,
+                        job_id = %j.job_id,
+                        raw_target = %j.target,
+                        parsed_target_be = %hex::encode(target),
+                        "parsed Tari target",
+                    );
+                    current_target = Some(target)
+                }
                 Err(e) => {
                     tracing::warn!(worker = worker_id, error = %e, "Tari job target invalid");
                     work = None;
@@ -840,14 +849,21 @@ fn parse_tari_target(target_hex: &str) -> Result<[u8; 32]> {
         return Ok(out);
     }
 
-    let bytes = hex::decode(target_hex).map_err(|e| anyhow!("invalid Tari target hex: {e}"))?;
+    let mut bytes = hex::decode(target_hex).map_err(|e| anyhow!("invalid Tari target hex: {e}"))?;
     if bytes.is_empty() || bytes.len() > 32 {
         return Err(anyhow!("unexpected Tari target length {}", bytes.len()));
     }
 
+    // Tari stratum encodes the target as a little-endian integer (like Monero). Convert it into a
+    // canonical big-endian representation for comparison against SHA3 digests.
+    while bytes.len() < 32 {
+        bytes.push(0);
+    }
+
     let mut out = [0u8; 32];
-    let start = 32 - bytes.len();
-    out[start..].copy_from_slice(&bytes);
+    for (dst, src) in out.iter_mut().rev().zip(bytes.iter()) {
+        *dst = *src;
+    }
     Ok(out)
 }
 
@@ -925,6 +941,8 @@ mod tests {
     };
     use tokio::sync::{broadcast, mpsc};
 
+    use crate::tari_algo::{Sha3xTariHash, TariHashAlgorithm};
+
     #[test]
     fn tari_nonce_offset_prefers_tail_for_sha3x() {
         let blob = vec![0u8; 32];
@@ -936,6 +954,17 @@ mod tests {
     fn parse_tari_target_accepts_u32_targets() {
         let target = parse_tari_target("0a000000").expect("parsed");
         assert_eq!(&target[28..], &[0, 0, 0, 10]);
+    }
+
+    #[test]
+    fn parse_tari_target_reverses_little_endian_bytes() {
+        let target =
+            parse_tari_target("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
+                .expect("parsed");
+        assert_eq!(
+            hex::encode(target),
+            "201f1e1d1c1b1a191817161514131211100f0e0d0c0b0a090807060504030201"
+        );
     }
 
     #[test]
@@ -954,6 +983,34 @@ mod tests {
             &target,
             TariAlgorithm::RandomX,
         ));
+    }
+
+    #[test]
+    fn tari_sha3x_target_uses_little_endian_encoding() {
+        let mut header = vec![0u8; 32];
+        let offset = tari_nonce_offset(&header, TariAlgorithm::Sha3x).expect("offset");
+        put_u32_le(&mut header, offset, 42);
+
+        let mut hasher = Sha3xTariHash::default();
+        hasher
+            .prepare_for_job(
+                &PoolJob {
+                    job_id: "test".into(),
+                    blob: String::new(),
+                    target: String::new(),
+                    seed_hash: None,
+                    height: None,
+                    algo: Some("sha3x".into()),
+                    target_u32: None,
+                },
+                1,
+            )
+            .unwrap();
+
+        let digest = hasher.hash_header(&header);
+        let target_hex = hex::encode(digest.iter().rev().copied().collect::<Vec<_>>());
+        let target = parse_tari_target(&target_hex).expect("parsed target");
+        assert!(tari_meets_target(&digest, &target, TariAlgorithm::Sha3x));
     }
 
     #[tokio::test]

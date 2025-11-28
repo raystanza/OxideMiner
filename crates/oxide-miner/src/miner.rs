@@ -1069,7 +1069,7 @@ pub async fn run(args: Args) -> Result<()> {
                                     continue;
                                 }
 
-                                let nonce_hex = format!("{:08x}", share.nonce);
+                                let nonce_hex = hex::encode(share.nonce.to_le_bytes());
                                 let result_hex = hex::encode(share.result);
                                 match client.submit_share(&share.job_id, &nonce_hex, &result_hex).await {
                                     Ok(id) => {
