@@ -92,7 +92,24 @@ fn validate_tari_algorithm_for_mode(mode: TariMode, algorithm: TariAlgorithm) ->
     Ok(())
 }
 
-fn validate_pool_requirements(args: &Args, tari_mode: TariMode) -> Result<PoolRequirements> {
+fn tari_mode_from_args(args: &Args) -> Result<TariMode> {
+    let mode = match args.tari_mode.as_str() {
+        "none" => TariMode::None,
+        "proxy" => TariMode::Proxy,
+        "pool" => TariMode::Pool,
+        other => return Err(anyhow!("unsupported --tari-mode value: {other}")),
+    };
+
+    // Backwards compatibility: --tari-merge-mining toggles proxy mode when --tari-mode is not set.
+    if matches!(mode, TariMode::None) && args.tari_merge_mining {
+        Ok(TariMode::Proxy)
+    } else {
+        Ok(mode)
+    }
+}
+
+fn validate_pool_requirements(args: &Args) -> Result<PoolRequirements> {
+    let tari_mode = tari_mode_from_args(args)?;
     let tari_pool = args.tari_pool_url.clone();
     let tari_wallet = args.tari_wallet_address.clone();
 
@@ -338,14 +355,9 @@ pub async fn run(args: Args) -> Result<()> {
         })
         .transpose()?;
 
-    let tari_mode = match args.tari_mode.as_str() {
-        "none" => TariMode::None,
-        "proxy" => TariMode::Proxy,
-        "pool" => TariMode::Pool,
-        other => return Err(anyhow!("unsupported --tari-mode value: {other}")),
-    };
+    let tari_mode = tari_mode_from_args(&args)?;
 
-    let pool_requirements = validate_pool_requirements(&args, tari_mode)?;
+    let pool_requirements = validate_pool_requirements(&args)?;
 
     let tari_algorithm = args
         .tari_algorithm
@@ -1152,8 +1164,10 @@ pub async fn run(args: Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::args::Args;
+    use crate::args::{parse_with_config_from, Args, ParsedArgs};
     use clap::Parser;
+    use std::{ffi::OsString, fs};
+    use tempfile::tempdir;
 
     #[test]
     fn tari_proxy_rejects_sha3x() {
@@ -1182,8 +1196,7 @@ mod tests {
             "tari_wallet",
         ]);
 
-        let reqs =
-            validate_pool_requirements(&args, TariMode::Pool).expect("valid tari pool inputs");
+        let reqs = validate_pool_requirements(&args).expect("valid tari pool inputs");
         assert!(reqs.monero_pool.is_none());
         assert!(reqs.monero_wallet.is_none());
         assert_eq!(
@@ -1196,7 +1209,7 @@ mod tests {
     #[test]
     fn tari_pool_mode_requires_tari_fields() {
         let args = Args::parse_from(["test", "--tari-mode", "pool"]);
-        let err = validate_pool_requirements(&args, TariMode::Pool).unwrap_err();
+        let err = validate_pool_requirements(&args).unwrap_err();
         assert!(err
             .to_string()
             .contains("Tari pool mode requires --tari-pool-url"));
@@ -1205,7 +1218,7 @@ mod tests {
     #[test]
     fn monero_url_is_required_when_mining_monero() {
         let args = Args::parse_from(["test", "--user", "wallet_only"]);
-        let err = validate_pool_requirements(&args, TariMode::None).unwrap_err();
+        let err = validate_pool_requirements(&args).unwrap_err();
         assert!(err
             .to_string()
             .contains("--url <POOL> is required for Monero mining"));
@@ -1214,10 +1227,75 @@ mod tests {
     #[test]
     fn monero_wallet_is_required_when_mining_monero() {
         let args = Args::parse_from(["test", "--url", "pool.only"]);
-        let err = validate_pool_requirements(&args, TariMode::None).unwrap_err();
+        let err = validate_pool_requirements(&args).unwrap_err();
         assert!(err
             .to_string()
             .contains("--user <WALLET> is required for Monero mining"));
+    }
+
+    #[test]
+    fn tari_pool_config_is_respected_without_monero_flags() {
+        let tmp = tempdir().expect("tempdir");
+        let cfg_path = tmp.path().join("config.toml");
+        let cfg = r#"
+[tari]
+mode = "pool"
+pool_url = "xtm-sha3x-us.kryptex.network:7039"
+wallet_address = "tari_wallet_cfg"
+"#;
+        fs::write(&cfg_path, cfg).expect("write config");
+
+        let ParsedArgs { args, warnings } = parse_with_config_from(vec![
+            OsString::from("test"),
+            OsString::from("--config"),
+            cfg_path.as_os_str().into(),
+        ])
+        .expect("parse from config");
+
+        assert!(warnings.is_empty());
+        assert_eq!(args.pool, None);
+        assert_eq!(args.wallet, None);
+        assert_eq!(args.tari_mode, "pool");
+        assert_eq!(
+            args.tari_pool_url.as_deref(),
+            Some("xtm-sha3x-us.kryptex.network:7039")
+        );
+        assert_eq!(args.tari_wallet_address.as_deref(), Some("tari_wallet_cfg"));
+
+        let reqs = validate_pool_requirements(&args).expect("valid tari-only config");
+        assert!(reqs.monero_pool.is_none());
+        assert!(reqs.monero_wallet.is_none());
+        assert_eq!(
+            reqs.tari_pool.as_deref(),
+            Some("xtm-sha3x-us.kryptex.network:7039")
+        );
+        assert_eq!(reqs.tari_wallet.as_deref(), Some("tari_wallet_cfg"));
+    }
+
+    #[test]
+    fn tari_pool_config_errors_on_missing_pool_fields() {
+        let tmp = tempdir().expect("tempdir");
+        let cfg_path = tmp.path().join("config.toml");
+        let cfg = r#"
+[tari]
+mode = "pool"
+"#;
+        fs::write(&cfg_path, cfg).expect("write config");
+
+        let ParsedArgs { args, warnings } = parse_with_config_from(vec![
+            OsString::from("test"),
+            OsString::from("--config"),
+            cfg_path.as_os_str().into(),
+        ])
+        .expect("parse from config");
+
+        assert!(warnings.is_empty());
+        assert_eq!(args.tari_mode, "pool");
+
+        let err = validate_pool_requirements(&args).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Tari pool mode requires --tari-pool-url or [tari].pool_url"));
     }
 }
 
