@@ -93,7 +93,7 @@ fn validate_tari_algorithm_for_mode(mode: TariMode, algorithm: TariAlgorithm) ->
 }
 
 fn tari_mode_from_args(args: &Args) -> Result<TariMode> {
-    let mode = match args.tari_mode.as_str() {
+    let mut mode = match args.tari_mode.as_str() {
         "none" => TariMode::None,
         "proxy" => TariMode::Proxy,
         "pool" => TariMode::Pool,
@@ -102,10 +102,19 @@ fn tari_mode_from_args(args: &Args) -> Result<TariMode> {
 
     // Backwards compatibility: --tari-merge-mining toggles proxy mode when --tari-mode is not set.
     if matches!(mode, TariMode::None) && args.tari_merge_mining {
-        Ok(TariMode::Proxy)
-    } else {
-        Ok(mode)
+        mode = TariMode::Proxy;
     }
+
+    // If the user provided Tari pool fields but forgot to set --tari-mode, treat it as pool mode so
+    // we do not spuriously demand Monero credentials. This keeps Tari-only configs working even if
+    // mode is missing or commented out in the config file.
+    if matches!(mode, TariMode::None)
+        && (args.tari_pool.is_some() || args.tari_wallet.is_some())
+    {
+        mode = TariMode::Pool;
+    }
+
+    Ok(mode)
 }
 
 fn validate_pool_requirements(args: &Args) -> Result<PoolRequirements> {
@@ -1189,8 +1198,6 @@ mod tests {
     fn tari_pool_mode_allows_missing_monero_pool() {
         let args = Args::parse_from([
             "test",
-            "--tari-mode",
-            "pool",
             "--tari-pool",
             "stratum+tcp://tari.pool:4000",
             "--tari-wallet",
@@ -1198,6 +1205,26 @@ mod tests {
         ]);
 
         let reqs = validate_pool_requirements(&args).expect("valid tari pool inputs");
+        assert!(reqs.monero_pool.is_none());
+        assert!(reqs.monero_wallet.is_none());
+        assert_eq!(
+            reqs.tari_pool.as_deref(),
+            Some("stratum+tcp://tari.pool:4000")
+        );
+        assert_eq!(reqs.tari_wallet.as_deref(), Some("tari_wallet"));
+    }
+
+    #[test]
+    fn tari_pool_fields_imply_pool_mode_when_mode_missing() {
+        let args = Args::parse_from([
+            "test",
+            "--tari-pool",
+            "stratum+tcp://tari.pool:4000",
+            "--tari-wallet",
+            "tari_wallet",
+        ]);
+
+        let reqs = validate_pool_requirements(&args).expect("tari pool via implicit mode");
         assert!(reqs.monero_pool.is_none());
         assert!(reqs.monero_wallet.is_none());
         assert_eq!(
