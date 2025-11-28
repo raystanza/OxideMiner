@@ -282,9 +282,9 @@ mod engine {
 
         LARGE_PAGES.store(true, Ordering::Relaxed);
         if let Some(page) = status.page_size_bytes {
-            tracing::info!(page_size_bytes = page, "RandomX large pages enabled",);
+            tracing::info!(page_size_bytes = page, "Large pages enabled",);
         } else {
-            tracing::info!("RandomX large pages enabled");
+            tracing::info!("Large pages enabled");
         }
         true
     }
