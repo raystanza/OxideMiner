@@ -304,12 +304,13 @@ pub struct StratumClient {
     next_req_id: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ConnectConfig<'a> {
     pub hostport: &'a str,
     pub wallet: &'a str,
     pub pass: &'a str,
     pub agent: &'a str,
+    pub algo: Option<String>,
     pub use_tls: bool,
     pub custom_ca_path: Option<&'a Path>,
     pub pinned_cert_sha256: Option<&'a [u8; 32]>,
@@ -324,6 +325,7 @@ impl StratumClient {
             wallet,
             pass,
             agent,
+            algo,
             use_tls,
             custom_ca_path,
             pinned_cert_sha256,
@@ -451,7 +453,7 @@ impl StratumClient {
             "id": req_id,
             "jsonrpc": "2.0",
             "method": "login",
-            "params": { "login": wallet, "pass": pass, "agent": agent, "algo": "rx/0" }
+            "params": { "login": wallet, "pass": pass, "agent": agent, "algo": algo.as_deref().unwrap_or("rx/0") }
         });
         client.send_line(login.to_string()).await?;
 
@@ -892,6 +894,7 @@ mod tests {
             wallet: "wallet",
             pass: "pass",
             agent: "agent",
+            algo: None,
             use_tls: false,
             custom_ca_path: None,
             pinned_cert_sha256: None,
@@ -948,6 +951,7 @@ mod tests {
             wallet: "wallet",
             pass: "pass",
             agent: "agent",
+            algo: None,
             use_tls: false,
             custom_ca_path: None,
             pinned_cert_sha256: None,

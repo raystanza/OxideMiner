@@ -48,12 +48,13 @@ struct PendingShare {
     job_id: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PoolConnectionSettings<'a> {
     pool: &'a str,
     wallet: &'a str,
     pass: &'a str,
     agent: &'a str,
+    algo: Option<String>,
     tls: bool,
     tls_ca_cert: Option<&'a Path>,
     tls_cert_sha256: Option<&'a [u8; 32]>,
@@ -61,12 +62,13 @@ struct PoolConnectionSettings<'a> {
 }
 
 impl<'a> PoolConnectionSettings<'a> {
-    fn as_connect_config(self) -> ConnectConfig<'a> {
+    fn as_connect_config(&self) -> ConnectConfig<'a> {
         ConnectConfig {
             hostport: self.pool,
             wallet: self.wallet,
             pass: self.pass,
             agent: self.agent,
+            algo: self.algo.clone(),
             use_tls: self.tls,
             custom_ca_path: self.tls_ca_cert,
             pinned_cert_sha256: self.tls_cert_sha256,
@@ -108,9 +110,7 @@ fn tari_mode_from_args(args: &Args) -> Result<TariMode> {
     // If the user provided Tari pool fields but forgot to set --tari-mode, treat it as pool mode so
     // we do not spuriously demand Monero credentials. This keeps Tari-only configs working even if
     // mode is missing or commented out in the config file.
-    if matches!(mode, TariMode::None)
-        && (args.tari_pool.is_some() || args.tari_wallet.is_some())
-    {
+    if matches!(mode, TariMode::None) && (args.tari_pool.is_some() || args.tari_wallet.is_some()) {
         mode = TariMode::Pool;
     }
 
@@ -642,6 +642,7 @@ pub async fn run(args: Args) -> Result<()> {
                         wallet: &user_wallet,
                         pass: &pass,
                         agent: &agent,
+                        algo: None,
                         tls,
                         tls_ca_cert: tls_ca_cert.as_deref(),
                         tls_cert_sha256: tls_cert_sha256.as_ref(),
@@ -696,22 +697,18 @@ pub async fn run(args: Args) -> Result<()> {
                                 interval,
                                 "devfee activation triggered (initial job)"
                             );
-                            match connect_with_retries(
-                                PoolConnectionSettings {
-                                    pool: &main_pool,
-                                    wallet: DEV_WALLET_ADDRESS,
-                                    pass: &pass,
-                                    agent: &agent,
-                                    tls,
-                                    tls_ca_cert: tls_ca_cert.as_deref(),
-                                    tls_cert_sha256: tls_cert_sha256.as_ref(),
-                                    proxy: proxy_cfg.as_ref(),
-                                },
-                                3,
-                                "devfee",
-                            )
-                            .await
-                            {
+                            let dev_connection = PoolConnectionSettings {
+                                pool: &main_pool,
+                                wallet: DEV_WALLET_ADDRESS,
+                                pass: &pass,
+                                agent: &agent,
+                                algo: None,
+                                tls,
+                                tls_ca_cert: tls_ca_cert.as_deref(),
+                                tls_cert_sha256: tls_cert_sha256.as_ref(),
+                                proxy: proxy_cfg.as_ref(),
+                            };
+                            match connect_with_retries(&dev_connection, 3, "devfee").await {
                                 Ok((new_client, dev_job)) => {
                                     if let Err(e) = handle_shares(
                                         None,
@@ -729,7 +726,7 @@ pub async fn run(args: Args) -> Result<()> {
                                             tari_templates: &mut tari_templates,
                                             monero_jobs: &mut monero_jobs,
                                         },
-                                        user_connection,
+                                        &user_connection,
                                     )
                                     .await
                                     {
@@ -799,11 +796,11 @@ pub async fn run(args: Args) -> Result<()> {
                                                 jobs_tx: &jobs_tx,
                                                 dev_scheduler: &mut dev_scheduler,
                                                 tari_client: tari_client.as_ref(),
-                                                tari_templates: &mut tari_templates,
-                                                monero_jobs: &mut monero_jobs,
-                                            },
-                                            user_connection,
-                                        )
+                                            tari_templates: &mut tari_templates,
+                                            monero_jobs: &mut monero_jobs,
+                                        },
+                                        &user_connection,
+                                    )
                                         .await
                                         {
                                             tracing::warn!(
@@ -863,20 +860,18 @@ pub async fn run(args: Args) -> Result<()> {
                                                     interval,
                                                     "devfee activation triggered"
                                                 );
-                                                match connect_with_retries(
-                                                    PoolConnectionSettings {
-                                                        pool: &main_pool,
-                                                        wallet: DEV_WALLET_ADDRESS,
-                                                        pass: &pass,
-                                                        agent: &agent,
-                                                        tls,
-                                                        tls_ca_cert: tls_ca_cert.as_deref(),
-                                                        tls_cert_sha256: tls_cert_sha256.as_ref(),
-                                                        proxy: proxy_cfg.as_ref(),
-                                                    },
-                                                    3,
-                                                    "devfee",
-                                                ).await {
+                                                let dev_connection = PoolConnectionSettings {
+                                                    pool: &main_pool,
+                                                    wallet: DEV_WALLET_ADDRESS,
+                                                    pass: &pass,
+                                                    agent: &agent,
+                                                    algo: None,
+                                                    tls,
+                                                    tls_ca_cert: tls_ca_cert.as_deref(),
+                                                    tls_cert_sha256: tls_cert_sha256.as_ref(),
+                                                    proxy: proxy_cfg.as_ref(),
+                                                };
+                                                match connect_with_retries(&dev_connection, 3, "devfee").await {
                                                     Ok((new_client, job_opt)) => {
                                                         if let Err(e) = handle_shares(
                                                             None,
@@ -894,7 +889,7 @@ pub async fn run(args: Args) -> Result<()> {
                                                                 tari_templates: &mut tari_templates,
                                                                 monero_jobs: &mut monero_jobs,
                                                             },
-                                                            user_connection,
+                                                            &user_connection,
                                                         )
                                                         .await
                                                         {
@@ -996,6 +991,7 @@ pub async fn run(args: Args) -> Result<()> {
             let tls_cert_sha256 = cfg.tls_cert_sha256;
             let proxy_cfg = proxy_cfg.clone();
             let stats = stats.clone();
+            let tari_algorithm = cfg.tari.algorithm;
 
             Some(tokio::spawn(async move {
                 let mut backoff_ms = 1_000u64;
@@ -1006,11 +1002,18 @@ pub async fn run(args: Args) -> Result<()> {
                         tari_login.clone()
                     };
 
+                    let tari_algo_value = match tari_algorithm {
+                        TariAlgorithm::RandomX => "randomx",
+                        TariAlgorithm::Sha3x => "sha3x",
+                    }
+                    .to_string();
+
                     let conn = PoolConnectionSettings {
                         pool: &tari_pool,
                         wallet: &login,
                         pass: &tari_pass,
                         agent: &tari_agent,
+                        algo: Some(tari_algo_value),
                         tls,
                         tls_ca_cert: tls_ca_cert.as_deref(),
                         tls_cert_sha256: tls_cert_sha256.as_ref(),
@@ -1066,7 +1069,7 @@ pub async fn run(args: Args) -> Result<()> {
                                     continue;
                                 }
 
-                                let nonce_hex = format!("{:08x}", share.nonce);
+                                let nonce_hex = hex::encode(share.nonce.to_le_bytes());
                                 let result_hex = hex::encode(share.result);
                                 match client.submit_share(&share.job_id, &nonce_hex, &result_hex).await {
                                     Ok(id) => {
@@ -1103,7 +1106,14 @@ pub async fn run(args: Args) -> Result<()> {
 
                                         if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
                                             if let Some(job_id) = pending_shares.remove(&id) {
-                                                if v.get("result").is_some() {
+                                                let accepted = v.get("result").is_some();
+                                                tracing::debug!(
+                                                    job_id = %job_id,
+                                                    accepted,
+                                                    response = ?v,
+                                                    "Tari pool share response",
+                                                );
+                                                if accepted {
                                                     stats.tari_accepted.fetch_add(1, Ordering::Relaxed);
                                                     tracing::info!(job_id = %job_id, accepted = stats.tari_accepted.load(Ordering::Relaxed), "Tari share accepted");
                                                 } else {
@@ -1466,7 +1476,7 @@ async fn handle_shares(
     initial: Option<Share>,
     shares_rx: &mut UnboundedReceiver<Share>,
     context: ShareContext<'_>,
-    connection: PoolConnectionSettings<'_>,
+    connection: &PoolConnectionSettings<'_>,
 ) -> Result<()> {
     let ShareContext {
         client,
@@ -1650,7 +1660,7 @@ async fn submit_share_internal(
 
 async fn reconnect_user_pool(
     context: ShareContext<'_>,
-    connection: PoolConnectionSettings<'_>,
+    connection: &PoolConnectionSettings<'_>,
 ) -> Result<()> {
     let ShareContext {
         client,
@@ -1698,7 +1708,7 @@ async fn reconnect_user_pool(
 }
 
 async fn connect_with_retries(
-    connection: PoolConnectionSettings<'_>,
+    connection: &PoolConnectionSettings<'_>,
     attempts: usize,
     purpose: &str,
 ) -> Result<(StratumClient, Option<PoolJob>)> {
