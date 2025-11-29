@@ -762,6 +762,7 @@ async fn tari_worker_loop(
                             hash_le = %le_hex,
                             hash_be = %be_hex,
                             target = %job.target,
+                            target_be = %hex::encode(target),
                             "Tari share found",
                         );
                         let _ = shares_tx.send(Share {
@@ -833,37 +834,16 @@ fn parse_tari_target(target_hex: &str) -> Result<[u8; 32]> {
         return Err(anyhow!("Tari target missing"));
     }
 
-    if target_hex.len() <= 8 {
-        let mut bytes = hex::decode(target_hex)
-            .map_err(|e| anyhow!("invalid Tari target hex (u32 form): {e}"))?;
-        if bytes.len() > 4 {
-            bytes.truncate(4);
-        }
-        while bytes.len() < 4 {
-            bytes.push(0);
-        }
-        let mut out = [0u8; 32];
-        out[28..].copy_from_slice(
-            &u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]).to_be_bytes(),
-        );
-        return Ok(out);
-    }
-
-    let mut bytes = hex::decode(target_hex).map_err(|e| anyhow!("invalid Tari target hex: {e}"))?;
+    let bytes = hex::decode(target_hex).map_err(|e| anyhow!("invalid Tari target hex: {e}"))?;
     if bytes.is_empty() || bytes.len() > 32 {
         return Err(anyhow!("unexpected Tari target length {}", bytes.len()));
     }
 
-    // Tari stratum encodes the target as a little-endian integer (like Monero). Convert it into a
-    // canonical big-endian representation for comparison against SHA3 digests.
-    while bytes.len() < 32 {
-        bytes.push(0);
-    }
-
+    // Tari stratum target is treated as a big-endian integer. Left-pad with zeros so the
+    // comparison against SHA3 digests uses the same big-endian ordering.
     let mut out = [0u8; 32];
-    for (dst, src) in out.iter_mut().rev().zip(bytes.iter()) {
-        *dst = *src;
-    }
+    let start = 32 - bytes.len();
+    out[start..].copy_from_slice(&bytes);
     Ok(out)
 }
 
@@ -953,17 +933,15 @@ mod tests {
     #[test]
     fn parse_tari_target_accepts_u32_targets() {
         let target = parse_tari_target("0a000000").expect("parsed");
-        assert_eq!(&target[28..], &[0, 0, 0, 10]);
+        assert_eq!(&target[28..], &[0x0a, 0x00, 0x00, 0x00]);
     }
 
     #[test]
-    fn parse_tari_target_reverses_little_endian_bytes() {
-        let target =
-            parse_tari_target("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
-                .expect("parsed");
+    fn parse_tari_target_left_pads_big_endian_bytes() {
+        let target = parse_tari_target("0102030405").expect("parsed");
         assert_eq!(
             hex::encode(target),
-            "201f1e1d1c1b1a191817161514131211100f0e0d0c0b0a090807060504030201"
+            "0000000000000000000000000000000000000000000000000000000102030405"
         );
     }
 
@@ -1008,7 +986,7 @@ mod tests {
             .unwrap();
 
         let digest = hasher.hash_header(&header);
-        let target_hex = hex::encode(digest.iter().rev().copied().collect::<Vec<_>>());
+        let target_hex = hex::encode(digest);
         let target = parse_tari_target(&target_hex).expect("parsed target");
         assert!(tari_meets_target(&digest, &target, TariAlgorithm::Sha3x));
     }
