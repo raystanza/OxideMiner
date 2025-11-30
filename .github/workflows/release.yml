@@ -330,20 +330,21 @@ jobs:
             echo "Automated release for tag ${RELEASE_TAG}."
           } > notes/body.md
 
-      - name: Create release if needed
+      - name: Create release as draft if needed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           if gh release view "${RELEASE_TAG}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release ${RELEASE_TAG} already exists"
+            echo "Release ${RELEASE_TAG} already exists; assuming it was created by this workflow."
           else
             gh release create "${RELEASE_TAG}" \
               --repo "$GITHUB_REPOSITORY" \
               --title "OxideMiner ${RELEASE_TAG}" \
               --notes-file notes/body.md \
-              --verify-tag
+              --verify-tag \
+              --draft
           fi
 
       - name: Upload release assets
@@ -354,5 +355,17 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           for asset in release-assets/*/*; do
+            echo "Uploading $asset..."
             gh release upload "${RELEASE_TAG}" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
           done
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Publishing release ${RELEASE_TAG}"
+          gh release edit "${RELEASE_TAG}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false
