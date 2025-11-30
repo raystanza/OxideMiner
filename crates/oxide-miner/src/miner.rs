@@ -892,7 +892,10 @@ fn broadcast_job(
         seen_nonces.clear();
     }
 
-    job.cache_target();
+    if let Err(e) = job.ensure_prepared() {
+        tracing::warn!(error = ?e, "dropping malformed pool job");
+        return String::new();
+    }
     let job_id = job.job_id.clone();
     let _ = jobs_tx.send(WorkItem { job, is_devfee });
     valid_job_ids.insert(job_id.clone());

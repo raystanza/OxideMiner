@@ -38,6 +38,12 @@ pub struct PoolJob {
     pub algo: Option<String>, // e.g. "rx/0"
     #[serde(skip)]
     pub target_u32: Option<u32>,
+    /// Pre-decoded seed hash bytes to avoid hex decoding on every worker.
+    #[serde(skip, default)]
+    pub seed_hash_bytes: [u8; 32],
+    /// Pre-decoded job blob bytes (nonce will be written into this buffer per worker).
+    #[serde(skip, default)]
+    pub blob_bytes: Arc<Vec<u8>>,
 }
 
 impl PoolJob {
@@ -59,6 +65,45 @@ impl PoolJob {
             None
         };
     }
+
+    /// Decode and cache the seed hash + blob bytes so worker threads don't spend cycles in hex decoding.
+    pub fn prepare(&mut self) -> Result<()> {
+        self.cache_target();
+        self.seed_hash_bytes = decode_seed_bytes(self.seed_hash.as_deref());
+        self.blob_bytes = Arc::new(decode_blob_bytes(&self.blob)?);
+        Ok(())
+    }
+
+    /// Ensure cached fields are ready (idempotent) before broadcasting to workers.
+    pub fn ensure_prepared(&mut self) -> Result<()> {
+        if self.blob_bytes.is_empty() {
+            self.prepare()?;
+        }
+        Ok(())
+    }
+}
+
+fn decode_seed_bytes(seed_hex: Option<&str>) -> [u8; 32] {
+    let mut seed = [0u8; 32];
+    let hex_str =
+        seed_hex.unwrap_or("0000000000000000000000000000000000000000000000000000000000000000");
+    if let Ok(mut decoded) = hex::decode(hex_str) {
+        if decoded.len() > 32 {
+            decoded.truncate(32);
+        }
+        if decoded.len() < 32 {
+            decoded.resize(32, 0);
+        }
+        seed.copy_from_slice(&decoded);
+    }
+    seed
+}
+
+fn decode_blob_bytes(blob_hex: &str) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(blob_hex.len() / 2);
+    let bytes = hex::decode(blob_hex)?;
+    out.extend_from_slice(&bytes);
+    Ok(out)
 }
 
 #[derive(Clone)]
@@ -471,7 +516,7 @@ impl StratumClient {
                         if let Some(job_val) = obj.get("job") {
                             if let Ok(mut job) = serde_json::from_value::<PoolJob>(job_val.clone())
                             {
-                                job.cache_target();
+                                job.prepare()?;
                                 tracing::info!("initial job (in login result)");
                                 break Some(job);
                             }
@@ -480,7 +525,7 @@ impl StratumClient {
                     if v.get("method").and_then(Value::as_str) == Some("job") {
                         if let Some(params) = v.get("params") {
                             if let Ok(mut job) = serde_json::from_value::<PoolJob>(params.clone()) {
-                                job.cache_target();
+                                job.prepare()?;
                                 tracing::info!("initial job (job notify)");
                                 break Some(job);
                             }
@@ -523,7 +568,7 @@ impl StratumClient {
                 if let Some(params) = v.get("params") {
                     let mut job: PoolJob =
                         serde_json::from_value(params.clone()).context("parse job params")?;
-                    job.cache_target();
+                    job.prepare()?;
                     return Ok(job);
                 }
             }
@@ -646,6 +691,7 @@ fn is_ca_used_as_end_entity(error: &CertificateError) -> bool {
 mod tests {
     use super::*;
     use serde_json::Value;
+    use std::sync::Arc;
     use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 
     #[test]
@@ -827,12 +873,35 @@ mod tests {
             height: None,
             algo: None,
             target_u32: None,
+            seed_hash_bytes: [0; 32],
+            blob_bytes: Arc::new(Vec::new()),
         };
         job.cache_target();
         assert_eq!(job.target_u32, Some(0x10000000));
         job.target = "zz".into();
         job.cache_target();
         assert_eq!(job.target_u32, None);
+    }
+
+    #[test]
+    fn prepare_materializes_blob_and_seed() {
+        let mut job = PoolJob {
+            job_id: "id".into(),
+            blob: "0a0b".into(),
+            target: String::new(),
+            seed_hash: Some(
+                "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".into(),
+            ),
+            height: None,
+            algo: None,
+            target_u32: None,
+            seed_hash_bytes: [0; 32],
+            blob_bytes: Arc::new(Vec::new()),
+        };
+
+        job.prepare().expect("prepare succeeds");
+        assert_eq!(job.blob_bytes.as_slice(), &[0x0a, 0x0b]);
+        assert_eq!(job.seed_hash_bytes[0..4], [1, 2, 3, 4]);
     }
 
     #[test]
@@ -845,6 +914,8 @@ mod tests {
             height: None,
             algo: None,
             target_u32: Some(1),
+            seed_hash_bytes: [0; 32],
+            blob_bytes: Arc::new(Vec::new()),
         };
         job.cache_target();
         assert_eq!(job.target_u32, None);
@@ -972,6 +1043,8 @@ mod tests {
             height: Some(42),
             algo: Some("rx/0".into()),
             target_u32: None,
+            seed_hash_bytes: [0; 32],
+            blob_bytes: Arc::new(Vec::new()),
         };
         let json = serde_json::to_string(&job).unwrap();
         let de: PoolJob = serde_json::from_str(&json).unwrap();
