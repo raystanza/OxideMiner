@@ -332,6 +332,7 @@ mod engine {
     }
 
     /// Calculate hash as fixed [u8;32].
+    #[inline(always)]
     pub fn hash(vm: &Vm, input: &[u8]) -> [u8; 32] {
         let v = vm.inner.calculate_hash(input).expect("randomx hash failed");
         let mut out = [0u8; 32];
@@ -418,8 +419,11 @@ async fn randomx_worker_loop(
 
     // Precompute once (Send + Copy)
     let threads_u32: u32 = worker_count as u32;
-    let mut current_seed: Option<Vec<u8>> = None;
+    let mut current_seed: [u8; 32] = [0; 32];
+    let mut has_seed = false;
     let mut vm: Option<Vm> = None;
+    let mut blob_buf: Vec<u8> = Vec::with_capacity(128);
+    let nonce_step = worker_count as u32;
 
     loop {
         if work.is_none() {
@@ -434,30 +438,22 @@ async fn randomx_worker_loop(
         let j = work.as_ref().unwrap().job.clone();
         let is_devfee = work.as_ref().unwrap().is_devfee;
 
-        // Decode/normalize the seed key (Send)
-        let _seed_hex = j
-            .seed_hash
-            .as_deref()
-            .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000");
-        let mut seed_bytes = hex::decode(_seed_hex).unwrap_or_default();
-        if seed_bytes.len() != 32 {
-            seed_bytes.resize(32, 0u8);
-        }
-        if current_seed.as_deref() != Some(seed_bytes.as_slice()) {
-            let (cache, dataset) = ensure_fullmem_dataset(&seed_bytes, threads_u32)?;
+        if !has_seed || j.seed_hash_bytes != current_seed {
+            let (cache, dataset) = ensure_fullmem_dataset(&j.seed_hash_bytes, threads_u32)?;
             vm = Some(create_vm_for_dataset(&cache, &dataset, None)?);
-            current_seed = Some(seed_bytes.clone());
+            current_seed = j.seed_hash_bytes;
+            has_seed = true;
         }
 
-        // Header/blob
-        let mut blob =
-            hex::decode(&j.blob).map_err(|e| anyhow::anyhow!("invalid job blob hex: {e}"))?;
+        // Header/blob (reuse the buffer to avoid reallocation churn)
+        blob_buf.clear();
+        blob_buf.extend_from_slice(&j.blob_bytes);
 
         // Ensure nonce room
-        if blob.len() < 39 + 4 {
+        if blob_buf.len() < 39 + 4 {
             tracing::warn!(
                 worker = worker_id,
-                blob_len = blob.len(),
+                blob_len = blob_buf.len(),
                 "job blob too short to hold nonce at offset 39; skipping job"
             );
             work = None;
@@ -498,8 +494,8 @@ async fn randomx_worker_loop(
                 let vm = vm_ref;
                 let mut local_hashes: u64 = 0;
                 for i in 0..batch_size {
-                    put_u32_le(&mut blob, 39, nonce);
-                    let digest = hash(vm, &blob);
+                    put_u32_le(&mut blob_buf, 39, nonce);
+                    let digest = hash(vm, &blob_buf);
                     local_hashes += 1;
                     if meets_target(&digest, &j) {
                         let le_hex = hex::encode(digest);
@@ -522,15 +518,15 @@ async fn randomx_worker_loop(
                             is_devfee,
                         });
                         // Advance nonce so we don't re-emit the same share on the next loop.
-                        nonce = nonce.wrapping_add(worker_count as u32);
+                        nonce = nonce.wrapping_add(nonce_step);
                         // After finding a share, request a cooperative yield
                         // (performed after this borrow scope to keep the future Send).
                         need_yield = true;
                         break; // exit early to yield outside borrow scope
                     }
-                    nonce = nonce.wrapping_add(worker_count as u32);
+                    nonce = nonce.wrapping_add(nonce_step);
                     // Request a cooperative yield roughly every 1024 hashes when enabled.
-                    if yield_between_batches && (i % 1024 == 1023) {
+                    if yield_between_batches && (i & 1023 == 1023) {
                         need_yield = true;
                         break; // exit early to yield outside borrow scope
                     }
@@ -641,6 +637,8 @@ mod tests {
             height: None,
             algo: None,
             target_u32: None,
+            seed_hash_bytes: [0; 32],
+            blob_bytes: Arc::new(Vec::new()),
         };
         job.cache_target();
         assert!(meets_target(&hash, &job));
@@ -661,6 +659,8 @@ mod tests {
             height: None,
             algo: None,
             target_u32: None,
+            seed_hash_bytes: [0; 32],
+            blob_bytes: Arc::new(Vec::new()),
         };
         job.cache_target();
         assert!(meets_target(&hash_zero, &job));

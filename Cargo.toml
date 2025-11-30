@@ -48,3 +48,13 @@ rustls_webpki = { package = "rustls-webpki", version = "0.101" }
 
 [profile.release]
 lto = true
+opt-level = 3
+codegen-units = 1
+
+[profile.maxperf]
+inherits = "release"
+# Extra-aggressive build tuned for the host CPU. Users can opt-in via `cargo build --profile maxperf`.
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = "debuginfo"
