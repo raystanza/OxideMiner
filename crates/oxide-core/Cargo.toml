@@ -17,6 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 hex = { workspace = true }
+monero = { workspace = true }
 num_cpus = { workspace = true }
 once_cell = { workspace = true }
 randomx-rs = { version = "1.4", optional = true }
@@ -29,9 +30,13 @@ rustls-pemfile = { workspace = true }
 ring = { workspace = true }
 rustls = { workspace = true }
 rustls_webpki = { workspace = true }
+sha3 = { workspace = true }
 clap = { workspace = true }
 tokio-socks = { workspace = true }
 url = { workspace = true }
+reqwest = { workspace = true }
+unsigned-varint = { workspace = true }
+uint = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = [
@@ -42,3 +47,6 @@ windows-sys = { workspace = true, features = [
     "Win32_System_SystemServices",
     "Win32_System_Threading",
 ] }
+
+[dev-dependencies]
+toml = { workspace = true }

@@ -1,5 +1,6 @@
 // OxideMiner/crates/oxide-core/src/config.rs
 
+use crate::tari_algo::TariAlgorithm;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -8,11 +9,11 @@ pub const DEFAULT_BATCH_SIZE: usize = 10_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// pool like "pool.example.com:3333"
-    pub pool: String,
+    pub monero_pool: Option<String>,
     /// Monero wallet address (primary)
-    pub wallet: String,
+    pub monero_wallet: Option<String>,
     /// optional password; many pools accept "x"
-    pub pass: Option<String>,
+    pub monero_pass: Option<String>,
     /// number of mining threads (None = auto decide later using CPU/cache heuristics)
     pub threads: Option<usize>,
     /// fixed 1% dev fee (always enabled)
@@ -36,14 +37,125 @@ pub struct Config {
     pub agent: String,
     /// optional SOCKS5 proxy URL (socks5://[user:pass@]host:port)
     pub proxy: Option<String>,
+    /// optional Tari merge mining support
+    pub tari: TariConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TariMergeMiningConfig {
+    #[serde(default = "default_proxy_url")]
+    pub proxy_url: String,
+    /// Optional Monero address passed to the merge-mining proxy when it expects a Monero-compatible
+    /// `get_block_template` call (used as a fallback if the Tari JSON-RPC method is unavailable).
+    #[serde(default)]
+    pub monero_wallet_address: Option<String>,
+    #[serde(default = "default_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+    #[serde(default = "default_backoff_secs")]
+    pub backoff_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TariMode {
+    None,
+    Proxy,
+    Pool,
+}
+
+impl Default for TariMode {
+    fn default() -> Self {
+        TariMode::None
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TariConfig {
+    #[serde(default)]
+    pub mode: TariMode,
+    /// Backwards compatibility for legacy boolean toggle
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub pool_url: Option<String>,
+    #[serde(default)]
+    pub wallet_address: Option<String>,
+    #[serde(default)]
+    pub rig_id: Option<String>,
+    #[serde(default)]
+    pub login: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default = "TariAlgorithm::default_randomx")]
+    pub algorithm: TariAlgorithm,
+    #[serde(default)]
+    pub merge_mining: TariMergeMiningConfig,
+}
+
+fn default_proxy_url() -> String {
+    "http://127.0.0.1:18081".to_string()
+}
+
+fn default_request_timeout_secs() -> u64 {
+    10
+}
+
+fn default_backoff_secs() -> u64 {
+    5
+}
+
+impl Default for TariMergeMiningConfig {
+    fn default() -> Self {
+        Self {
+            proxy_url: default_proxy_url(),
+            monero_wallet_address: None,
+            request_timeout_secs: default_request_timeout_secs(),
+            backoff_secs: default_backoff_secs(),
+        }
+    }
+}
+
+impl Default for TariConfig {
+    fn default() -> Self {
+        Self {
+            mode: TariMode::None,
+            enabled: None,
+            pool_url: None,
+            wallet_address: None,
+            rig_id: None,
+            login: None,
+            password: None,
+            algorithm: TariAlgorithm::default_randomx(),
+            merge_mining: TariMergeMiningConfig::default(),
+        }
+    }
+}
+
+impl TariConfig {
+    pub fn effective_mode(&self) -> TariMode {
+        match self.mode {
+            TariMode::None => {
+                if self.enabled.unwrap_or(false) {
+                    TariMode::Proxy
+                } else {
+                    TariMode::None
+                }
+            }
+            mode => mode,
+        }
+    }
+
+    pub fn merge_mining_config(&self) -> TariMergeMiningConfig {
+        self.merge_mining.clone()
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            pool: "pool.example.com:3333".into(),
-            wallet: "<YOUR_XMR_ADDRESS>".into(),
-            pass: Some("x".into()),
+            monero_pool: Some("pool.example.com:3333".into()),
+            monero_wallet: Some("<YOUR_XMR_ADDRESS>".into()),
+            monero_pass: Some("x".into()),
             threads: None,
             enable_devfee: true,
             tls: false,
@@ -56,6 +168,7 @@ impl Default for Config {
             yield_between_batches: true,
             agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
             proxy: None,
+            tari: TariConfig::default(),
         }
     }
 }
@@ -67,9 +180,9 @@ mod tests {
     #[test]
     fn default_config_values() {
         let cfg = Config::default();
-        assert_eq!(cfg.pool, "pool.example.com:3333");
-        assert_eq!(cfg.wallet, "<YOUR_XMR_ADDRESS>");
-        assert_eq!(cfg.pass.as_deref(), Some("x"));
+        assert_eq!(cfg.monero_pool.as_deref(), Some("pool.example.com:3333"));
+        assert_eq!(cfg.monero_wallet.as_deref(), Some("<YOUR_XMR_ADDRESS>"));
+        assert_eq!(cfg.monero_pass.as_deref(), Some("x"));
         assert!(cfg.enable_devfee);
         assert!(!cfg.tls);
         assert!(cfg.tls_ca_cert.is_none());
@@ -81,5 +194,55 @@ mod tests {
         assert!(cfg.yield_between_batches);
         assert!(cfg.agent.starts_with("OxideMiner/"));
         assert!(cfg.proxy.is_none());
+        assert_eq!(cfg.tari.effective_mode(), TariMode::None);
+        assert_eq!(cfg.tari.merge_mining.proxy_url, "http://127.0.0.1:18081");
+        assert_eq!(cfg.tari.algorithm, TariAlgorithm::RandomX);
+    }
+
+    #[test]
+    fn tari_enabled_flag_maps_to_proxy_mode() {
+        let cfg = TariConfig {
+            enabled: Some(true),
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.effective_mode(), TariMode::Proxy);
+    }
+
+    #[test]
+    fn tari_pool_fields_round_trip() {
+        let toml = r#"
+mode = "pool"
+pool_url = "stratum+tcp://tari.pool:4000"
+wallet_address = "tari_wallet"
+rig_id = "rig01"
+login = "customlogin"
+password = "pw"
+        "#;
+
+        let cfg: TariConfig = toml::from_str(toml).expect("valid toml");
+        assert_eq!(cfg.effective_mode(), TariMode::Pool);
+        assert_eq!(
+            cfg.pool_url.as_deref(),
+            Some("stratum+tcp://tari.pool:4000")
+        );
+        assert_eq!(cfg.wallet_address.as_deref(), Some("tari_wallet"));
+        assert_eq!(cfg.rig_id.as_deref(), Some("rig01"));
+        assert_eq!(cfg.login.as_deref(), Some("customlogin"));
+        assert_eq!(cfg.password.as_deref(), Some("pw"));
+        assert_eq!(cfg.algorithm, TariAlgorithm::RandomX);
+    }
+
+    #[test]
+    fn tari_algorithm_deserializes() {
+        let toml = r#"
+mode = "pool"
+pool_url = "stratum+tcp://tari.pool:4000"
+wallet_address = "tari_wallet"
+algorithm = "sha3x"
+"#;
+
+        let cfg: TariConfig = toml::from_str(toml).expect("valid toml");
+        assert_eq!(cfg.algorithm, TariAlgorithm::Sha3x);
     }
 }

@@ -133,6 +133,18 @@ function applyStats(data) {
     devSharesEl.textContent = `${devAccepted} / ${devRejected}`;
   }
 
+  const tari = data.tari || {};
+  const tariStatusEl = document.getElementById('tari_status');
+  if (tariStatusEl) {
+    if (tari.enabled) {
+      const height = Number.isFinite(Number(tari.height)) ? tari.height : '-';
+      const diff = Number.isFinite(Number(tari.difficulty)) ? tari.difficulty : '-';
+      tariStatusEl.textContent = `On (h=${height}, diff=${diff})`;
+    } else {
+      tariStatusEl.textContent = 'Disabled';
+    }
+  }
+
   const poolEl = document.getElementById('pool');
   if (poolEl) {
     const pool = data.pool || '-';

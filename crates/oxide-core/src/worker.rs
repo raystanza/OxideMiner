@@ -1,6 +1,6 @@
 // OxideMiner/crates/oxide-core/src/worker.rs
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::stratum::PoolJob;
+use crate::tari_algo::{make_tari_hasher_factory, TariAlgorithm, TariHasherFactory};
 
 #[derive(Clone, Debug)]
 pub struct WorkItem {
@@ -91,6 +92,79 @@ pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::Jo
             })
         })
         .collect()
+}
+
+#[derive(Clone)]
+pub struct TariWorkerSpawnConfig {
+    pub jobs_tx: broadcast::Sender<WorkItem>,
+    pub shares_tx: mpsc::UnboundedSender<Share>,
+    pub affinity: bool,
+    pub large_pages: bool,
+    pub batch_size: usize,
+    pub yield_between_batches: bool,
+    pub hash_counter: Arc<AtomicU64>,
+    pub algorithm: TariAlgorithm,
+}
+
+/// Spawn Tari workers capable of hashing with the selected Tari algorithm.
+pub fn spawn_tari_workers(
+    n: usize,
+    config: TariWorkerSpawnConfig,
+) -> Result<Vec<tokio::task::JoinHandle<()>>> {
+    let TariWorkerSpawnConfig {
+        jobs_tx,
+        shares_tx,
+        affinity,
+        large_pages,
+        batch_size,
+        yield_between_batches,
+        hash_counter,
+        algorithm,
+    } = config;
+
+    #[cfg(feature = "randomx")]
+    if matches!(algorithm, TariAlgorithm::RandomX) {
+        let _ = engine::set_large_pages(large_pages);
+    }
+
+    let factory = make_tari_hasher_factory(algorithm, n)?;
+    let core_ids = if affinity {
+        core_affinity::get_core_ids()
+    } else {
+        None
+    };
+
+    Ok((0..n)
+        .map(|i| {
+            let mut rx = jobs_tx.subscribe();
+            let shares_tx = shares_tx.clone();
+            let core_ids = core_ids.clone();
+            let hc = hash_counter.clone();
+            let factory = factory.clone();
+            tokio::spawn(async move {
+                if let Some(ref ids) = core_ids {
+                    if let Some(id) = ids.get(i % ids.len()) {
+                        core_affinity::set_for_current(*id);
+                    }
+                }
+                if let Err(e) = tari_worker_loop(
+                    i,
+                    n,
+                    batch_size,
+                    yield_between_batches,
+                    &mut rx,
+                    shares_tx,
+                    hc,
+                    factory,
+                    algorithm,
+                )
+                .await
+                {
+                    tracing::warn!(worker = i, error = ?e, "Tari worker exited");
+                }
+            })
+        })
+        .collect())
 }
 
 #[cfg(feature = "randomx")]
@@ -208,9 +282,9 @@ mod engine {
 
         LARGE_PAGES.store(true, Ordering::Relaxed);
         if let Some(page) = status.page_size_bytes {
-            tracing::info!(page_size_bytes = page, "RandomX large pages enabled",);
+            tracing::info!(page_size_bytes = page, "Large pages enabled",);
         } else {
-            tracing::info!("RandomX large pages enabled");
+            tracing::info!("Large pages enabled");
         }
         true
     }
@@ -401,7 +475,7 @@ mod engine {
 }
 
 #[cfg(feature = "randomx")]
-pub use engine::{create_vm_for_dataset, ensure_fullmem_dataset, hash, set_large_pages};
+pub use engine::{create_vm_for_dataset, ensure_fullmem_dataset, hash, set_large_pages, Vm};
 
 #[cfg(feature = "randomx")]
 async fn randomx_worker_loop(
@@ -540,6 +614,250 @@ async fn randomx_worker_loop(
     }
 }
 
+async fn tari_worker_loop(
+    worker_id: usize,
+    worker_count: usize,
+    batch_size: usize,
+    yield_between_batches: bool,
+    rx: &mut broadcast::Receiver<WorkItem>,
+    shares_tx: mpsc::UnboundedSender<Share>,
+    hash_counter: Arc<AtomicU64>,
+    factory: Arc<dyn TariHasherFactory>,
+    algorithm: TariAlgorithm,
+) -> Result<()> {
+    let mut work: Option<WorkItem> = None;
+    let mut hasher = factory.create()?;
+
+    let mut current_job: Option<PoolJob> = None;
+    let mut blob_cache: Vec<u8> = Vec::new();
+    let mut nonce_offset: Option<usize> = None;
+    let mut current_target: Option<[u8; 32]> = None;
+    let mut hashes_for_job: u64 = 0;
+
+    loop {
+        if work.is_none() {
+            work = Some(rx.recv().await.map_err(|_| anyhow!("job channel closed"))?);
+            continue;
+        }
+
+        let j = work.as_ref().unwrap().job.clone();
+        let is_devfee = work.as_ref().unwrap().is_devfee;
+
+        if current_job.as_ref().map(|job| &job.job_id) != Some(&j.job_id) {
+            blob_cache =
+                hex::decode(&j.blob).map_err(|e| anyhow!("invalid Tari job blob hex: {e}"))?;
+
+            match tari_nonce_offset(&blob_cache, algorithm) {
+                Ok(offset) => {
+                    if blob_cache.len() < offset + 4 {
+                        tracing::warn!(
+                            worker = worker_id,
+                            blob_len = blob_cache.len(),
+                            offset,
+                            "Tari job blob too short to hold nonce; skipping job"
+                        );
+                        work = None;
+                        continue;
+                    }
+                    nonce_offset = Some(offset);
+                }
+                Err(e) => {
+                    tracing::warn!(worker = worker_id, error = %e, "Tari job nonce layout invalid");
+                    work = None;
+                    continue;
+                }
+            }
+
+            match parse_tari_target(&j.target) {
+                Ok(target) => {
+                    tracing::debug!(
+                        worker = worker_id,
+                        job_id = %j.job_id,
+                        raw_target = %j.target,
+                        parsed_target_be = %hex::encode(target),
+                        "parsed Tari target",
+                    );
+                    current_target = Some(target)
+                }
+                Err(e) => {
+                    tracing::warn!(worker = worker_id, error = %e, "Tari job target invalid");
+                    work = None;
+                    continue;
+                }
+            }
+
+            hasher.prepare_for_job(&j, worker_count)?;
+            current_job = Some(j.clone());
+            hashes_for_job = 0;
+
+            tracing::debug!(
+                worker = worker_id,
+                job_id = %j.job_id,
+                blob_len = blob_cache.len(),
+                nonce_offset = ?nonce_offset,
+                "prepared Tari job",
+            );
+        }
+
+        let mut nonce: u32 = ((worker_id as u32) * (worker_count as u32))
+            + (SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+                % 0xFFFF_0000);
+
+        'mine: loop {
+            match rx.try_recv() {
+                Ok(next) => {
+                    work = Some(next);
+                    break 'mine;
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    return Err(anyhow!("job channel closed"));
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        worker = worker_id,
+                        skipped,
+                        "Tari job channel lagged; resyncing to latest job"
+                    );
+                    work = None;
+                    break 'mine;
+                }
+            }
+            let mut need_yield = false;
+            let mut local_hashes: u64 = 0;
+            let offset = nonce_offset.expect("nonce offset set when job cached");
+            let target = match current_target {
+                Some(t) => t,
+                None => {
+                    tracing::warn!(
+                        worker = worker_id,
+                        "missing Tari target for job; waiting for next job"
+                    );
+                    work = None;
+                    break 'mine;
+                }
+            };
+            let batch_start_nonce = nonce;
+            for i in 0..batch_size {
+                put_u32_le(&mut blob_cache, offset, nonce);
+                let digest = hasher.hash_header(&blob_cache);
+                local_hashes += 1;
+                if let Some(job) = current_job.as_ref() {
+                    if tari_meets_target(&digest, &target, algorithm) {
+                        let le_hex = hex::encode(digest);
+                        let mut be_bytes = digest;
+                        be_bytes.reverse();
+                        let be_hex = hex::encode(be_bytes);
+                        tracing::info!(
+                            worker = worker_id,
+                            job_id = %job.job_id,
+                            nonce,
+                            hash_le = %le_hex,
+                            hash_be = %be_hex,
+                            target = %job.target,
+                            target_be = %hex::encode(target),
+                            "Tari share found",
+                        );
+                        let _ = shares_tx.send(Share {
+                            job_id: job.job_id.clone(),
+                            nonce,
+                            result: digest,
+                            is_devfee,
+                        });
+                        nonce = nonce.wrapping_add(worker_count as u32);
+                        need_yield = true;
+                        break;
+                    }
+                }
+                nonce = nonce.wrapping_add(worker_count as u32);
+                if yield_between_batches && (i % 1024 == 1023) {
+                    need_yield = true;
+                    break;
+                }
+            }
+            hash_counter.fetch_add(local_hashes, Ordering::Relaxed);
+            hashes_for_job = hashes_for_job.wrapping_add(local_hashes);
+            if let Some(job) = current_job.as_ref() {
+                tracing::debug!(
+                    worker = worker_id,
+                    job_id = %job.job_id,
+                    batch_hashes = local_hashes,
+                    total_job_hashes = hashes_for_job,
+                    nonce_start = batch_start_nonce,
+                    nonce_end = nonce,
+                    "completed Tari hash batch",
+                );
+            }
+            if need_yield || yield_between_batches {
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+}
+
+fn tari_nonce_offset(blob: &[u8], algorithm: TariAlgorithm) -> Result<usize> {
+    match algorithm {
+        TariAlgorithm::Sha3x => {
+            if blob.len() < 4 {
+                Err(anyhow!(
+                    "Tari SHA3x blob too short to hold nonce (len={})",
+                    blob.len()
+                ))
+            } else {
+                Ok(blob.len().saturating_sub(4))
+            }
+        }
+        TariAlgorithm::RandomX => {
+            if blob.len() >= 39 + 4 {
+                Ok(39)
+            } else if blob.len() >= 4 {
+                Ok(blob.len().saturating_sub(4))
+            } else {
+                Err(anyhow!(
+                    "Tari RandomX blob too short to hold nonce (len={})",
+                    blob.len()
+                ))
+            }
+        }
+    }
+}
+
+fn parse_tari_target(target_hex: &str) -> Result<[u8; 32]> {
+    if target_hex.is_empty() {
+        return Err(anyhow!("Tari target missing"));
+    }
+
+    let bytes = hex::decode(target_hex).map_err(|e| anyhow!("invalid Tari target hex: {e}"))?;
+    if bytes.is_empty() || bytes.len() > 32 {
+        return Err(anyhow!("unexpected Tari target length {}", bytes.len()));
+    }
+
+    // Tari stratum target is treated as a big-endian integer. Left-pad with zeros so the
+    // comparison against SHA3 digests uses the same big-endian ordering.
+    let mut out = [0u8; 32];
+    let start = 32 - bytes.len();
+    out[start..].copy_from_slice(&bytes);
+    Ok(out)
+}
+
+fn tari_meets_target(hash: &[u8; 32], target: &[u8; 32], algorithm: TariAlgorithm) -> bool {
+    let mut candidate = *hash;
+    if matches!(algorithm, TariAlgorithm::RandomX) {
+        candidate.reverse();
+    }
+
+    for (hb, tb) in candidate.iter().zip(target.iter()) {
+        if hb != tb {
+            return hb < tb;
+        }
+    }
+
+    true
+}
+
 #[inline]
 fn put_u32_le(dst: &mut [u8], offset: usize, val: u32) {
     dst[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
@@ -593,8 +911,132 @@ fn meets_target(hash: &[u8; 32], job: &PoolJob) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{atomic::AtomicU64, Arc};
+    use std::{
+        sync::{atomic::AtomicU64, Arc},
+        time::Duration,
+    };
     use tokio::sync::{broadcast, mpsc};
+
+    use crate::tari_algo::{Sha3xTariHash, TariHashAlgorithm};
+
+    #[test]
+    fn tari_nonce_offset_prefers_tail_for_sha3x() {
+        let blob = vec![0u8; 32];
+        let offset = tari_nonce_offset(&blob, TariAlgorithm::Sha3x).expect("offset");
+        assert_eq!(offset, 28);
+    }
+
+    #[test]
+    fn parse_tari_target_accepts_u32_targets() {
+        let target = parse_tari_target("0a000000").expect("parsed");
+        assert_eq!(&target[28..], &[0x0a, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn parse_tari_target_left_pads_big_endian_bytes() {
+        let target = parse_tari_target("0102030405").expect("parsed");
+        assert_eq!(
+            hex::encode(target),
+            "0000000000000000000000000000000000000000000000000000000102030405"
+        );
+    }
+
+    #[test]
+    fn tari_meets_target_handles_endianness() {
+        let mut target = [0u8; 32];
+        target[31] = 5;
+        let mut hash = [0u8; 32];
+        hash[31] = 4;
+        assert!(tari_meets_target(&hash, &target, TariAlgorithm::Sha3x));
+
+        let mut rx_hash = [0u8; 32];
+        rx_hash[31] = 10;
+        // Reversed comparison should fail because reversed hash is large.
+        assert!(!tari_meets_target(
+            &rx_hash,
+            &target,
+            TariAlgorithm::RandomX,
+        ));
+    }
+
+    #[test]
+    fn tari_sha3x_target_uses_little_endian_encoding() {
+        let mut header = vec![0u8; 32];
+        let offset = tari_nonce_offset(&header, TariAlgorithm::Sha3x).expect("offset");
+        put_u32_le(&mut header, offset, 42);
+
+        let mut hasher = Sha3xTariHash::default();
+        hasher
+            .prepare_for_job(
+                &PoolJob {
+                    job_id: "test".into(),
+                    blob: String::new(),
+                    target: String::new(),
+                    seed_hash: None,
+                    height: None,
+                    algo: Some("sha3x".into()),
+                    target_u32: None,
+                },
+                1,
+            )
+            .unwrap();
+
+        let digest = hasher.hash_header(&header);
+        let target_hex = hex::encode(digest);
+        let target = parse_tari_target(&target_hex).expect("parsed target");
+        assert!(tari_meets_target(&digest, &target, TariAlgorithm::Sha3x));
+    }
+
+    #[tokio::test]
+    async fn tari_sha3x_worker_finds_share() {
+        let (jobs_tx, _jobs_rx) = broadcast::channel(2);
+        let (shares_tx, mut shares_rx) = mpsc::unbounded_channel();
+        let hash_counter = Arc::new(AtomicU64::new(0));
+
+        let handles = spawn_tari_workers(
+            1,
+            TariWorkerSpawnConfig {
+                jobs_tx: jobs_tx.clone(),
+                shares_tx,
+                affinity: false,
+                large_pages: false,
+                batch_size: 8,
+                yield_between_batches: false,
+                hash_counter: hash_counter.clone(),
+                algorithm: TariAlgorithm::Sha3x,
+            },
+        )
+        .expect("spawn workers");
+
+        let mut blob = vec![0u8; 12];
+        let offset = tari_nonce_offset(&blob, TariAlgorithm::Sha3x).expect("offset");
+        put_u32_le(&mut blob, offset, 0);
+        let target = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
+        let job = PoolJob {
+            job_id: "tari-test".into(),
+            blob: hex::encode(blob),
+            target,
+            seed_hash: None,
+            height: None,
+            algo: Some("sha3x".into()),
+            target_u32: None,
+        };
+        let _ = jobs_tx.send(WorkItem {
+            job,
+            is_devfee: false,
+        });
+
+        let share = tokio::time::timeout(Duration::from_millis(500), shares_rx.recv())
+            .await
+            .expect("share not timed out")
+            .expect("share present");
+        assert_eq!(share.job_id, "tari-test");
+        assert!(hash_counter.load(Ordering::Relaxed) > 0);
+
+        for handle in handles {
+            handle.abort();
+        }
+    }
 
     #[tokio::test]
     async fn spawns_correct_number_of_workers() {

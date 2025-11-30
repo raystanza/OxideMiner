@@ -5,10 +5,13 @@ pub mod config;
 pub mod devfee;
 pub mod stratum;
 pub mod system;
+pub mod tari;
+pub mod tari_algo;
 pub mod worker;
 
 pub use benchmark::run_benchmark;
 pub use config::Config;
+pub use config::{TariConfig, TariMergeMiningConfig, TariMode};
 pub use devfee::{DevFeeScheduler, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS};
 pub use stratum::{PoolJob, ProxyConfig, StratumClient};
 pub use system::{
@@ -16,4 +19,10 @@ pub use system::{
     cpu_has_ssse3, huge_page_status, huge_pages_enabled, numa_nodes, recommended_thread_count,
     AutoTuneSnapshot, CacheHierarchy, CacheLevel, CpuFeatures, HugePageStatus,
 };
-pub use worker::{spawn_workers, Share, WorkItem, WorkerSpawnConfig};
+pub use tari::{MergeMiningTemplate, TariMergeMiningClient};
+pub use tari_algo::{
+    make_tari_hasher_factory, TariAlgorithm, TariHashAlgorithm, TariHasherFactory,
+};
+pub use worker::{
+    spawn_tari_workers, spawn_workers, Share, TariWorkerSpawnConfig, WorkItem, WorkerSpawnConfig,
+};
