@@ -102,6 +102,13 @@ fn system_uptime_seconds() -> u64 {
     System::uptime()
 }
 
+fn escape_label_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
 pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<PathBuf>) {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = match TcpListener::bind(addr).await {
@@ -182,6 +189,54 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                                 option_env!("OXIDE_BUILD_TIMESTAMP").unwrap_or("")
                             )
                             .ok();
+                            if let Some(cfg) = &s.config {
+                                let values = &cfg.values;
+                                let applied = &cfg.applied;
+                                let info_labels = format!(
+                                    "path=\"{}\",pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",batch_size=\"{}\",affinity=\"{}\",huge_pages=\"{}\",tls=\"{}\",api_port=\"{}\",proxy=\"{}\",dashboard_dir=\"{}\",no_yield=\"{}\",debug=\"{}\"",
+                                    escape_label_value(&cfg.path.display().to_string()),
+                                    escape_label_value(values.pool.as_deref().unwrap_or("")),
+                                    escape_label_value(values.wallet.as_deref().unwrap_or("")),
+                                    escape_label_value(values.pass.as_deref().unwrap_or("")),
+                                    escape_label_value(&values.threads.map(|v| v.to_string()).unwrap_or_default()),
+                                    escape_label_value(&values.batch_size.map(|v| v.to_string()).unwrap_or_default()),
+                                    values.affinity.unwrap_or(false),
+                                    values.huge_pages.unwrap_or(false),
+                                    values.tls.unwrap_or(false),
+                                    escape_label_value(&values.api_port.map(|v| v.to_string()).unwrap_or_default()),
+                                    escape_label_value(values.proxy.as_deref().unwrap_or("")),
+                                    escape_label_value(
+                                        &values
+                                            .dashboard_dir
+                                            .as_ref()
+                                            .map(|p| p.display().to_string())
+                                            .unwrap_or_default(),
+                                    ),
+                                    values.no_yield.unwrap_or(false),
+                                    values.debug.unwrap_or(false),
+                                );
+                                writeln!(body, "oxide_config_info{{{}}} 1", info_labels).ok();
+
+                                let applied_labels = format!(
+                                    "pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",tls=\"{}\",tls_ca_cert=\"{}\",tls_cert_sha256=\"{}\",api_port=\"{}\",dashboard_dir=\"{}\",affinity=\"{}\",huge_pages=\"{}\",batch_size=\"{}\",no_yield=\"{}\",debug=\"{}\",proxy=\"{}\"",
+                                    applied.pool,
+                                    applied.wallet,
+                                    applied.pass,
+                                    applied.threads,
+                                    applied.tls,
+                                    applied.tls_ca_cert,
+                                    applied.tls_cert_sha256,
+                                    applied.api_port,
+                                    applied.dashboard_dir,
+                                    applied.affinity,
+                                    applied.huge_pages,
+                                    applied.batch_size,
+                                    applied.no_yield,
+                                    applied.debug,
+                                    applied.proxy,
+                                );
+                                writeln!(body, "oxide_config_applied{{{}}} 1", applied_labels).ok();
+                            }
                             let mut resp = Response::new(Full::new(Bytes::from(body)));
                             resp.headers_mut().insert(
                                 header::CONTENT_TYPE,
@@ -199,6 +254,13 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             let instant_hashrate = s.instant_hashrate();
                             let mining_duration = s.mining_duration();
                             let system_uptime = system_uptime_seconds();
+                            let config = s.config.as_ref().map(|cfg| {
+                                json!({
+                                    "path": cfg.path,
+                                    "values": cfg.values,
+                                    "applied": cfg.applied,
+                                })
+                            });
                             let build = json!({
                                 "version": env!("CARGO_PKG_VERSION"),
                                 "commit_hash": option_env!("OXIDE_GIT_COMMIT"),
@@ -217,6 +279,7 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                                 "tls": s.tls,
                                 "version": env!("CARGO_PKG_VERSION"),
                                 "build": build,
+                                "config": config,
                                 "shares": {
                                     "accepted": accepted,
                                     "rejected": rejected,
@@ -303,7 +366,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false));
+        let stats = Arc::new(Stats::new("pool".into(), false, None));
         stats.accepted.store(5, Ordering::Relaxed);
         stats.rejected.store(2, Ordering::Relaxed);
         stats.dev_accepted.store(1, Ordering::Relaxed);
@@ -348,7 +411,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false));
+        let stats = Arc::new(Stats::new("pool".into(), false, None));
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("img")).unwrap();
@@ -397,7 +460,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false));
+        let stats = Arc::new(Stats::new("pool".into(), false, None));
         let server = tokio::spawn(run_http_api(port, stats, None));
         sleep(Duration::from_millis(50)).await;
 
