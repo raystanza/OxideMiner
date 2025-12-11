@@ -245,6 +245,7 @@ threads = 8          # omit to auto-tune
 api_port = 8080      # enable HTTP dashboard
 huge_pages = true    # request HugeTLB / large pages if OS allows it
 # dashboard_dir = "./crates/oxide-miner/assets"   # serve custom UI while developing
+# (on Windows, escape backslashes [e.g. "C:\\path\\to\\dashboard"] or use single quotes [e.g. 'C:\path\to\dashboard'])
 # tls = true
 # tls_ca_cert = "/etc/ssl/certs/ca-certificates.crt"
 # tls_cert_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

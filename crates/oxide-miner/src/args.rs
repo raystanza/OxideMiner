@@ -224,7 +224,7 @@ fn load_config_file(
             Err(err) => {
                 warnings.push(ConfigWarning::new(
                     format!("failed to parse config file {}: {err}", path.display()),
-                    debug_only,
+                    false,
                 ));
                 None
             }
@@ -232,7 +232,7 @@ fn load_config_file(
         Err(err) => {
             warnings.push(ConfigWarning::new(
                 format!("failed to read config file {}: {err}", path.display()),
-                debug_only,
+                false,
             ));
             None
         }
@@ -373,7 +373,7 @@ fn push_value_os(args: &mut Vec<OsString>, flag: &str, value: &OsStr) {
 mod tests {
     use super::{parse_with_config_from, Args};
     use clap::Parser;
-    use std::{ffi::OsString, fs};
+    use std::{env, ffi::OsString, fs};
     use tempfile::NamedTempFile;
 
     #[test]
@@ -518,6 +518,29 @@ batch_size = 5000
         let parsed = parse_with_config_from(args).unwrap();
         assert_eq!(parsed.warnings.len(), 1);
         assert!(parsed.warnings[0].message().contains("failed to parse"));
+        assert!(parsed.warnings[0].should_print(false));
+    }
+
+    #[test]
+    fn invalid_default_config_warning_prints_without_debug() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let original_dir = env::current_dir().unwrap();
+        env::set_current_dir(tempdir.path()).unwrap();
+
+        fs::write(tempdir.path().join("config.toml"), "threads = \"oops\"").unwrap();
+
+        let args = vec![
+            OsString::from("test"),
+            OsString::from("-o"),
+            OsString::from("pool:5555"),
+            OsString::from("-u"),
+            OsString::from("wallet"),
+        ];
+
+        let parsed = parse_with_config_from(args).unwrap();
+        env::set_current_dir(original_dir).unwrap();
+
+        assert_eq!(parsed.warnings.len(), 1);
         assert!(parsed.warnings[0].should_print(false));
     }
 }
