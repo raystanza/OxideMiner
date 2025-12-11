@@ -1,6 +1,6 @@
 // OxideMiner/crates/oxide-miner/src/args.rs
 
-use clap::{builder::TypedValueParser, Parser, ValueHint};
+use clap::{builder::TypedValueParser, error::ErrorKind, CommandFactory, Parser, ValueHint};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -101,6 +101,7 @@ pub struct Args {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigFile {
     #[serde(alias = "url")]
     pub pool: Option<String>,
@@ -148,6 +149,7 @@ impl ConfigWarning {
 pub struct ParsedArgs {
     pub args: Args,
     pub warnings: Vec<ConfigWarning>,
+    pub config: Option<LoadedConfigFile>,
 }
 
 pub fn parse_with_config() -> ParsedArgs {
@@ -168,12 +170,17 @@ where
     let (config_path, explicit_config) = determine_config_path(&original_args);
 
     let mut warnings = Vec::new();
-    if let Some(cfg) = load_config_file(&config_path, explicit_config, &mut warnings) {
-        apply_config_defaults(&cfg, &original_args, &mut args_vec);
-    }
+    let config = load_config_file(&config_path, explicit_config, &mut warnings)?.map(|mut cfg| {
+        apply_config_defaults(&cfg.values, &original_args, &mut args_vec, &mut cfg.applied);
+        cfg
+    });
 
     match Args::try_parse_from(args_vec) {
-        Ok(args) => Ok(ParsedArgs { args, warnings }),
+        Ok(args) => Ok(ParsedArgs {
+            args,
+            warnings,
+            config,
+        }),
         Err(err) => Err(err),
     }
 }
@@ -207,7 +214,7 @@ fn load_config_file(
     path: &Path,
     explicit: bool,
     warnings: &mut Vec<ConfigWarning>,
-) -> Option<ConfigFile> {
+) -> Result<Option<LoadedConfigFile>, clap::Error> {
     let debug_only = !explicit;
 
     if !explicit && !path.exists() {
@@ -215,112 +222,160 @@ fn load_config_file(
             format!("config file not found at {}", path.display()),
             debug_only,
         ));
-        return None;
+        return Ok(None);
     }
 
-    match fs::read_to_string(path) {
-        Ok(contents) => match toml::from_str::<ConfigFile>(&contents) {
-            Ok(cfg) => Some(cfg),
-            Err(err) => {
-                warnings.push(ConfigWarning::new(
-                    format!("failed to parse config file {}: {err}", path.display()),
-                    false,
-                ));
-                None
+    let contents = fs::read_to_string(path).map_err(|err| {
+        config_error(
+            Args::command(),
+            format!("failed to read config file {}: {err}", path.display()),
+        )
+    })?;
+
+    let value: toml::Value = contents.parse().map_err(|err: toml::de::Error| {
+        config_error(
+            Args::command(),
+            format_toml_error(path, &err.to_string(), None),
+        )
+    })?;
+
+    if let Some(table) = value.as_table() {
+        let mut unknown_keys = Vec::new();
+        for key in table.keys() {
+            if !VALID_CONFIG_KEYS.contains(&key.as_str()) {
+                unknown_keys.push(key.as_str().to_owned());
             }
-        },
-        Err(err) => {
-            warnings.push(ConfigWarning::new(
-                format!("failed to read config file {}: {err}", path.display()),
-                false,
+        }
+        if !unknown_keys.is_empty() {
+            return Err(config_error(
+                Args::command(),
+                format!(
+                    "unrecognized {} in config file {}: {}. Valid keys: {}",
+                    if unknown_keys.len() == 1 {
+                        "key"
+                    } else {
+                        "keys"
+                    },
+                    path.display(),
+                    unknown_keys.join(", "),
+                    VALID_CONFIG_KEYS.join(", "),
+                ),
             ));
-            None
         }
     }
+
+    let values: ConfigFile = value.try_into().map_err(|err: toml::de::Error| {
+        config_error(
+            Args::command(),
+            format_toml_error(path, &err.to_string(), None),
+        )
+    })?;
+
+    Ok(Some(LoadedConfigFile {
+        path: path.to_path_buf(),
+        values,
+        applied: ConfigApplied::default(),
+    }))
 }
 
 fn apply_config_defaults(
     config: &ConfigFile,
     original_args: &[OsString],
     args: &mut Vec<OsString>,
+    applied: &mut ConfigApplied,
 ) {
     if let Some(pool) = config.pool.as_ref() {
         if !has_arg(original_args, Some("o"), Some("url")) {
             push_value(args, "--url", pool.as_str());
+            applied.pool = true;
         }
     }
 
     if let Some(wallet) = config.wallet.as_ref() {
         if !has_arg(original_args, Some("u"), Some("user")) {
             push_value(args, "--user", wallet.as_str());
+            applied.wallet = true;
         }
     }
 
     if let Some(pass) = config.pass.as_ref() {
         if !has_arg(original_args, Some("p"), Some("pass")) {
             push_value(args, "--pass", pass.as_str());
+            applied.pass = true;
         }
     }
 
     if let Some(threads) = config.threads {
         if !has_arg(original_args, Some("t"), Some("threads")) {
             push_value(args, "--threads", threads.to_string());
+            applied.threads = true;
         }
     }
 
     if config.tls == Some(true) && !has_arg(original_args, None, Some("tls")) {
         push_flag(args, "--tls");
+        applied.tls = true;
     }
 
     if let Some(cert) = config.tls_ca_cert.as_ref() {
         if !has_arg(original_args, None, Some("tls-ca-cert")) {
             push_value_os(args, "--tls-ca-cert", cert.as_os_str());
+            applied.tls_ca_cert = true;
         }
     }
 
     if let Some(fingerprint) = config.tls_cert_sha256.as_ref() {
         if !has_arg(original_args, None, Some("tls-cert-sha256")) {
             push_value(args, "--tls-cert-sha256", fingerprint.as_str());
+            applied.tls_cert_sha256 = true;
         }
     }
 
     if let Some(port) = config.api_port {
         if !has_arg(original_args, None, Some("api-port")) {
             push_value(args, "--api-port", port.to_string());
+            applied.api_port = true;
         }
     }
 
     if let Some(dir) = config.dashboard_dir.as_ref() {
         if !has_arg(original_args, None, Some("dashboard-dir")) {
             push_value_os(args, "--dashboard-dir", dir.as_os_str());
+            applied.dashboard_dir = true;
         }
     }
 
     if config.affinity == Some(true) && !has_arg(original_args, None, Some("affinity")) {
         push_flag(args, "--affinity");
+        applied.affinity = true;
     }
 
     if config.huge_pages == Some(true) && !has_arg(original_args, None, Some("huge-pages")) {
         push_flag(args, "--huge-pages");
+        applied.huge_pages = true;
     }
 
     if let Some(batch_size) = config.batch_size {
         if !has_arg(original_args, None, Some("batch-size")) {
             push_value(args, "--batch-size", batch_size.to_string());
+            applied.batch_size = true;
         }
     }
 
     if config.no_yield == Some(true) && !has_arg(original_args, None, Some("no-yield")) {
         push_flag(args, "--no-yield");
+        applied.no_yield = true;
     }
 
     if config.debug == Some(true) && !has_arg(original_args, None, Some("debug")) {
         push_flag(args, "--debug");
+        applied.debug = true;
     }
 
     if let Some(proxy) = config.proxy.as_ref() {
         if !has_arg(original_args, None, Some("proxy")) {
             push_value(args, "--proxy", proxy.as_str());
+            applied.proxy = true;
         }
     }
 }
@@ -367,6 +422,80 @@ fn push_value<S: AsRef<str>>(args: &mut Vec<OsString>, flag: &str, value: S) {
 fn push_value_os(args: &mut Vec<OsString>, flag: &str, value: &OsStr) {
     args.push(OsString::from(flag));
     args.push(value.to_os_string());
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ConfigApplied {
+    pub pool: bool,
+    pub wallet: bool,
+    pub pass: bool,
+    pub threads: bool,
+    pub tls: bool,
+    pub tls_ca_cert: bool,
+    pub tls_cert_sha256: bool,
+    pub api_port: bool,
+    pub dashboard_dir: bool,
+    pub affinity: bool,
+    pub huge_pages: bool,
+    pub batch_size: bool,
+    pub no_yield: bool,
+    pub debug: bool,
+    pub proxy: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LoadedConfigFile {
+    pub path: PathBuf,
+    pub values: ConfigFile,
+    pub applied: ConfigApplied,
+}
+
+const VALID_CONFIG_KEYS: &[&str] = &[
+    "pool",
+    "url",
+    "wallet",
+    "user",
+    "pass",
+    "threads",
+    "tls",
+    "tls_ca_cert",
+    "tls-ca-cert",
+    "tls_cert_sha256",
+    "tls-cert-sha256",
+    "api_port",
+    "api-port",
+    "dashboard_dir",
+    "dashboard-dir",
+    "affinity",
+    "huge_pages",
+    "huge-pages",
+    "batch_size",
+    "batch-size",
+    "no_yield",
+    "no-yield",
+    "debug",
+    "proxy",
+];
+
+fn config_error(mut cmd: clap::Command, msg: String) -> clap::Error {
+    let mut err = clap::Error::raw(ErrorKind::InvalidValue, msg);
+    err.insert(
+        clap::error::ContextKind::Usage,
+        clap::error::ContextValue::StyledStr(cmd.render_usage()),
+    );
+    err
+}
+
+fn format_toml_error(path: &Path, message: &str, line_col: Option<(usize, usize)>) -> String {
+    let location = line_col
+        .map(|(line, col)| format!(" at line {}, column {}", line + 1, col + 1))
+        .unwrap_or_default();
+    format!(
+        "failed to parse config file {}{}: {}",
+        path.display(),
+        location,
+        message
+    )
 }
 
 #[cfg(test)]
@@ -501,7 +630,7 @@ batch_size = 5000
     }
 
     #[test]
-    fn invalid_config_emits_warning() {
+    fn invalid_config_is_an_error() {
         let config = NamedTempFile::new().unwrap();
         fs::write(config.path(), "threads = \"oops\"").unwrap();
 
@@ -515,14 +644,11 @@ batch_size = 5000
             config.path().as_os_str().to_os_string(),
         ];
 
-        let parsed = parse_with_config_from(args).unwrap();
-        assert_eq!(parsed.warnings.len(), 1);
-        assert!(parsed.warnings[0].message().contains("failed to parse"));
-        assert!(parsed.warnings[0].should_print(false));
+        assert!(parse_with_config_from(args).is_err());
     }
 
     #[test]
-    fn invalid_default_config_warning_prints_without_debug() {
+    fn invalid_default_config_is_an_error() {
         let tempdir = tempfile::tempdir().unwrap();
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(tempdir.path()).unwrap();
@@ -537,10 +663,7 @@ batch_size = 5000
             OsString::from("wallet"),
         ];
 
-        let parsed = parse_with_config_from(args).unwrap();
+        assert!(parse_with_config_from(args).is_err());
         env::set_current_dir(original_dir).unwrap();
-
-        assert_eq!(parsed.warnings.len(), 1);
-        assert!(parsed.warnings[0].should_print(false));
     }
 }

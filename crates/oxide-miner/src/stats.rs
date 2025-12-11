@@ -1,5 +1,6 @@
 // OxideMiner/crates/oxide-miner/src/stats.rs
 
+use crate::args::LoadedConfigFile;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,11 +17,12 @@ pub struct Stats {
     pub pool_connected: AtomicBool,
     pub tls: bool,
     pub pool: String,
+    pub config: Option<LoadedConfigFile>,
     hashrate_sample: Mutex<HashrateSample>,
 }
 
 impl Stats {
-    pub fn new(pool: String, tls: bool) -> Self {
+    pub fn new(pool: String, tls: bool, config: Option<LoadedConfigFile>) -> Self {
         Self {
             start: Instant::now(),
             accepted: AtomicU64::new(0),
@@ -31,6 +33,7 @@ impl Stats {
             pool_connected: AtomicBool::new(false),
             tls,
             pool,
+            config,
             hashrate_sample: Mutex::new(HashrateSample::new()),
         }
     }
@@ -97,7 +100,7 @@ mod tests {
 
     #[test]
     fn stats_initializes_counters() {
-        let stats = Stats::new("pool".into(), true);
+        let stats = Stats::new("pool".into(), true, None);
         assert_eq!(stats.accepted.load(Ordering::Relaxed), 0);
         assert_eq!(stats.rejected.load(Ordering::Relaxed), 0);
         assert_eq!(stats.dev_accepted.load(Ordering::Relaxed), 0);
@@ -109,7 +112,7 @@ mod tests {
 
     #[test]
     fn hashrate_avg_uses_elapsed_time() {
-        let stats = Stats::new("pool".into(), false);
+        let stats = Stats::new("pool".into(), false, None);
         // Replace hashes with a pre-filled counter for deterministic check
         stats.hashes.store(1000, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
@@ -129,6 +132,7 @@ mod tests {
             pool_connected: AtomicBool::new(false),
             tls: false,
             pool: String::new(),
+            config: None,
             hashrate_sample: Mutex::new(HashrateSample::new()),
         };
         assert_eq!(manual.hashrate_avg(), 0.0);
@@ -136,7 +140,7 @@ mod tests {
 
     #[test]
     fn instant_hashrate_tracks_recent_progress() {
-        let stats = Stats::new("pool".into(), false);
+        let stats = Stats::new("pool".into(), false, None);
         stats.hashes.store(0, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
         stats.hashes.store(1000, Ordering::Relaxed);
@@ -152,7 +156,7 @@ mod tests {
 
     #[test]
     fn mining_duration_tracks_elapsed_time() {
-        let stats = Stats::new("pool".into(), false);
+        let stats = Stats::new("pool".into(), false, None);
         std::thread::sleep(Duration::from_millis(5));
         let elapsed = stats.mining_duration();
         assert!(elapsed >= Duration::from_millis(5));

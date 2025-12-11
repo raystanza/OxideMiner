@@ -1,6 +1,6 @@
 // OxideMiner/crates/oxide-miner/src/miner.rs
 
-use crate::args::Args;
+use crate::args::{Args, LoadedConfigFile};
 use crate::http_api::run_http_api;
 use crate::stats::Stats;
 use crate::util::tiny_jitter_ms;
@@ -82,7 +82,7 @@ struct ShareContext<'a> {
     dev_scheduler: &'a mut DevFeeScheduler,
 }
 
-pub async fn run(args: Args) -> Result<()> {
+pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
     // Prefer RUST_LOG if set; otherwise use --debug to bump verbosity.
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         // Keep oxide_core at debug when --debug is on, to capture worker details.
@@ -129,6 +129,10 @@ pub async fn run(args: Args) -> Result<()> {
             .init();
     }
     // ----------------------------------------------------------
+
+    if let Some(cfg_file) = config.as_ref() {
+        log_config_overview(cfg_file, &args);
+    }
 
     if args.benchmark {
         let snap = autotune_snapshot();
@@ -400,7 +404,8 @@ pub async fn run(args: Args) -> Result<()> {
         tracing::info!("auto-selected {} worker threads", n_workers);
     }
 
-    let stats = Arc::new(Stats::new(cfg.pool.clone(), cfg.tls));
+    let stats_config = config.clone();
+    let stats = Arc::new(Stats::new(cfg.pool.clone(), cfg.tls, stats_config));
 
     let tls = cfg.tls;
     let tls_ca_cert = cfg.tls_ca_cert.clone();
@@ -877,6 +882,161 @@ fn warn_huge_page_limit(status: &HugePageStatus, dataset_bytes: u64) {
             "Huge page pool is too small for the RandomX dataset; continuing without huge pages",
         );
     }
+}
+
+fn log_config_overview(cfg: &LoadedConfigFile, args: &Args) {
+    let mut lines = Vec::new();
+    if cfg.applied.pool {
+        if let Some(pool) = cfg.values.pool.as_deref() {
+            lines.push(format!("Pool (--url): {pool} (from config.toml)"));
+        }
+    } else if cfg.values.pool.is_some() {
+        lines.push("Pool (--url): provided in config.toml but overridden by CLI".to_string());
+    }
+
+    if cfg.applied.wallet {
+        if let Some(wallet) = cfg.values.wallet.as_deref() {
+            lines.push(format!("Wallet (--user): {wallet} (from config.toml)"));
+        }
+    } else if cfg.values.wallet.is_some() {
+        lines.push("Wallet (--user): provided in config.toml but overridden by CLI".to_string());
+    }
+
+    if cfg.applied.pass {
+        lines.push("Password (--pass): set via config.toml".to_string());
+    } else if cfg.values.pass.is_some() {
+        lines.push("Password (--pass): provided in config.toml but overridden by CLI".to_string());
+    }
+
+    if let Some(threads) = cfg.values.threads {
+        let detail = if cfg.applied.threads {
+            format!("Threads (--threads): {threads} (from config.toml)")
+        } else {
+            format!("Threads (--threads): {threads} (config.toml, overridden by CLI)")
+        };
+        lines.push(detail);
+    }
+
+    if let Some(batch) = cfg.values.batch_size {
+        let detail = if cfg.applied.batch_size {
+            format!("Batch size (--batch-size): {batch} (from config.toml)")
+        } else {
+            format!("Batch size (--batch-size): {batch} (config.toml, overridden by CLI)")
+        };
+        lines.push(detail);
+    }
+
+    if let Some(port) = cfg.values.api_port {
+        let detail = if cfg.applied.api_port {
+            format!("API port (--api-port): {port} (from config.toml)")
+        } else {
+            format!("API port (--api-port): {port} (config.toml, overridden by CLI)")
+        };
+        lines.push(detail);
+    }
+
+    if let Some(dir) = cfg.values.dashboard_dir.as_ref() {
+        let detail = if cfg.applied.dashboard_dir {
+            format!(
+                "Dashboard directory (--dashboard-dir): {} (from config.toml)",
+                dir.display()
+            )
+        } else {
+            format!(
+                "Dashboard directory (--dashboard-dir): {} (config.toml, overridden by CLI)",
+                dir.display()
+            )
+        };
+        lines.push(detail);
+    }
+
+    if let Some(proxy) = cfg.values.proxy.as_ref() {
+        let detail = if cfg.applied.proxy {
+            format!("Proxy (--proxy): {} (from config.toml)", proxy)
+        } else {
+            format!("Proxy (--proxy): {proxy} (config.toml, overridden by CLI)")
+        };
+        lines.push(detail);
+    }
+
+    if let Some(cert) = cfg.values.tls_ca_cert.as_ref() {
+        let detail = if cfg.applied.tls_ca_cert {
+            format!(
+                "TLS CA certificate (--tls-ca-cert): {} (from config.toml)",
+                cert.display()
+            )
+        } else {
+            format!(
+                "TLS CA certificate (--tls-ca-cert): {} (config.toml, overridden by CLI)",
+                cert.display()
+            )
+        };
+        lines.push(detail);
+    }
+
+    if let Some(fp) = cfg.values.tls_cert_sha256.as_ref() {
+        let detail = if cfg.applied.tls_cert_sha256 {
+            format!("TLS pinned certificate (--tls-cert-sha256): {fp} (from config.toml)")
+        } else {
+            format!(
+                "TLS pinned certificate (--tls-cert-sha256): {fp} (config.toml, overridden by CLI)"
+            )
+        };
+        lines.push(detail);
+    }
+
+    let bool_line = |flag: bool, applied: bool, label: &str, lines: &mut Vec<String>| {
+        if flag {
+            if applied {
+                lines.push(format!("{label} enabled via config.toml"));
+            } else {
+                lines.push(format!(
+                    "{label} requested in config.toml but overridden by CLI"
+                ));
+            }
+        }
+    };
+
+    bool_line(args.tls, cfg.applied.tls, "TLS (--tls)", &mut lines);
+    bool_line(
+        args.affinity,
+        cfg.applied.affinity,
+        "CPU affinity (--affinity)",
+        &mut lines,
+    );
+    bool_line(
+        args.huge_pages,
+        cfg.applied.huge_pages,
+        "Huge pages (--huge-pages)",
+        &mut lines,
+    );
+    bool_line(
+        args.no_yield,
+        cfg.applied.no_yield,
+        "Yields disabled (--no-yield)",
+        &mut lines,
+    );
+    bool_line(
+        args.debug,
+        cfg.applied.debug,
+        "Debug logging (--debug)",
+        &mut lines,
+    );
+
+    let message = if lines.is_empty() {
+        format!(
+            "loaded configuration from {} (no values applied; all provided flags were overridden)",
+            cfg.path.display()
+        )
+    } else {
+        format!(
+            "loaded configuration from {}:\n • {}",
+            cfg.path.display(),
+            lines.join("\n • ")
+        )
+    };
+
+    tracing::info!("{message}");
 }
 
 fn broadcast_job(
