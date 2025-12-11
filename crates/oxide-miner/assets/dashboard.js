@@ -111,7 +111,9 @@ function formatIsoLocal(iso) {
 function applyStats(data) {
   const hashrateEl = document.getElementById('hashrate');
   if (hashrateEl) {
-    hashrateEl.textContent = formatHashrate(Number(data.hashrate));
+    const avg = formatHashrate(Number(data.hashrate_avg ?? data.hashrate));
+    const instant = formatHashrate(Number(data.instant_hashrate));
+    hashrateEl.textContent = `${avg} / ${instant}`;
   }
   const hashesEl = document.getElementById('hashes');
   if (hashesEl) {

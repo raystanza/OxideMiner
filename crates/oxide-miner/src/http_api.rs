@@ -139,7 +139,8 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             let dev_acc = s.dev_accepted.load(Ordering::Relaxed);
                             let dev_rej = s.dev_rejected.load(Ordering::Relaxed);
                             let hashes = s.hashes.load(Ordering::Relaxed);
-                            let hashrate = s.hashrate();
+                            let hashrate_avg = s.hashrate_avg();
+                            let instant_hashrate = s.instant_hashrate();
                             let connected = if s.pool_connected.load(Ordering::Relaxed) {
                                 1
                             } else {
@@ -148,7 +149,8 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             let tls = if s.tls { 1 } else { 0 };
                             use std::fmt::Write;
                             writeln!(body, "oxide_hashes_total {}", hashes).ok();
-                            writeln!(body, "oxide_hashrate {}", hashrate).ok();
+                            writeln!(body, "oxide_hashrate {}", hashrate_avg).ok();
+                            writeln!(body, "oxide_hashrate_instant {}", instant_hashrate).ok();
                             writeln!(body, "oxide_shares_accepted_total {}", accepted).ok();
                             writeln!(body, "oxide_shares_rejected_total {}", rejected).ok();
                             writeln!(body, "oxide_devfee_shares_accepted_total {}", dev_acc).ok();
@@ -193,7 +195,8 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             let dev_acc = s.dev_accepted.load(Ordering::Relaxed);
                             let dev_rej = s.dev_rejected.load(Ordering::Relaxed);
                             let hashes = s.hashes.load(Ordering::Relaxed);
-                            let hashrate = s.hashrate();
+                            let hashrate_avg = s.hashrate_avg();
+                            let instant_hashrate = s.instant_hashrate();
                             let mining_duration = s.mining_duration();
                             let system_uptime = system_uptime_seconds();
                             let build = json!({
@@ -205,7 +208,9 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             });
 
                             let resp_body = json!({
-                                "hashrate": hashrate,
+                                "hashrate": hashrate_avg,
+                                "hashrate_avg": hashrate_avg,
+                                "instant_hashrate": instant_hashrate,
                                 "hashes_total": hashes,
                                 "pool": s.pool,
                                 "connected": s.pool_connected.load(Ordering::Relaxed),
