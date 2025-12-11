@@ -1,7 +1,7 @@
 // OxideMiner/crates/oxide-miner/src/stats.rs
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Shared miner statistics updated across tasks and exposed via the HTTP API.
@@ -16,6 +16,7 @@ pub struct Stats {
     pub pool_connected: AtomicBool,
     pub tls: bool,
     pub pool: String,
+    hashrate_sample: Mutex<HashrateSample>,
 }
 
 impl Stats {
@@ -30,16 +31,39 @@ impl Stats {
             pool_connected: AtomicBool::new(false),
             tls,
             pool,
+            hashrate_sample: Mutex::new(HashrateSample::new()),
         }
     }
 
     /// Average hashes per second since startup.
-    pub fn hashrate(&self) -> f64 {
+    pub fn hashrate_avg(&self) -> f64 {
         let elapsed = self.start.elapsed().as_secs_f64();
         if elapsed > 0.0 {
             self.hashes.load(Ordering::Relaxed) as f64 / elapsed
         } else {
             0.0
+        }
+    }
+
+    /// Instantaneous hashes per second calculated from the most recent sample window.
+    pub fn instant_hashrate(&self) -> f64 {
+        let now = Instant::now();
+        let hashes = self.hashes.load(Ordering::Relaxed);
+        let mut sample = self
+            .hashrate_sample
+            .lock()
+            .expect("hashrate sample mutex poisoned");
+
+        let elapsed = now.saturating_duration_since(sample.last_time);
+        let delta = hashes.saturating_sub(sample.last_hashes);
+
+        sample.last_time = now;
+        sample.last_hashes = hashes;
+
+        if elapsed.is_zero() {
+            0.0
+        } else {
+            delta as f64 / elapsed.as_secs_f64()
         }
     }
 
@@ -49,11 +73,26 @@ impl Stats {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct HashrateSample {
+    last_hashes: u64,
+    last_time: Instant,
+}
+
+impl HashrateSample {
+    fn new() -> Self {
+        Self {
+            last_hashes: 0,
+            last_time: Instant::now(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Stats;
+    use super::{HashrateSample, Stats};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     #[test]
@@ -63,18 +102,18 @@ mod tests {
         assert_eq!(stats.rejected.load(Ordering::Relaxed), 0);
         assert_eq!(stats.dev_accepted.load(Ordering::Relaxed), 0);
         assert_eq!(stats.dev_rejected.load(Ordering::Relaxed), 0);
-        assert!(stats.hashrate() >= 0.0);
+        assert!(stats.hashrate_avg() >= 0.0);
         assert!(stats.tls);
         assert_eq!(stats.pool, "pool");
     }
 
     #[test]
-    fn hashrate_uses_elapsed_time() {
+    fn hashrate_avg_uses_elapsed_time() {
         let stats = Stats::new("pool".into(), false);
         // Replace hashes with a pre-filled counter for deterministic check
         stats.hashes.store(1000, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
-        let rate = stats.hashrate();
+        let rate = stats.hashrate_avg();
         assert!(rate > 0.0);
 
         // Simulate zero hashrate when no hashes were recorded
@@ -90,8 +129,25 @@ mod tests {
             pool_connected: AtomicBool::new(false),
             tls: false,
             pool: String::new(),
+            hashrate_sample: Mutex::new(HashrateSample::new()),
         };
-        assert_eq!(manual.hashrate(), 0.0);
+        assert_eq!(manual.hashrate_avg(), 0.0);
+    }
+
+    #[test]
+    fn instant_hashrate_tracks_recent_progress() {
+        let stats = Stats::new("pool".into(), false);
+        stats.hashes.store(0, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(10));
+        stats.hashes.store(1000, Ordering::Relaxed);
+
+        let inst = stats.instant_hashrate();
+        assert!(inst > 0.0);
+
+        // With no additional progress, the next instantaneous rate should be zero (or very close).
+        std::thread::sleep(Duration::from_millis(5));
+        let inst2 = stats.instant_hashrate();
+        assert!(inst2 <= 1.0);
     }
 
     #[test]
