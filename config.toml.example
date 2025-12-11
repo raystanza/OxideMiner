@@ -44,6 +44,7 @@
 
 # Serve dashboard files from this directory instead of the embedded assets.
 # Useful for local development of the UI.
+# (on Windows, escape backslashes [e.g. "C:\\path\\to\\dashboard"] or use single quotes [e.g. 'C:\path\to\dashboard'])
 #dashboard_dir = "./crates/oxide-miner/assets"
 
 # --- Performance & Scheduling ---
