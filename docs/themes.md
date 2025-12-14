@@ -4,7 +4,7 @@ OxideMiner can load dashboard-only themes from the repository without changing t
 
 ## Directory layout
 
-```
+```bash
 plugins/
   themes/
     aurora/

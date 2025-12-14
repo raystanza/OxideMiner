@@ -339,8 +339,9 @@ pub async fn run_http_api(
                             Ok::<_, Infallible>(resp)
                         }
                         (&Method::GET, "/plugins/themes") | (&Method::GET, "/plugins/themes/") => {
-                            let mut resp =
-                                Response::new(Full::new(Bytes::from_static(THEMES_HTML.as_bytes())));
+                            let mut resp = Response::new(Full::new(Bytes::from_static(
+                                THEMES_HTML.as_bytes(),
+                            )));
                             resp.headers_mut().insert(
                                 header::CONTENT_TYPE,
                                 header::HeaderValue::from_static("text/html"),
@@ -379,13 +380,18 @@ pub async fn run_http_api(
                                             ),
                                         );
                                         resp.headers_mut().insert(
-                                            header::HeaderName::from_static("x-content-type-options"),
+                                            header::HeaderName::from_static(
+                                                "x-content-type-options",
+                                            ),
                                             header::HeaderValue::from_static("nosniff"),
                                         );
                                         return Ok::<_, Infallible>(resp);
                                     }
                                     Err(err) => {
-                                        tracing::warn!("Failed to read theme asset {:?}: {err}", asset_path);
+                                        tracing::warn!(
+                                            "Failed to read theme asset {:?}: {err}",
+                                            asset_path
+                                        );
                                     }
                                 }
                             }

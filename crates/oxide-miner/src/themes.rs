@@ -162,7 +162,11 @@ fn read_manifest(dir: &Path) -> Option<ThemeEntry> {
 
     let entry_css_path = dir.join(&entry_css);
     if !entry_css_path.is_file() {
-        tracing::warn!("Theme '{}' missing entry_css file: {}", manifest.id, entry_css);
+        tracing::warn!(
+            "Theme '{}' missing entry_css file: {}",
+            manifest.id,
+            entry_css
+        );
         return None;
     }
 
@@ -214,12 +218,20 @@ fn read_manifest(dir: &Path) -> Option<ThemeEntry> {
                 if path.is_file() {
                     Some(safe)
                 } else {
-                    tracing::warn!("Theme '{}' missing preview image: {}", manifest.id, manifest_preview);
+                    tracing::warn!(
+                        "Theme '{}' missing preview image: {}",
+                        manifest.id,
+                        manifest_preview
+                    );
                     detect_preview(dir)
                 }
             }
             None => {
-                tracing::warn!("Theme '{}' has unsafe preview path: {}", manifest.id, manifest_preview);
+                tracing::warn!(
+                    "Theme '{}' has unsafe preview path: {}",
+                    manifest.id,
+                    manifest_preview
+                );
                 detect_preview(dir)
             }
         }
@@ -333,7 +345,12 @@ impl ThemeCatalog {
             entries.extend(discover_dir(dir));
         }
 
-        entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.id.cmp(&b.id)));
+        entries.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.id.cmp(&b.id))
+        });
 
         let mut index = HashMap::new();
         for (idx, entry) in entries.iter().enumerate() {
@@ -401,13 +418,18 @@ mod tests {
         assert!(is_valid_id("a.b-c_1"));
         assert!(!is_valid_id(""));
         assert!(!is_valid_id("UPPER"));
-        assert!(!is_valid_id("toolongtoolongtoolongtoolongtoolongtoolongtoolongtoolongtoolongtoolong"));
+        assert!(!is_valid_id(
+            "toolongtoolongtoolongtoolongtoolongtoolongtoolongtoolongtoolongtoolong"
+        ));
         assert!(!is_valid_id("bad/.."));
     }
 
     #[test]
     fn sanitize_paths() {
-        assert_eq!(safe_relative_path("ok/file.css").as_deref(), Some("ok/file.css"));
+        assert_eq!(
+            safe_relative_path("ok/file.css").as_deref(),
+            Some("ok/file.css")
+        );
         assert!(safe_relative_path("../bad").is_none());
         assert!(safe_relative_path("/abs").is_none());
         assert!(safe_relative_path("").is_none());

@@ -4,8 +4,8 @@ mod args;
 mod http_api;
 mod miner;
 mod stats;
-mod util;
 mod themes;
+mod util;
 
 use anyhow::Result;
 use args::parse_with_config;
