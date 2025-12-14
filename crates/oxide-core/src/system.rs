@@ -860,12 +860,10 @@ unsafe fn windows_cache_hierarchy() -> Option<CacheHierarchy> {
                         info.l3 = Some(level);
                     }
                     let key = (cache.Level, cache.CacheSize as usize, cpus.clone());
-                    l3_map
-                        .entry(key)
-                        .or_insert_with(|| L3Instance {
-                            size_bytes: cache.CacheSize as usize,
-                            shared_logical_cpus: cpus.clone(),
-                        });
+                    l3_map.entry(key).or_insert_with(|| L3Instance {
+                        size_bytes: cache.CacheSize as usize,
+                        shared_logical_cpus: cpus.clone(),
+                    });
                 }
                 _ => {}
             }
@@ -922,8 +920,8 @@ fn cache_group_masks(cache: &CACHE_RELATIONSHIP, record_size: usize) -> Vec<GROU
     let requested = cache.GroupCount as usize;
     let capacity = ((record_size.saturating_sub(mem::size_of::<CACHE_RELATIONSHIP>()))
         / mem::size_of::<GROUP_AFFINITY>())
-        .saturating_add(1)
-        .max(1);
+    .saturating_add(1)
+    .max(1);
     let len = requested.max(1).min(capacity);
     unsafe { slice::from_raw_parts(cache.Anonymous.GroupMasks.as_ptr(), len).to_vec() }
 }
