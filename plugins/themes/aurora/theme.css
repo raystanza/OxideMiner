@@ -1,0 +1,39 @@
+body[data-theme="aurora"] {
+  --bg: #0b1021;
+  --card: #11182e;
+  --shadow-dark: rgba(0, 0, 0, 0.6);
+  --shadow-light: rgba(255, 255, 255, 0.04);
+  --text: #d9e8ff;
+  --label: #89a6ff;
+  --accent: #7cfeff;
+}
+
+body[data-theme="aurora"] {
+  background: radial-gradient(circle at 20% 20%, rgba(124, 254, 255, 0.15), transparent 35%),
+    radial-gradient(circle at 80% 10%, rgba(204, 102, 255, 0.15), transparent 30%),
+    radial-gradient(circle at 50% 80%, rgba(255, 149, 128, 0.18), transparent 28%),
+    #0b1021;
+  color: var(--text);
+}
+
+body[data-theme="aurora"] .card,
+body[data-theme="aurora"] .toolbar,
+body[data-theme="aurora"] .footer {
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+body[data-theme="aurora"] .toolbar-controls select,
+body[data-theme="aurora"] .icon-button,
+body[data-theme="aurora"] .menu,
+body[data-theme="aurora"] .theme-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+body[data-theme="aurora"] a {
+  color: #9efcff;
+}
+
+body[data-theme="aurora"] .theme-preview {
+  background: linear-gradient(135deg, rgba(124, 254, 255, 0.3), rgba(204, 102, 255, 0.25));
+}

@@ -1,4 +1,5 @@
 const controlElements = Array.from(document.querySelectorAll('.toolbar select'));
+const themeSelect = document.getElementById('theme-select');
 
 function setControlsDisabled(disabled) {
   controlElements.forEach((el) => {
@@ -314,27 +315,69 @@ async function loadStatsWithRetry() {
 })();
 
 /* Theme handling */
-(function initTheme() {
-  const THEME_KEY = 'oxide_theme';
-  const body = document.body;
-  const select = document.getElementById('theme-select');
+(function initThemePicker() {
+  if (!window.themeManager) return;
 
-  function applyTheme(theme) {
-    const allowed = ['light', 'dark', 'monero'];
-    const t = allowed.includes(theme) ? theme : 'light';
-    body.setAttribute('data-theme', t);
-    if (select && select.value !== t) select.value = t;
-    try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
+  function renderOptions(list) {
+    if (!themeSelect) return;
+    themeSelect.innerHTML = '';
+    list.forEach((theme) => {
+      const opt = document.createElement('option');
+      opt.value = theme.id;
+      const label = theme.kind === 'plugin' ? `${theme.name} (plugin)` : theme.name;
+      opt.textContent = label;
+      themeSelect.appendChild(opt);
+    });
   }
 
-  const saved = (() => {
-    try { return localStorage.getItem(THEME_KEY); } catch (_) { return null; }
-  })();
-  applyTheme(saved || 'light');
-
-  if (select) {
-    select.addEventListener('change', () => applyTheme(select.value));
+  function syncSelect(activeId) {
+    if (!themeSelect) return;
+    if (activeId && themeSelect.value !== activeId) {
+      themeSelect.value = activeId;
+    }
   }
+
+  themeManager.ensureThemes().then((list) => {
+    renderOptions(list);
+    return themeManager.applySavedTheme();
+  }).then(() => {
+    syncSelect(themeManager.activeTheme || 'light');
+  });
+
+  if (themeSelect) {
+    themeSelect.addEventListener('change', () => {
+      themeManager.applyTheme(themeSelect.value);
+    });
+  }
+
+  themeManager.onChange((id) => syncSelect(id));
+})();
+
+(function initPluginsMenu() {
+  const button = document.getElementById('plugins-menu-button');
+  const menu = document.getElementById('plugins-menu');
+  if (!button || !menu) return;
+
+  function closeMenu() {
+    menu.classList.remove('open');
+    button.setAttribute('aria-expanded', 'false');
+  }
+
+  function toggleMenu(event) {
+    event.preventDefault();
+    const isOpen = menu.classList.toggle('open');
+    button.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  }
+
+  button.addEventListener('click', toggleMenu);
+
+  document.addEventListener('click', (event) => {
+    if (!menu.contains(event.target) && event.target !== button) {
+      closeMenu();
+    }
+  });
+
+  menu.addEventListener('click', () => closeMenu());
 })();
 
 function updateFooter(data) {

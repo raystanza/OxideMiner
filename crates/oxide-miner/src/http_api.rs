@@ -1,6 +1,7 @@
 // OxideMiner/crates/oxide-miner/src/http_api.rs
 
 use crate::stats::Stats;
+use crate::themes::ThemeCatalog;
 use http_body_util::Full;
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
@@ -20,6 +21,9 @@ use tokio::{fs, net::TcpListener};
 const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
 const DASHBOARD_CSS: &str = include_str!("../assets/dashboard.css");
 const DASHBOARD_JS: &str = include_str!("../assets/dashboard.js");
+const THEMES_HTML: &str = include_str!("../assets/themes.html");
+const THEMES_JS: &str = include_str!("../assets/themes.js");
+const THEME_MANAGER_JS: &str = include_str!("../assets/theme-manager.js");
 
 // Embedded image assets for the dashboard. Keeping the miner binary self-contained
 // avoids runtime dependencies on external files when the bundled dashboard is used.
@@ -48,6 +52,14 @@ fn embedded_asset(path: &str) -> Option<EmbeddedAsset> {
         }),
         "/dashboard.js" => Some(EmbeddedAsset {
             bytes: DASHBOARD_JS.as_bytes(),
+            content_type: "application/javascript",
+        }),
+        "/theme-manager.js" => Some(EmbeddedAsset {
+            bytes: THEME_MANAGER_JS.as_bytes(),
+            content_type: "application/javascript",
+        }),
+        "/themes.js" => Some(EmbeddedAsset {
+            bytes: THEMES_JS.as_bytes(),
             content_type: "application/javascript",
         }),
         "/img/github_link-monero_theme.png" => Some(EmbeddedAsset {
@@ -109,8 +121,14 @@ fn escape_label_value(value: &str) -> String {
         .replace('\n', "\\n")
 }
 
-pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<PathBuf>) {
+pub async fn run_http_api(
+    port: u16,
+    stats: Arc<Stats>,
+    dashboard_dir: Option<PathBuf>,
+    theme_dir: Option<PathBuf>,
+) {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let theme_catalog = Arc::new(ThemeCatalog::discover(theme_dir));
     let listener = match TcpListener::bind(addr).await {
         Ok(v) => v,
         Err(e) => {
@@ -131,11 +149,13 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
         let io = TokioIo::new(stream);
         let s = stats.clone();
         let dash_dir = dashboard_dir.clone();
+        let themes = theme_catalog.clone();
 
         tokio::spawn(async move {
             let svc = service_fn(move |req: Request<Incoming>| {
                 let s = s.clone();
                 let dash_dir = dash_dir.clone();
+                let themes = themes.clone();
 
                 async move {
                     match (req.method(), req.uri().path()) {
@@ -299,6 +319,79 @@ pub async fn run_http_api(port: u16, stats: Arc<Stats>, dashboard_dir: Option<Pa
                             );
                             Ok::<_, Infallible>(resp)
                         }
+                        (&Method::GET, "/api/plugins/themes") => {
+                            let payload = match serde_json::to_string(&themes.to_response()) {
+                                Ok(v) => v,
+                                Err(err) => {
+                                    tracing::error!("Failed to serialize themes: {err}");
+                                    return Ok::<_, Infallible>(not_found_response());
+                                }
+                            };
+                            let mut resp = Response::new(Full::new(Bytes::from(payload)));
+                            resp.headers_mut().insert(
+                                header::CONTENT_TYPE,
+                                header::HeaderValue::from_static("application/json"),
+                            );
+                            resp.headers_mut().insert(
+                                header::CACHE_CONTROL,
+                                header::HeaderValue::from_static("no-store"),
+                            );
+                            Ok::<_, Infallible>(resp)
+                        }
+                        (&Method::GET, "/plugins/themes") | (&Method::GET, "/plugins/themes/") => {
+                            let mut resp =
+                                Response::new(Full::new(Bytes::from_static(THEMES_HTML.as_bytes())));
+                            resp.headers_mut().insert(
+                                header::CONTENT_TYPE,
+                                header::HeaderValue::from_static("text/html"),
+                            );
+                            resp.headers_mut().insert(
+                                header::CACHE_CONTROL,
+                                header::HeaderValue::from_static("no-store"),
+                            );
+                            Ok::<_, Infallible>(resp)
+                        }
+                        (&Method::GET, path) if path.starts_with("/plugins/themes/") => {
+                            let remainder = path.trim_start_matches("/plugins/themes/");
+                            let mut parts = remainder.splitn(2, '/');
+                            let theme_id = parts.next().unwrap_or("");
+                            let rel_path = parts.next();
+
+                            if theme_id.is_empty() || rel_path.is_none() {
+                                return Ok::<_, Infallible>(not_found_response());
+                            }
+
+                            let rel = rel_path.unwrap();
+                            if let Some(asset_path) = themes.resolve_asset(theme_id, rel) {
+                                match fs::read(&asset_path).await {
+                                    Ok(contents) => {
+                                        let ct = infer_content_type(rel);
+                                        let mut resp =
+                                            Response::new(Full::new(Bytes::from(contents)));
+                                        resp.headers_mut().insert(
+                                            header::CONTENT_TYPE,
+                                            header::HeaderValue::from_static(ct),
+                                        );
+                                        resp.headers_mut().insert(
+                                            header::CACHE_CONTROL,
+                                            header::HeaderValue::from_static(
+                                                "public, max-age=3600, must-revalidate",
+                                            ),
+                                        );
+                                        resp.headers_mut().insert(
+                                            header::HeaderName::from_static("x-content-type-options"),
+                                            header::HeaderValue::from_static("nosniff"),
+                                        );
+                                        return Ok::<_, Infallible>(resp);
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!("Failed to read theme asset {:?}: {err}", asset_path);
+                                    }
+                                }
+                            }
+
+                            Ok::<_, Infallible>(not_found_response())
+                        }
                         (&Method::GET, path) => {
                             if let Some(dir) = &dash_dir {
                                 let requested: Cow<'_, str> = if path == "/" || path.is_empty() {
@@ -372,7 +465,7 @@ mod tests {
         stats.dev_accepted.store(1, Ordering::Relaxed);
         stats.hashes.store(100, Ordering::Relaxed);
 
-        let server = tokio::spawn(run_http_api(port, stats.clone(), None));
+        let server = tokio::spawn(run_http_api(port, stats.clone(), None, None));
         // Give the server a moment to start
         sleep(Duration::from_millis(50)).await;
 
@@ -426,6 +519,7 @@ mod tests {
             port,
             stats.clone(),
             Some(dir.path().to_path_buf()),
+            None,
         ));
         // Give the server a moment to start
         sleep(Duration::from_millis(50)).await;
@@ -461,7 +555,7 @@ mod tests {
         drop(listener);
 
         let stats = Arc::new(Stats::new("pool".into(), false, None));
-        let server = tokio::spawn(run_http_api(port, stats, None));
+        let server = tokio::spawn(run_http_api(port, stats, None, None));
         sleep(Duration::from_millis(50)).await;
 
         let client = Client::new();
@@ -476,6 +570,84 @@ mod tests {
         );
         let body = resp.bytes().await.unwrap();
         assert_eq!(body.len(), IMG_MONERO_LOGO_PNG.len());
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn themes_api_and_assets() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let stats = Arc::new(Stats::new("pool".into(), false, None));
+
+        let dir = tempfile::tempdir().unwrap();
+        let theme_dir = dir.path().join("blue");
+        std::fs::create_dir_all(&theme_dir).unwrap();
+        std::fs::write(theme_dir.join("theme.css"), "body{background:blue;}").unwrap();
+        std::fs::write(theme_dir.join("theme.js"), "console.log('hi')").unwrap();
+        std::fs::write(theme_dir.join("theme.html"), "<div>hello</div>").unwrap();
+        std::fs::write(theme_dir.join("preview.png"), [0u8; 4]).unwrap();
+        std::fs::write(
+            theme_dir.join("theme.json"),
+            r#"{
+            "id": "blue",
+            "name": "Blue",
+            "version": "1.0.0",
+            "entry_css": "theme.css",
+            "entry_js": "theme.js",
+            "entry_html": "theme.html"
+        }"#,
+        )
+        .unwrap();
+
+        let server = tokio::spawn(run_http_api(
+            port,
+            stats,
+            None,
+            Some(dir.path().to_path_buf()),
+        ));
+        sleep(Duration::from_millis(50)).await;
+
+        let client = Client::new();
+        let base = format!("http://127.0.0.1:{port}");
+        let resp = client
+            .get(format!("{}/api/plugins/themes", base))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+        let text = resp.text().await.unwrap();
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(body.as_array().unwrap().iter().any(|t| t["id"] == "blue"));
+
+        let page = client
+            .get(format!("{}/plugins/themes", base))
+            .send()
+            .await
+            .unwrap();
+        assert!(page.status().is_success());
+
+        let css = client
+            .get(format!("{}/plugins/themes/blue/theme.css", base))
+            .send()
+            .await
+            .unwrap();
+        assert!(css.status().is_success());
+        assert_eq!(
+            css.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/css")
+        );
+
+        let html = client
+            .get(format!("{}/plugins/themes/blue/theme.html", base))
+            .send()
+            .await
+            .unwrap();
+        assert!(html.status().is_success());
 
         server.abort();
     }

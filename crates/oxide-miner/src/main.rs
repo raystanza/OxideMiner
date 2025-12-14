@@ -5,6 +5,7 @@ mod http_api;
 mod miner;
 mod stats;
 mod util;
+mod themes;
 
 use anyhow::Result;
 use args::parse_with_config;

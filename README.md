@@ -299,6 +299,8 @@ Setting `--api-port` binds the HTTP server to `127.0.0.1:<PORT>`. You can revers
 
 - `/` (and `/index.html`): Embedded dashboard UI.
 - `/dashboard.css`, `/dashboard.js`, `/img/*`: Embedded static assets. Override via `--dashboard-dir` for local UI development.
+- `/plugins/themes`: Default dashboard Themes page (hamburger menu → Plugins → Themes).
+- `/api/plugins/themes`: JSON manifest of built-in and plugin themes stored under `plugins/themes/`.
 - `/api/stats`: JSON payload summarizing hashrate, total hashes, share counts, mining duration, system uptime (via `sysinfo`), pool metadata, and build information.
 - `/metrics`: Plain-text metrics for Prometheus and similar collectors.
 
@@ -323,6 +325,13 @@ build_timestamp <string>
 ```
 
 Use these to drive alerting or dashboards. All counters are updated atomically in `Stats` and reflect the same values shown in the web UI.
+
+### Dashboard themes & plugins
+
+- The default dashboard ships with Light, Dark, and Monero themes. Additional themes can be dropped into `plugins/themes/<theme_id>/`.
+- Each theme needs a `theme.json` manifest describing the entry CSS (and optional JS/HTML fragments). See [docs/themes.md](docs/themes.md) for the full manifest layout and authoring tips.
+- Access the management UI from the hamburger menu → **Plugins → Themes** or visit `http://127.0.0.1:<port>/plugins/themes` directly.
+- The `--dashboard-dir` flag continues to serve a completely custom dashboard; the theme plugin system only augments the bundled UI.
 
 ## Responsible usage
 

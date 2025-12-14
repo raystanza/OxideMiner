@@ -1,0 +1,12 @@
+{
+  "id": "aurora",
+  "name": "Aurora",
+  "version": "1.0.0",
+  "description": "A neon-inspired dashboard skin for the default UI.",
+  "author": "OxideMiner",
+  "license": "MIT",
+  "entry_css": "theme.css",
+  "entry_js": "theme.js",
+  "entry_html": "theme.html",
+  "preview_image": "preview.png"
+}
