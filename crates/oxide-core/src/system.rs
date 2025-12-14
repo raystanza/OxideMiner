@@ -6,6 +6,8 @@
 // - Heuristics for recommended thread count based on cores/L3/memory
 
 use crate::config::DEFAULT_BATCH_SIZE;
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 use sysinfo::System;
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -27,6 +29,11 @@ use windows_sys::Win32::{
     },
     System::{
         Memory::GetLargePageMinimum,
+        SystemInformation::{
+            CacheData, CacheInstruction, CacheUnified, GetLogicalProcessorInformationEx,
+            RelationCache, CACHE_RELATIONSHIP, GROUP_AFFINITY,
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+        },
         Threading::{GetCurrentProcess, OpenProcessToken},
     },
 };
@@ -51,11 +58,101 @@ impl CacheLevel {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
+pub struct L3Instance {
+    pub size_bytes: usize,
+    pub shared_logical_cpus: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheSource {
+    LinuxSysfs,
+    WindowsApi,
+    RawCpuid,
+    Unknown,
+}
+
+impl Default for CacheSource {
+    fn default() -> Self {
+        CacheSource::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct CacheHierarchy {
     pub l1_data: Option<CacheLevel>,
+    pub l1_instruction: Option<CacheLevel>,
     pub l2: Option<CacheLevel>,
     pub l3: Option<CacheLevel>,
+    pub l3_total_bytes: Option<usize>,
+    pub l3_instances: Vec<L3Instance>,
+    pub source: CacheSource,
+    pub warnings: Vec<String>,
+}
+
+impl CacheHierarchy {
+    pub fn l3_total(&self) -> Option<usize> {
+        self.l3_total_bytes
+            .or_else(|| self.l3.map(|lvl| lvl.size_bytes))
+    }
+
+    pub fn max_l3_instance_size(&self) -> Option<usize> {
+        self.l3_instances
+            .iter()
+            .map(|inst| inst.size_bytes)
+            .max()
+            .or_else(|| self.l3.map(|lvl| lvl.size_bytes))
+    }
+
+    pub fn l3_summary(&self) -> Option<String> {
+        let total = self.l3_total()?;
+        if self.l3_instances.is_empty() {
+            return Some(format!("{} (shared)", format_bytes(total)));
+        }
+
+        let mut counts: BTreeMap<usize, usize> = BTreeMap::new();
+        for inst in &self.l3_instances {
+            *counts.entry(inst.size_bytes).or_insert(0) += 1;
+        }
+
+        let mut parts = Vec::new();
+        for (size, count) in counts {
+            if count == 1 {
+                parts.push(format!("{}", format_bytes(size)));
+            } else {
+                parts.push(format!("{} x {}", count, format_bytes(size)));
+            }
+        }
+
+        if parts.len() == 1 {
+            Some(format!(
+                "{} (shared) = {} total",
+                parts[0],
+                format_bytes(total)
+            ))
+        } else {
+            Some(format!(
+                "{} (shared) = {} total",
+                parts.join(", "),
+                format_bytes(total)
+            ))
+        }
+    }
+
+    pub fn l3_instance_debug(&self) -> Vec<String> {
+        self.l3_instances
+            .iter()
+            .enumerate()
+            .map(|(idx, inst)| {
+                format!(
+                    "L3[{}]: {} shared by CPUs {}",
+                    idx,
+                    format_bytes(inst.size_bytes),
+                    format_cpu_list(&inst.shared_logical_cpus)
+                )
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -404,62 +501,570 @@ pub fn cpu_has_avx512f() -> bool {
 }
 
 pub fn cache_hierarchy() -> CacheHierarchy {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(h) = linux_cache_hierarchy(Path::new("/sys/devices/system/cpu")) {
+            return h;
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(h) = unsafe { windows_cache_hierarchy() } {
+            return h;
+        }
+    }
+
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        let cpuid = CpuId::new();
-        let mut info = CacheHierarchy::default();
-        if let Some(cparams) = cpuid.get_cache_parameters() {
-            for cache in cparams {
-                let size = cache.associativity()
-                    * cache.physical_line_partitions()
-                    * cache.coherency_line_size()
-                    * cache.sets();
-                if size == 0 {
-                    continue;
+        return cpuid_cache_hierarchy(CacheSource::RawCpuid);
+    }
+
+    #[allow(unreachable_code)]
+    CacheHierarchy::default()
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn cpuid_cache_hierarchy(source: CacheSource) -> CacheHierarchy {
+    let cpuid = CpuId::new();
+    let mut info = CacheHierarchy {
+        source,
+        ..CacheHierarchy::default()
+    };
+    if let Some(cparams) = cpuid.get_cache_parameters() {
+        for cache in cparams {
+            let size = cache.associativity()
+                * cache.physical_line_partitions()
+                * cache.coherency_line_size()
+                * cache.sets();
+            if size == 0 {
+                continue;
+            }
+            let level = CacheLevel {
+                size_bytes: size,
+                line_size: cache.coherency_line_size(),
+                shared_cores: cache.max_cores_for_cache().max(1),
+            };
+            match cache.level() {
+                1 if matches!(cache.cache_type(), CacheType::Data | CacheType::Unified) => {
+                    if info
+                        .l1_data
+                        .map(|existing| existing.size_bytes < level.size_bytes)
+                        .unwrap_or(true)
+                    {
+                        info.l1_data = Some(level);
+                    }
                 }
-                let level = CacheLevel {
-                    size_bytes: size,
-                    line_size: cache.coherency_line_size(),
-                    shared_cores: cache.max_cores_for_cache().max(1),
-                };
-                match cache.level() {
-                    1 if matches!(cache.cache_type(), CacheType::Data | CacheType::Unified) => {
-                        if info
-                            .l1_data
-                            .map(|existing| existing.size_bytes < level.size_bytes)
-                            .unwrap_or(true)
-                        {
-                            info.l1_data = Some(level);
-                        }
+                1 if matches!(cache.cache_type(), CacheType::Instruction) => {
+                    if info
+                        .l1_instruction
+                        .map(|existing| existing.size_bytes < level.size_bytes)
+                        .unwrap_or(true)
+                    {
+                        info.l1_instruction = Some(level);
                     }
-                    2 if matches!(cache.cache_type(), CacheType::Data | CacheType::Unified) => {
-                        if info
-                            .l2
-                            .map(|existing| existing.size_bytes < level.size_bytes)
-                            .unwrap_or(true)
-                        {
-                            info.l2 = Some(level);
-                        }
-                    }
-                    3 if matches!(cache.cache_type(), CacheType::Unified) => {
-                        if info
-                            .l3
-                            .map(|existing| existing.size_bytes < level.size_bytes)
-                            .unwrap_or(true)
-                        {
-                            info.l3 = Some(level);
-                        }
-                    }
-                    _ => {}
                 }
+                2 if matches!(cache.cache_type(), CacheType::Data | CacheType::Unified) => {
+                    if info
+                        .l2
+                        .map(|existing| existing.size_bytes < level.size_bytes)
+                        .unwrap_or(true)
+                    {
+                        info.l2 = Some(level);
+                    }
+                }
+                3 if matches!(cache.cache_type(), CacheType::Unified) => {
+                    let shared = cache.max_cores_for_cache().max(1);
+                    if info
+                        .l3
+                        .map(|existing| existing.size_bytes < level.size_bytes)
+                        .unwrap_or(true)
+                    {
+                        info.l3 = Some(level);
+                    }
+                    let cpus: Vec<usize> = (0..shared as usize).collect();
+                    info.l3_instances.push(L3Instance {
+                        size_bytes: size,
+                        shared_logical_cpus: cpus.clone(),
+                    });
+                }
+                _ => {}
             }
         }
-        info
     }
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-    {
-        CacheHierarchy::default()
+
+    if !info.l3_instances.is_empty() {
+        info.l3_total_bytes = Some(info.l3_instances.iter().map(|c| c.size_bytes).sum());
     }
+
+    info
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn cpuid_cache_hierarchy(_source: CacheSource) -> CacheHierarchy {
+    CacheHierarchy::default()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_cache_hierarchy(base: &Path) -> Option<CacheHierarchy> {
+    let mut warnings = Vec::new();
+    let cpu_dir = base.join("cpu");
+    let entries = std::fs::read_dir(&cpu_dir).ok()?;
+    let mut caches: HashMap<(u32, CacheKind, String), SysfsCacheEntry> = HashMap::new();
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.starts_with("cpu") {
+            continue;
+        }
+        let idx: usize = match name_str[3..].parse() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let cache_root = entry.path().join("cache");
+        let Ok(cache_dirs) = std::fs::read_dir(cache_root) else {
+            continue;
+        };
+
+        for cache_dir in cache_dirs.flatten() {
+            let path = cache_dir.path();
+            let level: u32 = match read_trimmed(path.join("level")).and_then(|s| s.parse().ok()) {
+                Some(v) => v,
+                None => continue,
+            };
+            let kind = match read_trimmed(path.join("type")).and_then(|s| CacheKind::from_str(&s)) {
+                Some(v) => v,
+                None => continue,
+            };
+            let size_bytes =
+                match read_trimmed(path.join("size")).and_then(|s| parse_size_bytes(&s)) {
+                    Some(v) => v,
+                    None => {
+                        warnings.push(format!(
+                            "cpu{}: unable to parse cache size for {:?}",
+                            idx, path
+                        ));
+                        continue;
+                    }
+                };
+            let shared_cpu_list = match read_trimmed(path.join("shared_cpu_list"))
+                .and_then(|s| parse_shared_cpu_list(&s))
+            {
+                Some(list) => list,
+                None => {
+                    warnings.push(format!(
+                        "cpu{}: missing shared_cpu_list for {:?}",
+                        idx, path
+                    ));
+                    continue;
+                }
+            };
+            let line_size = read_trimmed(path.join("coherency_line_size"))
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
+
+            let canonical = format_cpu_list(&shared_cpu_list);
+            let key = (level, kind, canonical);
+            let entry = SysfsCacheEntry {
+                level,
+                kind,
+                size_bytes,
+                line_size,
+                shared_cpu_list,
+            };
+
+            caches
+                .entry(key)
+                .and_modify(|existing| {
+                    if existing.size_bytes != entry.size_bytes {
+                        warnings.push(format!(
+                            "conflicting cache sizes for level {} {:?} between CPUs {} and {}",
+                            level,
+                            kind,
+                            format_cpu_list(&existing.shared_cpu_list),
+                            idx
+                        ));
+                    }
+                })
+                .or_insert(entry);
+        }
+    }
+
+    if caches.is_empty() {
+        return None;
+    }
+
+    let mut info = CacheHierarchy {
+        source: CacheSource::LinuxSysfs,
+        warnings,
+        ..CacheHierarchy::default()
+    };
+
+    for entry in caches.into_values() {
+        match (entry.level, entry.kind) {
+            (1, CacheKind::Data) | (1, CacheKind::Unified) => {
+                let level = CacheLevel {
+                    size_bytes: entry.size_bytes,
+                    line_size: entry.line_size,
+                    shared_cores: entry.shared_cpu_list.len().max(1),
+                };
+                if info
+                    .l1_data
+                    .map(|existing| existing.size_bytes < level.size_bytes)
+                    .unwrap_or(true)
+                {
+                    info.l1_data = Some(level);
+                }
+            }
+            (1, CacheKind::Instruction) => {
+                let level = CacheLevel {
+                    size_bytes: entry.size_bytes,
+                    line_size: entry.line_size,
+                    shared_cores: entry.shared_cpu_list.len().max(1),
+                };
+                if info
+                    .l1_instruction
+                    .map(|existing| existing.size_bytes < level.size_bytes)
+                    .unwrap_or(true)
+                {
+                    info.l1_instruction = Some(level);
+                }
+            }
+            (2, CacheKind::Data) | (2, CacheKind::Unified) => {
+                let level = CacheLevel {
+                    size_bytes: entry.size_bytes,
+                    line_size: entry.line_size,
+                    shared_cores: entry.shared_cpu_list.len().max(1),
+                };
+                if info
+                    .l2
+                    .map(|existing| existing.size_bytes < level.size_bytes)
+                    .unwrap_or(true)
+                {
+                    info.l2 = Some(level);
+                }
+            }
+            (3, CacheKind::Unified) => {
+                let level = CacheLevel {
+                    size_bytes: entry.size_bytes,
+                    line_size: entry.line_size,
+                    shared_cores: entry.shared_cpu_list.len().max(1),
+                };
+                if info
+                    .l3
+                    .map(|existing| existing.size_bytes < level.size_bytes)
+                    .unwrap_or(true)
+                {
+                    info.l3 = Some(level);
+                }
+                info.l3_instances.push(L3Instance {
+                    size_bytes: entry.size_bytes,
+                    shared_logical_cpus: entry.shared_cpu_list,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    if !info.l3_instances.is_empty() {
+        info.l3_total_bytes = Some(info.l3_instances.iter().map(|i| i.size_bytes).sum());
+        info.l3_instances
+            .iter_mut()
+            .for_each(|inst| inst.shared_logical_cpus.sort_unstable());
+    }
+
+    Some(info)
+}
+
+#[cfg(target_os = "windows")]
+#[allow(non_upper_case_globals)]
+unsafe fn windows_cache_hierarchy() -> Option<CacheHierarchy> {
+    let mut len: u32 = 0;
+    let mut res = GetLogicalProcessorInformationEx(RelationCache, std::ptr::null_mut(), &mut len);
+    if res != 0 {
+        return None;
+    }
+    let err = GetLastError();
+    if err != ERROR_INSUFFICIENT_BUFFER {
+        return None;
+    }
+
+    let mut buf = vec![0u8; len as usize];
+    res = GetLogicalProcessorInformationEx(
+        RelationCache,
+        buf.as_mut_ptr() as *mut SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+        &mut len,
+    );
+    if res == 0 {
+        return None;
+    }
+
+    let mut offset = 0usize;
+    let mut info = CacheHierarchy {
+        source: CacheSource::WindowsApi,
+        ..CacheHierarchy::default()
+    };
+    let mut l3_map: HashMap<(u8, usize, Vec<usize>), L3Instance> = HashMap::new();
+
+    while offset < len as usize {
+        let ptr = buf.as_ptr().add(offset) as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX;
+        let size = (*ptr).Size as usize;
+        if (*ptr).Relationship == RelationCache {
+            let cache: &CACHE_RELATIONSHIP = unsafe { &(*ptr).Anonymous.Cache };
+            let masks = cache_group_masks(cache, size);
+            let mut cpus: Vec<usize> = masks.iter().flat_map(affinity_mask_to_cpus).collect();
+            cpus.sort_unstable();
+            cpus.dedup();
+            let shared = cpus.len().max(1);
+            let level = CacheLevel {
+                size_bytes: cache.CacheSize as usize,
+                line_size: cache.LineSize as usize,
+                shared_cores: shared,
+            };
+            match cache.Level {
+                1 if matches!(cache.Type, CacheData | CacheUnified) => {
+                    if info
+                        .l1_data
+                        .map(|existing| existing.size_bytes < level.size_bytes)
+                        .unwrap_or(true)
+                    {
+                        info.l1_data = Some(level);
+                    }
+                }
+                1 if cache.Type == CacheInstruction => {
+                    if info
+                        .l1_instruction
+                        .map(|existing| existing.size_bytes < level.size_bytes)
+                        .unwrap_or(true)
+                    {
+                        info.l1_instruction = Some(level);
+                    }
+                }
+                2 if matches!(cache.Type, CacheData | CacheUnified) => {
+                    if info
+                        .l2
+                        .map(|existing| existing.size_bytes < level.size_bytes)
+                        .unwrap_or(true)
+                    {
+                        info.l2 = Some(level);
+                    }
+                }
+                3 if cache.Type == CacheUnified => {
+                    if info
+                        .l3
+                        .map(|existing| existing.size_bytes < level.size_bytes)
+                        .unwrap_or(true)
+                    {
+                        info.l3 = Some(level);
+                    }
+                    let key = (cache.Level, cache.CacheSize as usize, cpus.clone());
+                    l3_map
+                        .entry(key)
+                        .or_insert_with(|| L3Instance {
+                            size_bytes: cache.CacheSize as usize,
+                            shared_logical_cpus: cpus.clone(),
+                        });
+                }
+                _ => {}
+            }
+        }
+        offset += size.max(1);
+    }
+
+    if !l3_map.is_empty() {
+        info.l3_instances = l3_map.into_values().collect();
+        info.l3_instances
+            .iter_mut()
+            .for_each(|inst| inst.shared_logical_cpus.sort_unstable());
+        info.l3_total_bytes = Some(info.l3_instances.iter().map(|i| i.size_bytes).sum());
+    }
+
+    Some(info)
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum CacheKind {
+    Data,
+    Instruction,
+    Unified,
+    Other,
+}
+
+#[cfg(target_os = "linux")]
+impl CacheKind {
+    fn from_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "data" => Some(CacheKind::Data),
+            "instruction" => Some(CacheKind::Instruction),
+            "unified" => Some(CacheKind::Unified),
+            _ => Some(CacheKind::Other),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone)]
+struct SysfsCacheEntry {
+    level: u32,
+    kind: CacheKind,
+    size_bytes: usize,
+    line_size: usize,
+    shared_cpu_list: Vec<usize>,
+}
+
+#[cfg(target_os = "windows")]
+fn cache_group_masks(cache: &CACHE_RELATIONSHIP, record_size: usize) -> Vec<GROUP_AFFINITY> {
+    // CACHE_RELATIONSHIP is variable-length; GroupCount tells us how many GROUP_AFFINITY
+    // records follow. Clamp to what fits inside the current record to avoid overreads.
+    let requested = cache.GroupCount as usize;
+    let capacity = ((record_size.saturating_sub(mem::size_of::<CACHE_RELATIONSHIP>()))
+        / mem::size_of::<GROUP_AFFINITY>())
+        .saturating_add(1)
+        .max(1);
+    let len = requested.max(1).min(capacity);
+    unsafe { slice::from_raw_parts(cache.Anonymous.GroupMasks.as_ptr(), len).to_vec() }
+}
+
+#[cfg(target_os = "windows")]
+fn affinity_mask_to_cpus(mask: &GROUP_AFFINITY) -> Vec<usize> {
+    let mut cpus = Vec::new();
+    let mut bits = mask.Mask;
+    let mut idx = 0usize;
+    while bits != 0 {
+        if bits & 1 != 0 {
+            let cpu_id = (mask.Group as usize) * 64 + idx;
+            cpus.push(cpu_id);
+        }
+        bits >>= 1;
+        idx += 1;
+    }
+    cpus
+}
+
+#[allow(dead_code)]
+fn parse_size_bytes(spec: &str) -> Option<usize> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut split = trimmed.len();
+    for (idx, ch) in trimmed.chars().enumerate() {
+        if !ch.is_ascii_digit() {
+            split = idx;
+            break;
+        }
+    }
+
+    let (digits, suffix) = trimmed.split_at(split);
+    let value: usize = digits.parse().ok()?;
+    let multiplier = match suffix.trim().to_ascii_lowercase().as_str() {
+        "k" | "kb" => 1024usize,
+        "m" | "mb" => 1024usize * 1024,
+        "g" | "gb" => 1024usize * 1024 * 1024,
+        "" => 1usize,
+        other => {
+            if let Some(stripped) = other.strip_prefix('k') {
+                if stripped.is_empty() {
+                    1024
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+    };
+
+    value.checked_mul(multiplier)
+}
+
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+fn parse_shared_cpu_list(spec: &str) -> Option<Vec<usize>> {
+    let mut cpus = Vec::new();
+    for part in spec.trim().split(',') {
+        let token = part.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if let Some((start, end)) = token.split_once('-') {
+            let start: usize = start.parse().ok()?;
+            let end: usize = end.parse().ok()?;
+            if end < start {
+                return None;
+            }
+            cpus.extend(start..=end);
+        } else if let Ok(cpu) = token.parse::<usize>() {
+            cpus.push(cpu);
+        } else {
+            return None;
+        }
+    }
+    if cpus.is_empty() {
+        None
+    } else {
+        cpus.sort_unstable();
+        cpus.dedup();
+        Some(cpus)
+    }
+}
+
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+#[allow(dead_code)]
+fn read_trimmed(path: impl AsRef<Path>) -> Option<String> {
+    let data = std::fs::read_to_string(path).ok()?;
+    let trimmed = data.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn format_bytes(bytes: usize) -> String {
+    const KIB: usize = 1024;
+    const MIB: usize = 1024 * 1024;
+    if bytes % MIB == 0 {
+        format!("{} MiB", bytes / MIB)
+    } else if bytes % KIB == 0 {
+        format!("{} KiB", bytes / KIB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+fn format_cpu_list(cpus: &[usize]) -> String {
+    if cpus.is_empty() {
+        return "".into();
+    }
+    let mut ranges = Vec::new();
+    let mut start = cpus[0];
+    let mut prev = cpus[0];
+
+    for &cpu in cpus.iter().skip(1) {
+        if cpu == prev + 1 {
+            prev = cpu;
+            continue;
+        }
+        if start == prev {
+            ranges.push(format!("{}", start));
+        } else {
+            ranges.push(format!("{}-{}", start, prev));
+        }
+        start = cpu;
+        prev = cpu;
+    }
+
+    if start == prev {
+        ranges.push(format!("{}", start));
+    } else {
+        ranges.push(format!("{}-{}", start, prev));
+    }
+
+    ranges.join(",")
 }
 
 pub fn numa_nodes() -> Option<usize> {
@@ -535,7 +1140,7 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
 
     let physical = num_cpus::get_physical().max(1);
     let cache = cache_hierarchy();
-    let l3 = cache.l3.map(|lvl| lvl.size_bytes);
+    let l3 = cache.l3_total();
     let features = cpu_features();
     let numa = numa_nodes();
     let avail_bytes = sys.available_memory();
@@ -549,12 +1154,26 @@ pub fn autotune_snapshot() -> AutoTuneSnapshot {
 
     // L3 clamp (~2 MiB per thread)
     if let Some(l3b) = l3 {
-        let l3_per_thread = if l3b > 64 * 1024 * 1024 {
+        let instance_max = cache.max_l3_instance_size().unwrap_or(l3b);
+        let l3_per_thread = if instance_max > 64 * 1024 * 1024 {
             4 * 1024 * 1024
         } else {
             2 * 1024 * 1024
         };
-        let cache_threads = (l3b / l3_per_thread).max(1);
+        let cache_threads = if cache.l3_instances.is_empty() {
+            (l3b / l3_per_thread).max(1)
+        } else {
+            cache
+                .l3_instances
+                .iter()
+                .map(|inst| {
+                    let capacity = (inst.size_bytes / l3_per_thread).max(1);
+                    let cpu_cap = inst.shared_logical_cpus.len().max(1);
+                    capacity.min(cpu_cap)
+                })
+                .sum::<usize>()
+                .max(1)
+        };
         threads = threads.min(cache_threads);
     }
 
@@ -636,6 +1255,39 @@ mod tests {
     fn recommended_matches_snapshot() {
         let snap = autotune_snapshot();
         assert_eq!(recommended_thread_count(), snap.suggested_threads);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_linux_sysfs_cache_topology_fixture() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/sysfs_cpu_cache/ryzen_5950x_like");
+        let topo = linux_cache_hierarchy(&fixture).expect("linux sysfs cache");
+
+        assert_eq!(topo.source, CacheSource::LinuxSysfs);
+        assert_eq!(topo.l3_instances.len(), 2);
+        assert_eq!(topo.l3_total(), Some(64 * 1024 * 1024));
+
+        let sizes: Vec<usize> = topo.l3_instances.iter().map(|i| i.size_bytes).collect();
+        assert!(sizes.iter().all(|s| *s == 32 * 1024 * 1024));
+
+        let cpu_sets: Vec<String> = topo
+            .l3_instances
+            .iter()
+            .map(|i| format_cpu_list(&i.shared_logical_cpus))
+            .collect();
+        assert!(cpu_sets.contains(&"0-7".to_string()));
+        assert!(cpu_sets.contains(&"8-15".to_string()));
+    }
+
+    #[test]
+    fn parses_cpu_lists() {
+        assert_eq!(
+            parse_shared_cpu_list("0-3,8,10-11"),
+            Some(vec![0, 1, 2, 3, 8, 10, 11])
+        );
+        assert_eq!(parse_shared_cpu_list(""), None);
+        assert_eq!(parse_shared_cpu_list("4-2"), None);
     }
 
     #[test]
