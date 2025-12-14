@@ -166,8 +166,16 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
 
         // Cache/NUMA/memory context
         let l1_kib = snap.cache.l1_data.map(|lvl| (lvl.size_bytes as u64) / 1024);
+        let l1i_kib = snap
+            .cache
+            .l1_instruction
+            .map(|lvl| (lvl.size_bytes as u64) / 1024);
         let l2_kib = snap.cache.l2.map(|lvl| (lvl.size_bytes as u64) / 1024);
         let l3_mib = snap.l3_bytes.map(|b| (b as u64) / (1024 * 1024));
+        let l3_summary = snap
+            .cache
+            .l3_summary()
+            .unwrap_or_else(|| "unknown".to_string());
         let avail_mib = snap.available_bytes / (1024 * 1024);
         let numa_known = snap.numa_nodes.is_some();
         let numa_nodes = snap.numa_nodes.unwrap_or(1);
@@ -180,6 +188,7 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             // Structured fields (easy to grep/parse)
             cores = snap.physical_cores,
             l1_kib = l1_kib.unwrap_or(0),
+            l1i_kib = l1i_kib.unwrap_or(0),
             l2_kib = l2_kib.unwrap_or(0),
             l3_mib = l3_mib.unwrap_or(0),
             mem_avail_mib = avail_mib,
@@ -203,7 +212,7 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             • Threads: {} ({}). Auto chooses ~L3-capacity-per-thread to avoid cache thrash.\n\
             • Batch size: {} hashes ({}; recommended {}). Larger batches cut per-share overhead but can increase latency and memory pressure.\n\
             • CPU features: AES-NI={}, SSSE3={}, AVX2={}, AVX-512F={}, Prefetch={}.\n\
-            • Cache (per core unless noted): L1={} KiB, L2={} KiB, L3={} MiB (shared). RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
+            • Cache (per core unless noted): L1d={} KiB, L1i={} KiB, L2={} KiB, L3={}. RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
             • NUMA nodes: {} (known={}). On multi-socket systems, keeping threads/data local to a node reduces remote memory penalties.\n\
             • Large pages: {}.\n\
             • Yield between batches: {}.\n\
@@ -212,11 +221,15 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             n_workers, thread_mode,
             batch_size, batch_mode, snap.recommended_batch_size,
             features.aes_ni, features.ssse3, features.avx2, features.avx512f, features.prefetch_sse,
-            l1_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_mib.unwrap_or(0),
+            l1_kib.unwrap_or(0), l1i_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_summary,
             numa_nodes, numa_known,
             large_pages,
             yield_between_batches
         );
+
+        for detail in snap.cache.l3_instance_debug() {
+            tracing::debug!("cache_topology" = %detail);
+        }
 
         // Run the benchmark
 
@@ -309,8 +322,16 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
 
     // One-line summary that's easy to read in logs
     let l1_kib = snap.cache.l1_data.map(|lvl| (lvl.size_bytes as u64) / 1024);
+    let l1i_kib = snap
+        .cache
+        .l1_instruction
+        .map(|lvl| (lvl.size_bytes as u64) / 1024);
     let l2_kib = snap.cache.l2.map(|lvl| (lvl.size_bytes as u64) / 1024);
     let l3_mib = snap.l3_bytes.map(|b| (b as u64) / (1024 * 1024));
+    let l3_summary = snap
+        .cache
+        .l3_summary()
+        .unwrap_or_else(|| "unknown".to_string());
     let avail_mib = snap.available_bytes / (1024 * 1024);
     let aes = features.aes_ni;
     let ssse3 = features.ssse3;
@@ -351,6 +372,7 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         // Structured fields (easy to grep/parse)
         cores = snap.physical_cores,
         l1_kib = l1_kib.unwrap_or(0),
+        l1i_kib = l1i_kib.unwrap_or(0),
         l2_kib = l2_kib.unwrap_or(0),
         l3_mib = l3_mib.unwrap_or(0),
         mem_avail_mib = avail_mib,
@@ -373,7 +395,7 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         • Threads: {} ({}). Auto chooses ~L3-capacity-per-thread to avoid cache thrash.\n\
         • Batch size: {} hashes ({}; recommended {}). Larger batches cut per-share overhead but can increase latency and memory pressure.\n\
         • CPU features: AES-NI={}, SSSE3={}, AVX2={}, AVX-512F={}, Prefetch={}.\n\
-        • Cache (per core unless noted): L1={} KiB, L2={} KiB, L3={} MiB (shared). RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
+        • Cache (per core unless noted): L1d={} KiB, L1i={} KiB, L2={} KiB, L3={}. RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
         • NUMA nodes: {} (known={}). On multi-socket systems, keeping threads/data local to a node reduces remote memory penalties.\n\
         • Large pages: {}. Reduces TLB misses for the RandomX dataset and can improve throughput when the dataset fits.\n\
         • Yield between batches: {}. Keeps the miner friendly on shared machines.\n\
@@ -381,11 +403,15 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         n_workers, thread_mode,
         cfg.batch_size, batch_mode, snap.recommended_batch_size,
         aes, ssse3, avx2, avx512f, prefetch,
-        l1_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_mib.unwrap_or(0),
+        l1_kib.unwrap_or(0), l1i_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_summary,
         numa_nodes, numa_known,
         large_pages,
         cfg.yield_between_batches
     );
+
+    for detail in snap.cache.l3_instance_debug() {
+        tracing::debug!("cache_topology" = %detail);
+    }
 
     // Optional explicit breadcrumbs, as you have:
     if let Some(user_t) = cfg.threads {
