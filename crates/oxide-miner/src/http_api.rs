@@ -22,6 +22,7 @@ const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
 const DASHBOARD_CSS: &str = include_str!("../assets/dashboard.css");
 const DASHBOARD_JS: &str = include_str!("../assets/dashboard.js");
 const THEMES_HTML: &str = include_str!("../assets/themes.html");
+const THEMES_CSS: &str = include_str!("../assets/theme-manager.css");
 const THEMES_JS: &str = include_str!("../assets/themes.js");
 const THEME_MANAGER_JS: &str = include_str!("../assets/theme-manager.js");
 
@@ -33,6 +34,7 @@ const IMG_JSON_LINK_PNG: &[u8] = include_bytes!("../assets/img/json_link.png");
 const IMG_METRICS_LINK_PNG: &[u8] = include_bytes!("../assets/img/metrics_link.png");
 const IMG_MONERO_LOGO_PNG: &[u8] = include_bytes!("../assets/img/monero_logo.png");
 const IMG_OXIDEMINER_LOGO_PNG: &[u8] = include_bytes!("../assets/img/oxideminer_logo_dash_48.png");
+const IMG_FAVICON: &[u8] = include_bytes!("../assets/favicon.ico");
 
 #[derive(Clone, Copy)]
 struct EmbeddedAsset {
@@ -58,12 +60,20 @@ fn embedded_asset(path: &str) -> Option<EmbeddedAsset> {
             bytes: THEME_MANAGER_JS.as_bytes(),
             content_type: "application/javascript",
         }),
+        "/theme-manager.css" => Some(EmbeddedAsset {
+            bytes: THEMES_CSS.as_bytes(),
+            content_type: "text/css",
+        }),
         "/themes.js" => Some(EmbeddedAsset {
             bytes: THEMES_JS.as_bytes(),
             content_type: "application/javascript",
         }),
         "/img/github_link-monero_theme.png" => Some(EmbeddedAsset {
             bytes: IMG_GITHUB_LINK_MONERO_THEME_PNG,
+            content_type: "image/png",
+        }),
+        "/favicon.ico" => Some(EmbeddedAsset {
+            bytes: IMG_FAVICON,
             content_type: "image/png",
         }),
         "/img/json_link.png" => Some(EmbeddedAsset {

@@ -129,6 +129,19 @@ fn emit_rerun_for_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Compute the primary and optional secondary profile directories based on OUT_DIR.
+fn profile_dirs_from_out_dir() -> Option<(PathBuf, Option<PathBuf>)> {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").ok()?);
+    let profile_dir = out_dir.ancestors().nth(3)?.to_path_buf();
+    let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
+    let secondary = profile_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|target_root| target_root.join(&profile))
+        .filter(|p| p.exists());
+    Some((profile_dir, secondary))
+}
+
 /// Copy workspace-level `scripts/` into the active target profile dir.
 fn copy_scripts_to_target_profile() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -156,23 +169,16 @@ fn copy_scripts_to_target_profile() {
     // OUT_DIR looks like:
     //   target/[<triple>/]<profile>/build/<pkg-hash>/out
     // profile_dir is: target/[<triple>/]<profile>
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let profile_dir = out_dir
-        .ancestors()
-        .nth(3) // out -> <pkg-hash> -> build -> <profile>
-        .unwrap()
-        .to_path_buf();
+    let Some((profile_dir, dst_secondary)) = profile_dirs_from_out_dir() else {
+        println!("cargo:warning=Skipping scripts copy: could not resolve OUT_DIR/profile dir");
+        return;
+    };
 
     // Primary destination (always exists)
     let dst_primary = profile_dir.join("scripts");
 
     // Optional secondary destination if binaries are in target/<profile> (no triple)
     // When profile_dir includes a triple (target/<triple>/<profile>), also mirror to target/<profile> if it exists.
-    let dst_secondary = profile_dir
-        .parent() // target/<triple>
-        .and_then(|p| p.parent()) // target
-        .map(|target_root| target_root.join(env::var("PROFILE").unwrap()));
-
     // Copy to primary
     if let Err(e) = fs::remove_dir_all(&dst_primary) {
         // ignore missing dir; report other errors
@@ -211,6 +217,74 @@ fn copy_scripts_to_target_profile() {
     }
 
     // React to env changes too
+    println!("cargo:rerun-if-env-changed=CARGO_TARGET_DIR");
+    println!("cargo:rerun-if-env-changed=PROFILE");
+}
+
+/// Copy workspace-level `plugins/` into the active target profile dir.
+fn copy_plugins_to_target_profile() {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or(&manifest_dir)
+        .to_path_buf();
+
+    let plugins_src = workspace_root.join("plugins");
+    if !plugins_src.exists() {
+        println!(
+            "cargo:warning=plugins/ not found at {}",
+            plugins_src.display()
+        );
+        return;
+    }
+
+    if let Err(e) = emit_rerun_for_dir(&plugins_src) {
+        println!("cargo:warning=Failed to register rerun-if-changed for plugins/: {e}");
+    }
+
+    let Some((profile_dir, dst_secondary)) = profile_dirs_from_out_dir() else {
+        println!("cargo:warning=Skipping plugins copy: could not resolve OUT_DIR/profile dir");
+        return;
+    };
+
+    let dst_primary = profile_dir.join("plugins");
+
+    if let Err(e) = fs::remove_dir_all(&dst_primary) {
+        if e.kind() != io::ErrorKind::NotFound {
+            println!(
+                "cargo:warning=Failed to clean {}: {e}",
+                dst_primary.display()
+            );
+        }
+    }
+
+    match copy_dir_recursive(&plugins_src, &dst_primary) {
+        Ok(_) => println!("cargo:warning=Copied plugins/ -> {}", dst_primary.display()),
+        Err(e) => println!(
+            "cargo:warning=Failed to copy plugins/ -> {}: {e}",
+            dst_primary.display()
+        ),
+    }
+
+    if let Some(profile_no_triple) = dst_secondary {
+        if profile_no_triple.exists() {
+            let dst2 = profile_no_triple.join("plugins");
+            if let Err(e) = fs::remove_dir_all(&dst2) {
+                if e.kind() != io::ErrorKind::NotFound {
+                    println!("cargo:warning=Failed to clean {}: {e}", dst2.display());
+                }
+            }
+            match copy_dir_recursive(&plugins_src, &dst2) {
+                Ok(_) => println!("cargo:warning=Copied plugins/ -> {}", dst2.display()),
+                Err(e) => println!(
+                    "cargo:warning=Failed to copy plugins/ -> {}: {e}",
+                    dst2.display()
+                ),
+            }
+        }
+    }
+
     println!("cargo:rerun-if-env-changed=CARGO_TARGET_DIR");
     println!("cargo:rerun-if-env-changed=PROFILE");
 }
@@ -287,4 +361,5 @@ fn main() {
     println!("cargo:rustc-env=OXIDE_BUILD_TIMESTAMP={build_timestamp}");
 
     copy_scripts_to_target_profile();
+    copy_plugins_to_target_profile();
 }
