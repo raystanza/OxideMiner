@@ -32,7 +32,7 @@ impl DevFeeScheduler {
     /// cadence deterministic.
     pub fn should_donate(&mut self) -> bool {
         self.counter = self.counter.saturating_add(1);
-        (self.counter % self.interval) == 0
+        self.counter.is_multiple_of(self.interval)
     }
 
     /// Roll back the last counted job. Useful when a donation activation fails and we want to

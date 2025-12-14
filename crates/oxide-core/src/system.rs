@@ -7,6 +7,7 @@
 
 use crate::config::DEFAULT_BATCH_SIZE;
 use std::collections::{BTreeMap, HashMap};
+#[cfg(target_os = "linux")]
 use std::path::Path;
 use sysinfo::System;
 
@@ -64,18 +65,13 @@ pub struct L3Instance {
     pub shared_logical_cpus: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CacheSource {
     LinuxSysfs,
     WindowsApi,
     RawCpuid,
+    #[default]
     Unknown,
-}
-
-impl Default for CacheSource {
-    fn default() -> Self {
-        CacheSource::Unknown
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -118,7 +114,7 @@ impl CacheHierarchy {
         let mut parts = Vec::new();
         for (size, count) in counts {
             if count == 1 {
-                parts.push(format!("{}", format_bytes(size)));
+                parts.push(format_bytes(size).to_string());
             } else {
                 parts.push(format!("{} x {}", count, format_bytes(size)));
             }
@@ -194,7 +190,7 @@ impl HugePageStatus {
             return false;
         }
         if let Some(page) = self.page_size_bytes {
-            if bytes % page != 0 {
+            if !bytes.is_multiple_of(page) {
                 return false;
             }
         }
@@ -401,7 +397,7 @@ fn has_lock_memory_privilege() -> bool {
         }
 
         let word_size = mem::size_of::<usize>();
-        let len_words = ((required_len as usize) + (word_size - 1)) / word_size;
+        let len_words = (required_len as usize).div_ceil(word_size);
         let mut buffer = vec![0usize; len_words];
         if GetTokenInformation(
             token,
@@ -421,8 +417,7 @@ fn has_lock_memory_privilege() -> bool {
         let base = mem::size_of::<TOKEN_PRIVILEGES>();
         let extra = count
             .saturating_sub(1)
-            .checked_mul(mem::size_of::<LUID_AND_ATTRIBUTES>())
-            .unwrap_or(usize::MAX);
+            .saturating_mul(mem::size_of::<LUID_AND_ATTRIBUTES>());
         let needed = match base.checked_add(extra) {
             Some(n) => n,
             None => {
@@ -582,7 +577,7 @@ fn cpuid_cache_hierarchy(source: CacheSource) -> CacheHierarchy {
                     {
                         info.l3 = Some(level);
                     }
-                    let cpus: Vec<usize> = (0..shared as usize).collect();
+                    let cpus: Vec<usize> = (0..shared).collect();
                     info.l3_instances.push(L3Instance {
                         size_bytes: size,
                         shared_logical_cpus: cpus.clone(),
@@ -942,7 +937,7 @@ fn affinity_mask_to_cpus(mask: &GROUP_AFFINITY) -> Vec<usize> {
     cpus
 }
 
-#[allow(dead_code)]
+#[cfg(target_os = "linux")]
 fn parse_size_bytes(spec: &str) -> Option<usize> {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
@@ -980,7 +975,7 @@ fn parse_size_bytes(spec: &str) -> Option<usize> {
     value.checked_mul(multiplier)
 }
 
-#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_shared_cpu_list(spec: &str) -> Option<Vec<usize>> {
     let mut cpus = Vec::new();
     for part in spec.trim().split(',') {
@@ -1010,8 +1005,7 @@ fn parse_shared_cpu_list(spec: &str) -> Option<Vec<usize>> {
     }
 }
 
-#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
-#[allow(dead_code)]
+#[cfg(target_os = "linux")]
 fn read_trimmed(path: impl AsRef<Path>) -> Option<String> {
     let data = std::fs::read_to_string(path).ok()?;
     let trimmed = data.trim();
@@ -1025,9 +1019,9 @@ fn read_trimmed(path: impl AsRef<Path>) -> Option<String> {
 fn format_bytes(bytes: usize) -> String {
     const KIB: usize = 1024;
     const MIB: usize = 1024 * 1024;
-    if bytes % MIB == 0 {
+    if bytes.is_multiple_of(MIB) {
         format!("{} MiB", bytes / MIB)
-    } else if bytes % KIB == 0 {
+    } else if bytes.is_multiple_of(KIB) {
         format!("{} KiB", bytes / KIB)
     } else {
         format!("{} B", bytes)
