@@ -56,8 +56,12 @@ Optional fields:
 
 1. Place the theme under `plugins/themes/`.
 2. Start the miner with the default dashboard (`--api-port <port>` without `--dashboard-dir`).
-3. Open the hamburger menu → Plugins → Themes (or visit `/plugins/themes`).
-4. Apply a theme to load its CSS/JS/HTML immediately. Selection is stored in `localStorage` so reloads keep the chosen look.
+3. Open the hamburger menu -> Plugins -> Themes (or visit `/plugins/themes`).
+4. Apply a theme to load its CSS/JS/HTML immediately. Selection is stored in `localStorage` and mirrored to a cookie so reloads keep the chosen look.
 5. Use "Reset to default" to return to the built-in Light/Dark/Monero options.
 
 > The `--dashboard-dir` flag still serves an entirely custom dashboard. The plugin system only augments the bundled UI and will not replace a custom dashboard.
+
+## Theme HTML overrides
+
+When a theme includes `theme.html` (or declares `entry_html`), the default dashboard entrypoint (`/` or `/dashboard.html`) is served from that file whenever the theme is active. This only applies to the bundled dashboard; custom dashboards loaded via `--dashboard-dir` are never overridden.

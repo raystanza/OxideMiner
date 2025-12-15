@@ -1,5 +1,7 @@
 (function () {
   const STORAGE_KEY = 'oxideminer.theme_id';
+  const THEME_COOKIE = 'oxideminer_theme';
+  const COOKIE_MAX_AGE = 60 * 60 * 24 * 365; // 1 year
   let themes = [];
   let activeThemeId = null;
   let readyPromise = null;
@@ -54,6 +56,19 @@
       readyPromise = fetchThemes();
     }
     return readyPromise;
+  }
+
+  function writeThemeCookie(id) {
+    try {
+      if (id) {
+        const encoded = encodeURIComponent(id);
+        document.cookie = `${THEME_COOKIE}=${encoded}; Path=/; Max-Age=${COOKIE_MAX_AGE}; SameSite=Lax`;
+      } else {
+        document.cookie = `${THEME_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`;
+      }
+    } catch (_) {
+      // ignore
+    }
   }
 
   function removePluginAssets() {
@@ -111,6 +126,7 @@
       setBodyTheme(theme.id);
       activeThemeId = theme.id;
       if (persistSelection) persist(theme.id);
+      writeThemeCookie(theme.id);
       notify();
       return true;
     }
@@ -139,6 +155,7 @@
     setBodyTheme(theme.id);
     activeThemeId = theme.id;
     if (persistSelection) persist(theme.id);
+    writeThemeCookie(theme.id);
     notify();
     return true;
   }
@@ -158,6 +175,7 @@
     setBodyTheme('light');
     activeThemeId = 'light';
     clearPersisted();
+    writeThemeCookie(null);
     notify();
   }
 

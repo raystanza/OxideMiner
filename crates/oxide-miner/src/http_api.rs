@@ -1,7 +1,7 @@
 // OxideMiner/crates/oxide-miner/src/http_api.rs
 
 use crate::stats::Stats;
-use crate::themes::ThemeCatalog;
+use crate::themes::{is_valid_id, ThemeCatalog};
 use http_body_util::Full;
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
@@ -35,6 +35,8 @@ const IMG_METRICS_LINK_PNG: &[u8] = include_bytes!("../assets/img/metrics_link.p
 const IMG_MONERO_LOGO_PNG: &[u8] = include_bytes!("../assets/img/monero_logo.png");
 const IMG_OXIDEMINER_LOGO_PNG: &[u8] = include_bytes!("../assets/img/oxideminer_logo_dash_48.png");
 const IMG_FAVICON: &[u8] = include_bytes!("../assets/favicon.ico");
+
+const THEME_COOKIE_NAME: &str = "oxideminer_theme";
 
 #[derive(Clone, Copy)]
 struct EmbeddedAsset {
@@ -129,6 +131,69 @@ fn escape_label_value(value: &str) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
+}
+
+fn parse_theme_cookie(req: &Request<Incoming>) -> Option<String> {
+    let cookies = req.headers().get_all(header::COOKIE);
+    for val in cookies.iter() {
+        let raw = match val.to_str() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for part in raw.split(';') {
+            let mut kv = part.splitn(2, '=');
+            let name = kv.next()?.trim();
+            if name != THEME_COOKIE_NAME {
+                continue;
+            }
+            let value = kv.next().unwrap_or("").trim();
+            if value.is_empty() || value.len() > 64 {
+                return None;
+            }
+            if is_valid_id(value) {
+                return Some(value.to_string());
+            } else {
+                return None;
+            }
+        }
+    }
+    None
+}
+
+fn is_dashboard_entry(path: &str) -> bool {
+    matches!(path, "/" | "" | "/index.html" | "/dashboard.html")
+}
+
+async fn themed_dashboard_response(
+    req: &Request<Incoming>,
+    themes: &ThemeCatalog,
+) -> Option<Response<Full<Bytes>>> {
+    let theme_id = parse_theme_cookie(req)?;
+    let html_path = themes.resolve_html(&theme_id)?;
+    match fs::read(&html_path).await {
+        Ok(contents) => {
+            let mut resp = Response::new(Full::new(Bytes::from(contents)));
+            resp.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+            resp.headers_mut().insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-store"),
+            );
+            resp.headers_mut()
+                .insert(header::VARY, header::HeaderValue::from_static("Cookie"));
+            resp.headers_mut().insert(
+                header::HeaderName::from_static("x-content-type-options"),
+                header::HeaderValue::from_static("nosniff"),
+            );
+            Some(resp)
+        }
+        Err(err) => {
+            tracing::warn!("Failed to read theme HTML {:?}: {err}", html_path);
+            None
+        }
+    }
 }
 
 pub async fn run_http_api(
@@ -434,16 +499,26 @@ pub async fn run_http_api(
                                     }
                                     Err(_) => Ok::<_, Infallible>(not_found_response()),
                                 }
-                            } else if let Some(asset) = embedded_asset(path) {
-                                let mut resp =
-                                    Response::new(Full::new(Bytes::from_static(asset.bytes)));
-                                resp.headers_mut().insert(
-                                    header::CONTENT_TYPE,
-                                    header::HeaderValue::from_static(asset.content_type),
-                                );
-                                Ok::<_, Infallible>(resp)
                             } else {
-                                Ok::<_, Infallible>(not_found_response())
+                                if is_dashboard_entry(path) {
+                                    if let Some(resp) =
+                                        themed_dashboard_response(&req, &themes).await
+                                    {
+                                        return Ok::<_, Infallible>(resp);
+                                    }
+                                }
+
+                                if let Some(asset) = embedded_asset(path) {
+                                    let mut resp =
+                                        Response::new(Full::new(Bytes::from_static(asset.bytes)));
+                                    resp.headers_mut().insert(
+                                        header::CONTENT_TYPE,
+                                        header::HeaderValue::from_static(asset.content_type),
+                                    );
+                                    Ok::<_, Infallible>(resp)
+                                } else {
+                                    Ok::<_, Infallible>(not_found_response())
+                                }
                             }
                         }
                         _ => Ok::<_, Infallible>(not_found_response()),
@@ -586,6 +661,113 @@ mod tests {
         );
         let body = resp.bytes().await.unwrap();
         assert_eq!(body.len(), IMG_MONERO_LOGO_PNG.len());
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn theme_html_overrides_dashboard_when_cookie_set() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let stats = Arc::new(Stats::new("pool".into(), false, None));
+
+        let dir = tempfile::tempdir().unwrap();
+        let theme_dir = dir.path().join("blue");
+        std::fs::create_dir_all(&theme_dir).unwrap();
+        std::fs::write(theme_dir.join("theme.css"), "body{background:blue;}").unwrap();
+        std::fs::write(theme_dir.join("theme.html"), "<div>override-html</div>").unwrap();
+        std::fs::write(
+            theme_dir.join("theme.json"),
+            r#"{
+            "id": "blue",
+            "name": "Blue",
+            "version": "1.0.0",
+            "entry_css": "theme.css"
+        }"#,
+        )
+        .unwrap();
+
+        let server = tokio::spawn(run_http_api(
+            port,
+            stats,
+            None,
+            Some(dir.path().to_path_buf()),
+        ));
+        sleep(Duration::from_millis(50)).await;
+
+        let client = Client::new();
+        let base = format!("http://127.0.0.1:{port}/");
+        let themed = client
+            .get(&base)
+            .header(header::COOKIE, "oxideminer_theme=blue")
+            .send()
+            .await
+            .unwrap();
+        assert!(themed.status().is_success());
+        let body = themed.text().await.unwrap();
+        assert!(body.contains("override-html"));
+
+        let default_resp = client.get(&base).send().await.unwrap();
+        assert!(default_resp.status().is_success());
+        let default_body = default_resp.text().await.unwrap();
+        assert!(default_body.contains("OxideMiner Dashboard"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn dashboard_dir_not_overridden_by_theme_cookie() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let stats = Arc::new(Stats::new("pool".into(), false, None));
+
+        let dash_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dash_dir.path().join("dashboard.html"),
+            "<html><body>custom-dashboard</body></html>",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let theme_dir = dir.path().join("blue");
+        std::fs::create_dir_all(&theme_dir).unwrap();
+        std::fs::write(theme_dir.join("theme.css"), "body{background:blue;}").unwrap();
+        std::fs::write(theme_dir.join("theme.html"), "<div>override-html</div>").unwrap();
+        std::fs::write(
+            theme_dir.join("theme.json"),
+            r#"{
+            "id": "blue",
+            "name": "Blue",
+            "version": "1.0.0",
+            "entry_css": "theme.css"
+        }"#,
+        )
+        .unwrap();
+
+        let server = tokio::spawn(run_http_api(
+            port,
+            stats,
+            Some(dash_dir.path().to_path_buf()),
+            Some(dir.path().to_path_buf()),
+        ));
+        sleep(Duration::from_millis(50)).await;
+
+        let client = Client::new();
+        let url = format!("http://127.0.0.1:{}/", port);
+        let themed = client
+            .get(&url)
+            .header(header::COOKIE, "oxideminer_theme=blue")
+            .send()
+            .await
+            .unwrap();
+        assert!(themed.status().is_success());
+        let body = themed.text().await.unwrap();
+        assert!(body.contains("custom-dashboard"));
+        assert!(!body.contains("override-html"));
 
         server.abort();
     }

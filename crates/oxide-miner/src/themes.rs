@@ -74,7 +74,7 @@ struct ThemeManifest {
     pub preview_image: Option<String>,
 }
 
-fn is_valid_id(id: &str) -> bool {
+pub(crate) fn is_valid_id(id: &str) -> bool {
     let len = id.len();
     if !(1..=64).contains(&len) {
         return false;
@@ -124,6 +124,30 @@ fn detect_preview(dir: &Path) -> Option<String> {
         }
     }
     None
+}
+
+fn detect_entry_html(dir: &Path) -> Option<String> {
+    let fallback = "theme.html";
+    let candidate = dir.join(fallback);
+    if candidate.is_file() {
+        Some(fallback.to_string())
+    } else {
+        None
+    }
+}
+
+fn sanitize_entry_html(dir: &Path, html: &str) -> Option<String> {
+    match safe_relative_path(html) {
+        Some(safe) => {
+            let path = dir.join(&safe);
+            if path.is_file() {
+                Some(safe)
+            } else {
+                None
+            }
+        }
+        None => None,
+    }
 }
 
 fn read_manifest(dir: &Path) -> Option<ThemeEntry> {
@@ -191,24 +215,15 @@ fn read_manifest(dir: &Path) -> Option<ThemeEntry> {
         }
     }
 
-    let entry_html = if let Some(html) = manifest.entry_html {
-        match safe_relative_path(&html) {
-            Some(safe) => {
-                let path = dir.join(&safe);
-                if path.is_file() {
-                    Some(safe)
-                } else {
-                    tracing::warn!("Theme '{}' missing HTML file: {}", manifest.id, html);
-                    return None;
-                }
-            }
+    let entry_html = match manifest.entry_html {
+        Some(html) => match sanitize_entry_html(dir, &html) {
+            Some(safe) => Some(safe),
             None => {
-                tracing::warn!("Theme '{}' has unsafe HTML path: {}", manifest.id, html);
+                tracing::warn!("Theme '{}' has invalid HTML entry: {}", manifest.id, html);
                 return None;
             }
-        }
-    } else {
-        None
+        },
+        None => detect_entry_html(dir),
     };
 
     let preview_image = if let Some(manifest_preview) = manifest.preview_image {
@@ -401,6 +416,22 @@ impl ThemeCatalog {
         let full = root.join(&safe_rel);
         ensure_within_root(root, &full)
     }
+
+    pub fn resolve_html(&self, theme_id: &str) -> Option<PathBuf> {
+        let idx = *self.index.get(theme_id)?;
+        let entry = self.entries.get(idx)?;
+        let root = entry.root.as_ref()?;
+
+        let html_rel = entry
+            .entry_html
+            .as_ref()
+            .cloned()
+            .or_else(|| detect_entry_html(root))?;
+
+        let safe_rel = safe_relative_path(&html_rel)?;
+        let full = root.join(&safe_rel);
+        ensure_within_root(root, &full)
+    }
 }
 
 #[cfg(test)]
@@ -454,6 +485,27 @@ mod tests {
 
         let entry = read_manifest(&theme_dir).expect("manifest");
         assert_eq!(entry.preview_image.as_deref(), Some("preview.jpg"));
+    }
+
+    #[test]
+    fn detects_html_fallback() {
+        let dir = tempdir().unwrap();
+        let theme_dir = dir.path().join("blue");
+        fs::create_dir_all(&theme_dir).unwrap();
+        fs::write(theme_dir.join("theme.css"), "/* css */").unwrap();
+        fs::write(theme_dir.join("theme.html"), "<div>hi</div>").unwrap();
+        write_manifest(
+            &theme_dir,
+            r#"{
+            "id": "blue",
+            "name": "Blue",
+            "version": "1.0.0",
+            "entry_css": "theme.css"
+        }"#,
+        );
+
+        let entry = read_manifest(&theme_dir).expect("manifest");
+        assert_eq!(entry.entry_html.as_deref(), Some("theme.html"));
     }
 
     #[test]
