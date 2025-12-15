@@ -1,0 +1,11 @@
+{
+  "id": "retro",
+  "name": "Retro CRT",
+  "version": "1.0.0",
+  "description": "Green phosphor-inspired CRT dashboard skin.",
+  "author": "OxideMiner",
+  "license": "MIT",
+  "entry_css": "theme.css",
+  "entry_html": "theme.html",
+  "preview_image": "preview.png"
+}

@@ -1,0 +1,124 @@
+/* Web3 glassmorphism theme */
+body[data-theme="web3"] {
+  --web3-bg: #04050d;
+  --web3-surface: rgba(14, 18, 34, 0.78);
+  --web3-border: rgba(255, 255, 255, 0.08);
+  --web3-text: #eaf2ff;
+  --web3-muted: #8ea6ff;
+  --web3-accent: rgba(124, 93, 255, 1);
+  --web3-accent-2: #3ef0c7;
+  color: var(--web3-text);
+  background: radial-gradient(circle at 20% 20%, rgba(124, 93, 255, 0.12), transparent 36%),
+    radial-gradient(circle at 80% 10%, rgba(62, 240, 199, 0.16), transparent 38%),
+    linear-gradient(135deg, #050715, #080a1f 45%, #060712 100%);
+  font-family: "Inter", "Segoe UI", -apple-system, system-ui, sans-serif;
+  --shadow-dark: rgba(124, 93, 255, 0.4);
+  --shadow-light: rgba(124, 93, 255, 0.9);
+}
+
+.web3-shell {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.web3-gradient {
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(124, 93, 255, 0.18), rgba(62, 240, 199, 0.18));
+  filter: blur(60px);
+  opacity: 0.9;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.web3-grid {
+  position: fixed;
+  inset: 0;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 120px 120px, 120px 120px;
+  opacity: 0.3;
+  z-index: 0;
+  pointer-events: none;
+}
+
+body[data-theme="web3"] .container {
+  position: relative;
+  z-index: 1;
+}
+
+body[data-theme="web3"] .toolbar,
+body[data-theme="web3"] .footer,
+body[data-theme="web3"] .card,
+body[data-theme="web3"] .menu,
+body[data-theme="web3"] .theme-card {
+  background: var(--web3-surface);
+  border: 1px solid var(--web3-border);
+  box-shadow: 0 25px 70px rgba(0, 0, 0, 0.55);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+body[data-theme="web3"] .toolbar-controls select,
+body[data-theme="web3"] .icon-button,
+body[data-theme="web3"] .menu-item {
+  border: 1px solid var(--web3-border);
+  background: rgba(12, 14, 26, 0.8);
+  color: var(--web3-text);
+}
+
+body[data-theme="web3"] .brand h1,
+body[data-theme="web3"] .value,
+body[data-theme="web3"] .label {
+  color: var(--web3-text);
+}
+
+body[data-theme="web3"] .label {
+  color: var(--web3-muted);
+}
+
+body[data-theme="web3"] .badge {
+  padding: 5px 12px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(124, 93, 255, 0.2), rgba(62, 240, 199, 0.16));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  letter-spacing: 0.03em;
+  font-size: 12px;
+  color: var(--web3-text);
+}
+
+body[data-theme="web3"] .badge.subtle {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+body[data-theme="web3"] .loading-overlay {
+  background: rgba(4, 5, 13, 0.92);
+}
+
+body[data-theme="web3"] .loading-spinner {
+  border-color: rgba(124, 93, 255, 0.2);
+  border-top-color: var(--web3-accent-2);
+}
+
+body[data-theme="web3"] a {
+  color: #a9c5ff;
+}
+
+body[data-theme="web3"] .grid {
+  gap: 18px;
+}
+
+body[data-theme="web3"] .card {
+  border-radius: 18px;
+}
+
+body[data-theme="web3"] .theme-preview {
+  background: linear-gradient(135deg, rgba(124, 93, 255, 0.32), rgba(62, 240, 199, 0.22));
+}
+
+@media (max-width: 768px) {
+  body[data-theme="web3"] .toolbar {
+    gap: 10px;
+  }
+}

@@ -8,6 +8,7 @@
   let listeners = [];
   let cssNode = null;
   let scriptNodes = [];
+  let bootedFromEntryHtml = false;
 
   function builtInThemes() {
     return [
@@ -90,45 +91,51 @@
     }
   }
 
-  async function loadHtml(url) {
-    const mount = document.getElementById('theme-root');
-    if (!mount || !url) return;
-    try {
-      const resp = await fetch(url, { cache: 'no-store' });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const html = await resp.text();
-      mount.innerHTML = html;
-    } catch (err) {
-      console.warn('Failed to load theme HTML fragment', err);
-    }
-  }
-
   function loadScripts(urls) {
     urls.forEach((url) => {
+      const existing = document.querySelector(`script[data-plugin-theme-script="${url}"]`);
+      if (existing) {
+        scriptNodes.push(existing);
+        return;
+      }
       const script = document.createElement('script');
       script.src = url;
       script.defer = false;
       script.async = false;
+      script.dataset.pluginThemeScript = url;
       document.head.appendChild(script);
       scriptNodes.push(script);
     });
   }
 
-  async function applyTheme(themeId, { persistSelection = true } = {}) {
+    async function applyTheme(themeId, { persistSelection = true } = {}) {
     await ensureThemes();
     const theme = themes.find((t) => t.id === themeId);
     if (!theme) {
       return false;
     }
 
+    const hasEntryHtml = Boolean(theme.entry_html_url);
+    const isCurrentEntryTheme = document.body?.getAttribute('data-theme') === theme.id;
+    const onThemesPage = window.location.pathname.startsWith('/plugins/themes');
+
     if (theme.kind === 'built-in') {
-      removePluginAssets();
-      setBodyTheme(theme.id);
-      activeThemeId = theme.id;
-      if (persistSelection) persist(theme.id);
-      writeThemeCookie(theme.id);
-      notify();
-      return true;
+      // When leaving an entry HTML theme, reload to the default dashboard shell.
+      if (bootedFromEntryHtml && !isCurrentEntryTheme) {
+        persistSelection && persist(theme.id);
+        writeThemeCookie(theme.id);
+        window.location.assign('/');
+        return true;
+      } else {
+        removePluginAssets();
+        setBodyTheme(theme.id);
+        activeThemeId = theme.id;
+        if (persistSelection) persist(theme.id);
+        writeThemeCookie(theme.id);
+        bootedFromEntryHtml = false;
+        notify();
+        return true;
+      }
     }
 
     if (!theme.entry_css_url) {
@@ -136,6 +143,33 @@
       return false;
     }
 
+    // Themes with entry_html are treated as full-page entrypoint overrides; reload so only one dashboard mounts.
+    if (hasEntryHtml) {
+      activeThemeId = theme.id;
+      if (persistSelection) persist(theme.id);
+      writeThemeCookie(theme.id);
+      bootedFromEntryHtml = !onThemesPage;
+
+      if (!onThemesPage && !isCurrentEntryTheme) {
+        window.location.assign('/');
+        return true;
+      }
+
+      // On the themes page (or already on the entry theme), avoid reloads and skip HTML injection;
+      // load CSS for visual consistency but keep the page intact.
+      removePluginAssets();
+      cssNode = document.createElement('link');
+      cssNode.rel = 'stylesheet';
+      cssNode.href = theme.entry_css_url;
+      cssNode.id = 'plugin-theme-style';
+      document.head.appendChild(cssNode);
+
+      setBodyTheme(theme.id);
+      notify();
+      return true;
+    }
+
+    // CSS/JS only (no entry HTML): apply in-place.
     removePluginAssets();
 
     cssNode = document.createElement('link');
@@ -146,10 +180,6 @@
 
     if (Array.isArray(theme.entry_js_urls) && theme.entry_js_urls.length > 0) {
       loadScripts(theme.entry_js_urls);
-    }
-
-    if (theme.entry_html_url) {
-      await loadHtml(theme.entry_html_url);
     }
 
     setBodyTheme(theme.id);

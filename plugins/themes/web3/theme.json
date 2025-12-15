@@ -1,0 +1,11 @@
+{
+  "id": "web3",
+  "name": "Web3 Glass",
+  "version": "1.0.0",
+  "description": "Neon gradients with glass cards for the dashboard.",
+  "author": "OxideMiner",
+  "license": "MIT",
+  "entry_css": "theme.css",
+  "entry_html": "theme.html",
+  "preview_image": "preview.png"
+}

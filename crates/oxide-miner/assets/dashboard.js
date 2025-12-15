@@ -1,3 +1,10 @@
+(() => {
+if (window.__OXIDE_DASHBOARD_BOOTED__) {
+  console.warn('Oxide dashboard already initialized; skipping duplicate bootstrap.');
+  return;
+}
+window.__OXIDE_DASHBOARD_BOOTED__ = true;
+
 const controlElements = Array.from(document.querySelectorAll('.toolbar select'));
 const themeSelect = document.getElementById('theme-select');
 
@@ -406,3 +413,5 @@ function updateFooter(data) {
 
   el.innerHTML = parts.join(' <span class="sep">•</span> ');
 }
+
+})();

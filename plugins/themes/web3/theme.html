@@ -1,25 +1,16 @@
 <!DOCTYPE html>
-<!--
-  Aurora theme dashboard override (reference implementation).
-  Required pieces: <meta charset>, viewport, link to /dashboard.css, the loading overlay, #theme-root, metric cards with their IDs, footer, and the two script tags (/theme-manager.js, /dashboard.js).
-  Safe customization areas: wrapper/background elements, brand badges, and additional non-blocking layers.
--->
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OxideMiner Dashboard · Aurora</title>
+  <title>OxideMiner Dashboard · Web3 Glass</title>
   <link rel="stylesheet" href="/dashboard.css" />
-  <!-- Theme CSS is also injected by the plugin loader; this explicit link makes first paint match the theme when this HTML is served as dashboard.html. -->
-  <link rel="stylesheet" href="/plugins/themes/aurora/theme.css" />
+  <link rel="stylesheet" href="/plugins/themes/web3/theme.css" />
 </head>
-<body data-theme="aurora" class="aurora-shell">
-  <!-- Aurora-only background and glow layers; safe to modify. -->
-  <div class="aurora-backdrop" aria-hidden="true"></div>
-  <div class="aurora-orb orb-a" aria-hidden="true"></div>
-  <div class="aurora-orb orb-b" aria-hidden="true"></div>
+<body data-theme="web3" class="web3-shell">
+  <div class="web3-gradient" aria-hidden="true"></div>
+  <div class="web3-grid" aria-hidden="true"></div>
 
-  <!-- Required loading overlay (keep IDs/structure). -->
   <div id="loading-overlay" class="loading-overlay" role="status" aria-live="polite" aria-busy="true">
     <div class="loading-content">
       <div class="loading-spinner" aria-hidden="true"></div>
@@ -34,7 +25,7 @@
         <img src="/img/oxideminer_logo_dash_48.png" width="48" height="48" alt="OxideMiner Dashboard Logo" />
         <div class="brand-text">
           <h1>OxideMiner Dashboard</h1>
-          <span class="badge">Aurora theme</span>
+          <span class="badge">Web3 Glass</span>
         </div>
       </div>
 
@@ -68,7 +59,6 @@
       </div>
     </header>
 
-    <!-- Optional hook for theme-provided fragments; safe for theme JS to render into. -->
     <div id="theme-root" class="theme-root" aria-live="polite"></div>
 
     <div class="grid">
@@ -114,7 +104,7 @@
       <div class="footer-grid">
         <div class="footer-brand">
           <strong>OxideMiner</strong>
-          <span class="badge subtle">Bundled dashboard</span>
+          <span class="badge subtle">Glass UI</span>
           <span id="build-details"></span>
         </div>
 
@@ -129,7 +119,6 @@
     </footer>
   </div>
 
-  <!-- Required scripts for the dashboard app. Keep these untouched. -->
   <script src="/theme-manager.js"></script>
   <script src="/dashboard.js"></script>
 </body>
