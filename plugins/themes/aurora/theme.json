@@ -2,7 +2,7 @@
   "id": "aurora",
   "name": "Aurora",
   "version": "1.0.0",
-  "description": "A neon-inspired dashboard skin for the default UI.",
+  "description": "A fun and vibrant theme with colorful gradients and dynamic effects. Use for reference",
   "author": "OxideMiner",
   "license": "MIT",
   "entry_css": "theme.css",
