@@ -12,8 +12,8 @@ body[data-theme="retro"] {
     var(--retro-bg);
   font-family: "IBM Plex Mono", "Cascadia Code", "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace;
   letter-spacing: 0.01em;
-  --shadow-dark: rgba(5, 12, 6, 0.92);
-  --shadow-light: rgba(132, 255, 174, 0.35);
+  --shadow-dark: rgba(132, 255, 174, 0.1);
+  --shadow-light: rgba(132, 255, 174, 0.3);
 }
 
 .retro-shell {

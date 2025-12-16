@@ -12,8 +12,8 @@ body[data-theme="web3"] {
     radial-gradient(circle at 80% 10%, rgba(62, 240, 199, 0.16), transparent 38%),
     linear-gradient(135deg, #050715, #080a1f 45%, #060712 100%);
   font-family: "Inter", "Segoe UI", -apple-system, system-ui, sans-serif;
-  --shadow-dark: rgba(124, 93, 255, 0.4);
-  --shadow-light: rgba(124, 93, 255, 0.9);
+  --shadow-dark: rgba(14, 18, 34, 0.78);
+  --shadow-light: rgba(124, 93, 255, 0.5);
 }
 
 .web3-shell {
