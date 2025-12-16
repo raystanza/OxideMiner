@@ -1,0 +1,117 @@
+/* Retro CRT aesthetic */
+body[data-theme="retro"] {
+  --retro-bg: #050805;
+  --retro-surface: rgba(5, 12, 6, 0.92);
+  --retro-border: rgba(132, 255, 174, 0.35);
+  --retro-text: #9cffad;
+  --retro-muted: #6bbf7e;
+  --retro-accent: #b7ff9c;
+  color: var(--retro-text);
+  background: radial-gradient(circle at 20% 20%, rgba(156, 255, 173, 0.08), transparent 40%),
+    radial-gradient(circle at 80% 0%, rgba(124, 255, 183, 0.1), transparent 40%),
+    var(--retro-bg);
+  font-family: "IBM Plex Mono", "Cascadia Code", "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace;
+  letter-spacing: 0.01em;
+  --shadow-dark: rgba(132, 255, 174, 0.1);
+  --shadow-light: rgba(132, 255, 174, 0.3);
+}
+
+.retro-shell {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.crt-overlay {
+  position: fixed;
+  inset: 0;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.02) 50%, transparent 50%),
+    repeating-linear-gradient(0deg, rgba(156, 255, 173, 0.08), rgba(156, 255, 173, 0.08) 1px, transparent 1px, transparent 3px);
+  background-size: 100% 2px, 100% 3px;
+  mix-blend-mode: screen;
+  pointer-events: none;
+  opacity: 0.55;
+  z-index: 0;
+}
+
+body[data-theme="retro"] .container {
+  position: relative;
+  z-index: 1;
+}
+
+body[data-theme="retro"] .toolbar{
+  background: var(--retro-surface);
+  box-shadow: 9px 9px 16px var(--shadow-dark), -9px -9px 16px var(--shadow-light);
+  border-radius: 12px;
+  padding: 10px 10px;
+}
+
+body[data-theme="retro"] .footer,
+body[data-theme="retro"] .card,
+body[data-theme="retro"] .menu,
+body[data-theme="retro"] .theme-card {
+  background: var(--retro-surface);
+  border: 1px solid var(--retro-border);
+  box-shadow: 0 0 20px rgba(132, 255, 174, 0.15), inset 0 0 18px rgba(0, 0, 0, 0.65);
+}
+
+body[data-theme="retro"] .toolbar-controls select,
+body[data-theme="retro"] .icon-button,
+body[data-theme="retro"] .menu-item {
+  border: 1px solid var(--retro-border);
+  background: rgba(9, 16, 9, 0.85);
+  color: var(--retro-text);
+}
+
+body[data-theme="retro"] .brand h1,
+body[data-theme="retro"] .value,
+body[data-theme="retro"] .label {
+  color: var(--retro-text);
+}
+
+body[data-theme="retro"] .label {
+  color: var(--retro-muted);
+}
+
+body[data-theme="retro"] .badge {
+  padding: 4px 10px;
+  border: 1px solid var(--retro-border);
+  border-radius: 6px;
+  background: rgba(9, 16, 9, 0.75);
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+body[data-theme="retro"] .badge.subtle {
+  opacity: 0.8;
+}
+
+body[data-theme="retro"] .loading-overlay {
+  background: rgba(5, 8, 5, 0.9);
+}
+
+body[data-theme="retro"] .loading-spinner {
+  border-color: rgba(156, 255, 173, 0.2);
+  border-top-color: var(--retro-accent);
+}
+
+body[data-theme="retro"] a {
+  color: var(--retro-accent);
+  text-shadow: 0 0 4px rgba(132, 255, 174, 0.4);
+}
+
+body[data-theme="retro"] .grid {
+  gap: 14px;
+}
+
+body[data-theme="retro"] .card {
+  border-radius: 10px;
+}
+
+@media (max-width: 768px) {
+  body[data-theme="retro"] .toolbar {
+    gap: 8px;
+  }
+}

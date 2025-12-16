@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OxideMiner Dashboard</title>
+  <link rel="stylesheet" href="/dashboard.css" />
+  <link rel="stylesheet" href="/plugins/themes/retro/theme.css" />
+</head>
+<body data-theme="retro" class="retro-shell">
+  <div class="crt-overlay" aria-hidden="true"></div>
+  <div id="loading-overlay" class="loading-overlay" role="status" aria-live="polite" aria-busy="true">
+    <div class="loading-content">
+      <div class="loading-spinner" aria-hidden="true"></div>
+      <p id="loading-message">Loading miner stats...</p>
+      <p id="loading-error" class="loading-error" role="alert" aria-live="assertive"></p>
+    </div>
+  </div>
+
+  <div class="container">
+    <header class="toolbar">
+      <div class="brand">
+        <img src="/img/oxideminer_logo_dash_48.png" width="48" height="48" alt="OxideMiner Dashboard Logo" />
+        <div class="brand-text">
+          <h1>OxideMiner Dashboard</h1>
+          <span class="badge">Retro CRT</span>
+        </div>
+      </div>
+
+      <div class="toolbar-controls">
+        <label class="theme-picker">
+          <span>Theme</span>
+          <select id="theme-select" aria-label="Theme"></select>
+        </label>
+
+        <label class="theme-picker">
+          <span>Refresh</span>
+          <select id="polling-select" aria-label="Refresh interval">
+            <option value="1000">1s</option>
+            <option value="5000">5s</option>
+            <option value="10000">10s</option>
+            <option value="30000">30s</option>
+            <option value="60000">60s</option>
+          </select>
+        </label>
+
+        <div class="menu-wrapper">
+          <button class="icon-button" id="plugins-menu-button" aria-haspopup="true" aria-expanded="false" aria-controls="plugins-menu" title="Plugins">
+            <span class="sr-only">Plugins menu</span>
+            &#9776;
+          </button>
+          <div class="menu" id="plugins-menu" role="menu">
+            <div class="menu-title" aria-hidden="true">Plugins</div>
+            <a class="menu-item" role="menuitem" href="/plugins/themes">Themes</a>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div id="theme-root" class="theme-root" aria-live="polite"></div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="label">Hashrate (Avg / Inst)</div>
+        <div class="value" id="hashrate">0 H/s / 0 H/s</div>
+      </div>
+      <div class="card">
+        <div class="label">Shares Accepted / Rejected</div>
+        <div class="value" id="shares">0 / 0</div>
+      </div>
+      <div class="card">
+        <div class="label">Hashes Total</div>
+        <div class="value" id="hashes">0</div>
+      </div>
+      <div class="card">
+        <div class="label">Mining Time</div>
+        <div class="value" id="mining_time">-</div>
+      </div>
+      <div class="card">
+        <div class="label">Dev Shares Accepted / Rejected</div>
+        <div class="value" id="dev_shares">0 / 0</div>
+      </div>
+      <div class="card">
+        <div class="label">Connected</div>
+        <div class="value" id="connected">-</div>
+      </div>
+      <div class="card">
+        <div class="label">Pool</div>
+        <div class="value" id="pool">-</div>
+      </div>
+      <div class="card">
+        <div class="label">TLS</div>
+        <div class="value" id="tls">-</div>
+      </div>
+      <div class="card">
+        <div class="label">System Uptime</div>
+        <div class="value" id="system_uptime">-</div>
+      </div>
+    </div>
+
+    <footer class="footer" role="contentinfo">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <strong>OxideMiner</strong>
+          <span class="badge subtle">Retro CRT</span>
+          <span id="build-details"></span>
+        </div>
+
+        <nav class="footer-links" aria-label="Project links">
+          <a href="https://github.com/raystanza/OxideMiner" target="_blank" rel="noopener noreferrer"><img src="/img/github_link-monero_theme.png" width="24" height="24" alt="GitHub Logo" /></a>
+          <a href="https://github.com/raystanza" target="_blank" rel="noopener noreferrer"><img src="https://avatars.githubusercontent.com/u/51805268?v=4" width="24" height="24" alt="raystanza GitHub profile image" /></a>
+          <a href="/metrics"><img src="/img/metrics_link.png" width="24" height="24" alt="Metrics" /></a>
+          <a href="/api/stats"><img src="/img/json_link.png" width="24" height="24" alt="JSON API" /></a>
+          <a href="https://www.getmonero.org/" target="_blank" rel="noopener noreferrer"><img src="/img/monero_logo.png" width="24" height="24" alt="Monero Logo" /></a>
+        </nav>
+      </div>
+    </footer>
+  </div>
+
+  <script src="/theme-manager.js"></script>
+  <script src="/dashboard.js"></script>
+</body>
+</html>

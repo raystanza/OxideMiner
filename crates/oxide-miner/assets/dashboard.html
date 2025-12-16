@@ -24,11 +24,7 @@
             <div class="toolbar-controls">
                 <label class="theme-picker">
                     <span>Theme</span>
-                    <select id="theme-select" aria-label="Theme">
-                        <option value="light">Light</option>
-                        <option value="dark">Dark</option>
-                        <option value="monero">Monero</option>
-                    </select>
+                    <select id="theme-select" aria-label="Theme"></select>
                 </label>
 
                 <label class="theme-picker">
@@ -41,8 +37,21 @@
                         <option value="60000">60s</option>
                     </select>
                 </label>
+
+                <div class="menu-wrapper">
+                    <button class="icon-button" id="plugins-menu-button" aria-haspopup="true" aria-expanded="false" aria-controls="plugins-menu" title="Plugins">
+                        <span class="sr-only">Plugins menu</span>
+                        &#9776;
+                    </button>
+                    <div class="menu" id="plugins-menu" role="menu">
+                        <div class="menu-title" aria-hidden="true">Plugins</div>
+                        <a class="menu-item" role="menuitem" href="/plugins/themes">Themes</a>
+                    </div>
+                </div>
             </div>
         </header>
+
+        <div id="theme-root" class="theme-root" aria-live="polite"></div>
 
         <div class="grid">
             <div class="card">
@@ -100,6 +109,7 @@
             </div>
         </footer>
     </div>
+    <script src="/theme-manager.js"></script>
     <script src="/dashboard.js"></script>
 </body>
 </html>

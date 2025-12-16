@@ -4,6 +4,7 @@ mod args;
 mod http_api;
 mod miner;
 mod stats;
+mod themes;
 mod util;
 
 use anyhow::Result;

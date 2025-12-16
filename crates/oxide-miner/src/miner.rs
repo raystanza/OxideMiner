@@ -462,7 +462,7 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         let s = stats.clone();
         let dir = dashboard_dir.clone();
         tokio::spawn(async move {
-            run_http_api(port, s, dir).await;
+            run_http_api(port, s, dir, None).await;
         });
     }
 

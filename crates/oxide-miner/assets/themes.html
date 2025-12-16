@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OxideMiner Themes</title>
+    <link rel="stylesheet" href="/dashboard.css" />
+    <link rel="stylesheet" href="/theme-manager.css" />
+</head>
+<body data-theme="light">
+    <div class="container">
+        <header class="toolbar">
+            <div class="brand">
+                <img src="/img/oxideminer_logo_dash_48.png" width="48" height="48" alt="OxideMiner Dashboard Logo" />
+                <h1>Dashboard Themes</h1>
+            </div>
+            <div class="toolbar-controls">
+                <div class="menu-wrapper">
+                    <button class="icon-button" id="plugins-menu-button" aria-haspopup="true" aria-expanded="false" aria-controls="plugins-menu" title="Back">
+                        <span class="sr-only">Back to dashboard</span>
+                        &#8592;
+                    </button>
+                    <div class="menu" id="plugins-menu" role="menu">
+                        <a class="menu-item" role="menuitem" href="/">Dashboard</a>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div id="theme-root" class="theme-root" aria-live="polite"></div>
+
+        <section aria-label="Installed themes">
+            <div class="theme-actions">
+                <button id="reset-theme" class="secondary" type="button">Reset to default</button>
+            </div>
+            <div id="themes-list" class="theme-list" aria-live="polite"></div>
+        </section>
+    </div>
+    <script src="/theme-manager.js"></script>
+    <script src="/themes.js"></script>
+</body>
+</html>
