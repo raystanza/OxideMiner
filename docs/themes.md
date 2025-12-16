@@ -2,6 +2,8 @@
 
 OxideMiner can load dashboard-only themes from the repository without changing the miner binary. Themes live under `plugins/themes/<id>/` and are picked up at startup when the bundled dashboard is in use.
 
+> Note: Because of 'quirks' your custom CSS needs to include a value for '--shadow-dark' and '--shadow-light'
+
 ## Directory layout
 
 ```bash

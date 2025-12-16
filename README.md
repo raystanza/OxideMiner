@@ -24,12 +24,16 @@ We ship a **command-line miner** with automatic CPU tuning, an **optional embedd
 
 - [Highlights](#highlights)
 - [Quick start](#quick-start)
-  - [Super-Quick start](Super-Quick-start)
+  - [Super-Quick start](#super-quick-start)
+  - [Build from source](#build-from-source)
   - [Prerequisites](#prerequisites)
   - [Build and install](#build-and-install)
   - [First run](#first-run)
 - [Downloading and Verifying Releases](#downloading-and-verifying-releases)
 - [Configuration](#configuration)
+  - [Huge / Large Pages](#huge--large-pages)
+    - [Windows](#windows)
+    - [Linux](#linux-debian--ubuntu)
   - [Command-line flags](#command-line-flags)
   - [Sample `config.toml`](#sample-configtoml)
   - [Configuration warnings](#configuration-warnings)
@@ -68,7 +72,8 @@ We ship a **command-line miner** with automatic CPU tuning, an **optional embedd
 
 - 📊 **Built-in dashboard (with themes!):** A modern, static web UI (HTML/CSS/JS fully embedded in the binary) shows hashrate, shares, uptime, connection state, and build metadata.
 
-![Screenshot](oxideminer_themes_screenshot.png)
+![Screenshot1](oxideminer_themes_screenshot.png)
+![Screenshot2](oxideminer_themes_screenshot_2.png)
 
 ## Quick start
 
@@ -82,6 +87,8 @@ Download a pre-built binary from the [Relases](https://github.com/raystanza/Oxid
 _By default OxideMiner will look for a 'config.toml' file in the same directory as the binary, but you can supply the '--config \<PATH_to_CONFIG.TOML>' argument._
 
 >[CLI Screenshot](oxideminer_cli_screenshot.png)
+
+## Build from source
 
 ### Prerequisites
 
@@ -209,6 +216,34 @@ Only run the miner when both the checksum and signature verifications succeed. T
 malicious mirrors and supply-chain attacks.
 
 ## Configuration
+
+### Huge / Large pages
+
+You can find auditable scripts for both Debian / Ubuntu Linux (Bash) and Windows 10/11 (PowerShell) in the 'scripts/...' folder.
+It is recommended that you enable Huge / Large pages support for your OS and you should find a significant hashrate performance boost.
+
+#### Windows
+
+From the 'scripts/windows' directory, run the following:
+
+```powershell
+.\Enable-LargePages.ps1
+```
+
+> Note: You should run the PowerShell script as an Administrator.  
+> After running, reboot for changes to take effect.
+
+#### Linux (Debian / Ubuntu)
+
+From the 'scripts/linux' directory, run the following:
+
+```bash
+chmod +x enable_hugepages.sh
+./enable_hugepages.sh
+```
+
+> Note: You may need 'sudo' privileges for the script to run.  
+> After running, log out and back in for changes to take effect.
 
 ### Command-line flags
 
@@ -351,10 +386,12 @@ Rust crates are separated into logical domains (`oxide-core` for the engine, `ox
 
 ```bash
 crates/
-  oxide-core/      # Mining engine, stratum client, benchmark logic
-  oxide-miner/     # CLI binary, HTTP API, configuration parsing, stats
+  oxide-core/        # Mining engine, stratum client, benchmark logic
+  oxide-miner/       # CLI binary, HTTP API, configuration parsing, stats
 config.toml.example  # Reference configuration
 scripts/             # Huge/large page setup helpers for Linux & Windows
+plugins/
+  themes/            # Built-in themes and pluggable additions.
 ```
 
 ### Building & testing

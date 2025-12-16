@@ -52,6 +52,7 @@ body[data-theme="web3"] .toolbar {
   background: var(--web3-surface);
   box-shadow: 9px 9px 16px var(--shadow-dark), -9px -9px 16px var(--shadow-light);
   border-radius: 12px;
+  padding: 10px 10px;
 }
 
 body[data-theme="web3"] .footer,
