@@ -3,6 +3,7 @@ body[data-theme="aurora"] {
   --card: #11182e;
   --shadow-dark: rgba(0, 0, 0, 0.6);
   --shadow-light: rgba(255, 255, 255, 0.04);
+  --border: rgba(137, 166, 255, 0.4);
   --text: #d9e8ff;
   --label: #89a6ff;
   --accent: #7cfeff;
@@ -16,12 +17,34 @@ body[data-theme="aurora"] {
   color: var(--text);
 }
 
+body[data-theme="aurora"] .toolbar{
+  box-shadow: 9px 9px 16px var(--shadow-dark), -9px -9px 16px var(--shadow-light);
+  border-radius: 12px;
+  padding: 10px 10px;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
 body[data-theme="aurora"] .card,
-body[data-theme="aurora"] .toolbar,
 body[data-theme="aurora"] .footer {
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
   border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 9px 9px 16px var(--shadow-dark), -9px -9px 16px var(--shadow-light);
+}
+
+body[data-theme="aurora"] .badge {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(9, 16, 9, 0.75);
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+body[data-theme="aurora"] .badge.subtle {
+  opacity: 0.8;
 }
 
 body[data-theme="aurora"] .toolbar-controls select,

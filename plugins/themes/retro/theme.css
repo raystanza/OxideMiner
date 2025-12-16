@@ -40,7 +40,13 @@ body[data-theme="retro"] .container {
   z-index: 1;
 }
 
-body[data-theme="retro"] .toolbar,
+body[data-theme="retro"] .toolbar{
+  background: var(--retro-surface);
+  box-shadow: 9px 9px 16px var(--shadow-dark), -9px -9px 16px var(--shadow-light);
+  border-radius: 12px;
+  padding: 10px 10px;
+}
+
 body[data-theme="retro"] .footer,
 body[data-theme="retro"] .card,
 body[data-theme="retro"] .menu,

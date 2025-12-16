@@ -48,7 +48,12 @@ body[data-theme="web3"] .container {
   z-index: 1;
 }
 
-body[data-theme="web3"] .toolbar,
+body[data-theme="web3"] .toolbar {
+  background: var(--web3-surface);
+  box-shadow: 9px 9px 16px var(--shadow-dark), -9px -9px 16px var(--shadow-light);
+  border-radius: 12px;
+}
+
 body[data-theme="web3"] .footer,
 body[data-theme="web3"] .card,
 body[data-theme="web3"] .menu,
