@@ -16,6 +16,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RELEASE_TAG: ${{ github.ref_name }}
+  LINUX_ARCHIVE_LABEL: x86_64-ubuntu-linux-gnu
 
 jobs:
   build:
@@ -68,9 +69,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "RELEASE_NAME=oxide-miner-${RELEASE_TAG}-${{ matrix.target }}" >> "$GITHUB_ENV"
-          echo "ARCHIVE_NAME=oxide-miner-${RELEASE_TAG}-${{ matrix.target }}.${{ matrix.archive-extension }}" >> "$GITHUB_ENV"
-          echo "CHECKSUM_NAME=oxide-miner-${RELEASE_TAG}-${{ matrix.target }}.sha256" >> "$GITHUB_ENV"
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            release_suffix="$LINUX_ARCHIVE_LABEL"
+          else
+            release_suffix="${{ matrix.target }}"
+          fi
+          echo "RELEASE_NAME=oxide-miner-${RELEASE_TAG}-${release_suffix}" >> "$GITHUB_ENV"
+          echo "ARCHIVE_NAME=oxide-miner-${RELEASE_TAG}-${release_suffix}.${{ matrix.archive-extension }}" >> "$GITHUB_ENV"
+          echo "CHECKSUM_NAME=oxide-miner-${RELEASE_TAG}-${release_suffix}.sha256" >> "$GITHUB_ENV"
 
       - name: List built files (Linux)
         if: ${{ matrix.os == 'ubuntu-latest' }}
@@ -143,6 +149,12 @@ jobs:
           if [[ -f "scripts/README.md" ]]; then
             mkdir -p "$pkg_dir/scripts"
             cp "scripts/README.md" "$pkg_dir/scripts/"
+          fi
+
+          # Include plugins (best-effort)
+          if [[ -d "plugins" ]]; then
+            cp -r "plugins" "$pkg_dir/"
+            find "$pkg_dir/plugins" -type f -name "*.sh" -exec chmod +x {} + || true
           fi
 
           # Package the folder
@@ -239,6 +251,9 @@ jobs:
           if (Test-Path ".\scripts\README.md") {
             New-Item -ItemType Directory -Path (Join-Path $pkgDir "scripts") -Force | Out-Null
             Copy-Item ".\scripts\README.md" (Join-Path $pkgDir "scripts") -Force
+          }
+          if (Test-Path ".\plugins") {
+            Copy-Item ".\plugins" (Join-Path $pkgDir "plugins") -Recurse -Force
           }
 
           # Zip the folder (keep top-level directory in the archive)
