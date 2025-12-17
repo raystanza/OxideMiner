@@ -1397,18 +1397,20 @@ mod tests {
 
     #[test]
     fn l3_summary_reports_domains_and_total() {
-        let mut topo = CacheHierarchy::default();
-        topo.l3_instances = vec![
-            L3Instance {
-                size_bytes: 32 * 1024 * 1024,
-                shared_logical_cpus: (0..16).collect(),
-            },
-            L3Instance {
-                size_bytes: 32 * 1024 * 1024,
-                shared_logical_cpus: (16..32).collect(),
-            },
-        ];
-        topo.l3_total_bytes = Some(64 * 1024 * 1024);
+        let topo = CacheHierarchy {
+            l3_instances: vec![
+                L3Instance {
+                    size_bytes: 32 * 1024 * 1024,
+                    shared_logical_cpus: (0..16).collect(),
+                },
+                L3Instance {
+                    size_bytes: 32 * 1024 * 1024,
+                    shared_logical_cpus: (16..32).collect(),
+                },
+            ],
+            l3_total_bytes: Some(64 * 1024 * 1024),
+            ..Default::default()
+        };
 
         assert_eq!(
             topo.l3_summary().as_deref(),
