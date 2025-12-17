@@ -1,6 +1,7 @@
 // OxideMiner/crates/oxide-core/src/worker.rs
 
 use anyhow::Result;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -48,8 +49,33 @@ pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::Jo
     } = config;
     #[cfg(feature = "randomx")]
     let _ = engine::set_large_pages(large_pages);
+    let cache_topology = if affinity {
+        Some(crate::system::cache_hierarchy())
+    } else {
+        None
+    };
     let core_ids = if affinity {
-        core_affinity::get_core_ids()
+        let baseline = core_affinity::get_core_ids();
+        if let (Some(ids), Some(cache)) = (baseline.clone(), cache_topology.as_ref()) {
+            if let Some(reordered) = l3_aware_core_order(cache, &ids) {
+                let affinity_order = reordered
+                    .iter()
+                    .map(|c| c.id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                tracing::debug!(
+                    l3_domains = cache.l3_instances.len(),
+                    order = %affinity_order,
+                    "affinity core order derived from L3 domains ({})",
+                    cache.l3_summary().unwrap_or_else(|| "unknown".into())
+                );
+                Some(reordered)
+            } else {
+                baseline
+            }
+        } else {
+            baseline
+        }
     } else {
         None
     };
@@ -91,6 +117,62 @@ pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::Jo
             })
         })
         .collect()
+}
+
+fn l3_aware_core_order(
+    cache: &crate::system::CacheHierarchy,
+    ids: &[core_affinity::CoreId],
+) -> Option<Vec<core_affinity::CoreId>> {
+    if cache.l3_instances.is_empty() {
+        return None;
+    }
+
+    let by_id: HashMap<usize, core_affinity::CoreId> = ids.iter().map(|id| (id.id, *id)).collect();
+    let mut domains: Vec<VecDeque<usize>> = cache
+        .l3_instances
+        .iter()
+        .map(|inst| inst.shared_logical_cpus.iter().copied().collect())
+        .collect();
+
+    for domain in domains.iter_mut() {
+        domain.retain(|cpu| by_id.contains_key(cpu));
+    }
+    domains.retain(|d| !d.is_empty());
+    if domains.is_empty() {
+        return None;
+    }
+
+    let mut order = Vec::new();
+    let mut seen = HashSet::new();
+    loop {
+        let mut progressed = false;
+        for domain in domains.iter_mut() {
+            while let Some(cpu) = domain.pop_front() {
+                if seen.insert(cpu) {
+                    if let Some(id) = by_id.get(&cpu) {
+                        order.push(*id);
+                        progressed = true;
+                    }
+                    break;
+                }
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+
+    if order.is_empty() {
+        return None;
+    }
+
+    for id in ids {
+        if !seen.contains(&id.id) {
+            order.push(*id);
+        }
+    }
+
+    Some(order)
 }
 
 #[cfg(feature = "randomx")]
@@ -617,6 +699,29 @@ mod tests {
         for h in handles {
             h.abort();
         }
+    }
+
+    #[test]
+    fn l3_affinity_interleaves_across_domains() {
+        let cache = crate::system::CacheHierarchy {
+            l3_instances: vec![
+                crate::system::L3Instance {
+                    size_bytes: 32 * 1024 * 1024,
+                    shared_logical_cpus: (0..4).collect(),
+                },
+                crate::system::L3Instance {
+                    size_bytes: 32 * 1024 * 1024,
+                    shared_logical_cpus: (4..8).collect(),
+                },
+            ],
+            l3_total_bytes: Some(64 * 1024 * 1024),
+            ..Default::default()
+        };
+        let ids: Vec<core_affinity::CoreId> =
+            (0..8).map(|id| core_affinity::CoreId { id }).collect();
+        let ordered = l3_aware_core_order(&cache, &ids).expect("ordered cores");
+        let first_eight: Vec<usize> = ordered.iter().map(|c| c.id).collect();
+        assert_eq!(first_eight, vec![0, 4, 1, 5, 2, 6, 3, 7]);
     }
 
     #[test]

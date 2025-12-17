@@ -88,8 +88,13 @@ pub struct CacheHierarchy {
 
 impl CacheHierarchy {
     pub fn l3_total(&self) -> Option<usize> {
-        self.l3_total_bytes
-            .or_else(|| self.l3.map(|lvl| lvl.size_bytes))
+        if let Some(total) = self.l3_total_bytes {
+            return Some(total);
+        }
+        if !self.l3_instances.is_empty() {
+            return Some(self.l3_instances.iter().map(|i| i.size_bytes).sum());
+        }
+        self.l3.map(|lvl| lvl.size_bytes)
     }
 
     pub fn max_l3_instance_size(&self) -> Option<usize> {
@@ -103,7 +108,7 @@ impl CacheHierarchy {
     pub fn l3_summary(&self) -> Option<String> {
         let total = self.l3_total()?;
         if self.l3_instances.is_empty() {
-            return Some(format!("{} (shared)", format_bytes(total)));
+            return Some(format!("{} total (reported shared)", format_bytes(total)));
         }
 
         let mut counts: BTreeMap<usize, usize> = BTreeMap::new();
@@ -120,19 +125,18 @@ impl CacheHierarchy {
             }
         }
 
-        if parts.len() == 1 {
-            Some(format!(
-                "{} (shared) = {} total",
-                parts[0],
-                format_bytes(total)
-            ))
+        let domain_label = "shared per cache domain";
+        let per_domain = if parts.len() == 1 {
+            parts[0].clone()
         } else {
-            Some(format!(
-                "{} (shared) = {} total",
-                parts.join(", "),
-                format_bytes(total)
-            ))
-        }
+            parts.join(", ")
+        };
+        Some(format!(
+            "{} ({}), {} total",
+            per_domain,
+            domain_label,
+            format_bytes(total)
+        ))
     }
 
     pub fn l3_instance_debug(&self) -> Vec<String> {
@@ -148,6 +152,50 @@ impl CacheHierarchy {
                 )
             })
             .collect()
+    }
+
+    pub fn debug_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        lines.push(format!("cache_source={:?}", self.source));
+
+        if let Some(l1d) = self.l1_data {
+            lines.push(format!(
+                "L1d: {} (line {} B, shared across {} logical CPUs)",
+                format_bytes(l1d.size_bytes),
+                l1d.line_size,
+                l1d.shared_cores
+            ));
+        }
+        if let Some(l1i) = self.l1_instruction {
+            lines.push(format!(
+                "L1i: {} (line {} B, shared across {} logical CPUs)",
+                format_bytes(l1i.size_bytes),
+                l1i.line_size,
+                l1i.shared_cores
+            ));
+        }
+        if let Some(l2) = self.l2 {
+            lines.push(format!(
+                "L2: {} (line {} B, shared across {} logical CPUs)",
+                format_bytes(l2.size_bytes),
+                l2.line_size,
+                l2.shared_cores
+            ));
+        }
+
+        for detail in self.l3_instance_debug() {
+            lines.push(detail);
+        }
+        if let Some(total) = self.l3_total() {
+            lines.push(format!("L3 total: {}", format_bytes(total)));
+        }
+        if let Some(summary) = self.l3_summary() {
+            lines.push(format!("L3 summary: {}", summary));
+        }
+        for warning in &self.warnings {
+            lines.push(format!("warning: {}", warning));
+        }
+        lines
     }
 }
 
@@ -526,6 +574,8 @@ fn cpuid_cache_hierarchy(source: CacheSource) -> CacheHierarchy {
         source,
         ..CacheHierarchy::default()
     };
+    let mut l3_descriptors: Vec<(usize, usize)> = Vec::new(); // (size_bytes, shared_cores)
+
     if let Some(cparams) = cpuid.get_cache_parameters() {
         for cache in cparams {
             let size = cache.associativity()
@@ -577,19 +627,29 @@ fn cpuid_cache_hierarchy(source: CacheSource) -> CacheHierarchy {
                     {
                         info.l3 = Some(level);
                     }
-                    let cpus: Vec<usize> = (0..shared).collect();
-                    info.l3_instances.push(L3Instance {
-                        size_bytes: size,
-                        shared_logical_cpus: cpus.clone(),
-                    });
+                    l3_descriptors.push((size, shared));
                 }
                 _ => {}
             }
         }
     }
 
-    if !info.l3_instances.is_empty() {
+    if let Some((size_bytes, shared_cores)) =
+        l3_descriptors.into_iter().max_by_key(|(size, _)| *size)
+    {
+        let logical_cpus = num_cpus::get().max(1);
+        info.l3_instances.extend(synthesize_l3_instances(
+            size_bytes,
+            shared_cores,
+            logical_cpus,
+        ));
         info.l3_total_bytes = Some(info.l3_instances.iter().map(|c| c.size_bytes).sum());
+    }
+
+    if matches!(source, CacheSource::RawCpuid) && info.warnings.is_empty() {
+        info.warnings.push(
+            "using CPUID cache topology fallback; OS-specific cache grouping unavailable".into(),
+        );
     }
 
     info
@@ -600,10 +660,53 @@ fn cpuid_cache_hierarchy(_source: CacheSource) -> CacheHierarchy {
     CacheHierarchy::default()
 }
 
+#[cfg_attr(
+    not(any(target_arch = "x86", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn synthesize_l3_instances(
+    size_bytes: usize,
+    shared_cores: usize,
+    logical_cpus: usize,
+) -> Vec<L3Instance> {
+    let shared = shared_cores.max(1);
+    let logical = logical_cpus.max(1);
+    let instance_count = logical.div_ceil(shared);
+    let mut next_cpu = 0usize;
+    let mut instances = Vec::new();
+
+    for _ in 0..instance_count.max(1) {
+        if next_cpu >= logical {
+            break;
+        }
+        let end = (next_cpu + shared).min(logical);
+        let cpus: Vec<usize> = (next_cpu..end).collect();
+        instances.push(L3Instance {
+            size_bytes,
+            shared_logical_cpus: cpus,
+        });
+        next_cpu = end;
+    }
+
+    if instances.is_empty() {
+        instances.push(L3Instance {
+            size_bytes,
+            shared_logical_cpus: (0..shared).collect(),
+        });
+    }
+
+    instances
+}
+
 #[cfg(target_os = "linux")]
 fn linux_cache_hierarchy(base: &Path) -> Option<CacheHierarchy> {
     let mut warnings = Vec::new();
-    let cpu_dir = base.join("cpu");
+    let candidate = base.join("cpu");
+    let cpu_dir = if candidate.is_dir() {
+        candidate
+    } else {
+        base.to_path_buf()
+    };
     let entries = std::fs::read_dir(&cpu_dir).ok()?;
     let mut caches: HashMap<(u32, CacheKind, String), SysfsCacheEntry> = HashMap::new();
 
@@ -1272,6 +1375,16 @@ mod tests {
         assert!(cpu_sets.contains(&"8-15".to_string()));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_linux_sysfs_cache_when_base_is_cpu_root() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/sysfs_cpu_cache/ryzen_5950x_like/cpu");
+        let topo = linux_cache_hierarchy(&fixture).expect("linux sysfs cache");
+        assert_eq!(topo.l3_instances.len(), 2);
+        assert_eq!(topo.l3_total(), Some(64 * 1024 * 1024));
+    }
+
     #[test]
     fn parses_cpu_lists() {
         assert_eq!(
@@ -1280,6 +1393,44 @@ mod tests {
         );
         assert_eq!(parse_shared_cpu_list(""), None);
         assert_eq!(parse_shared_cpu_list("4-2"), None);
+    }
+
+    #[test]
+    fn l3_summary_reports_domains_and_total() {
+        let topo = CacheHierarchy {
+            l3_instances: vec![
+                L3Instance {
+                    size_bytes: 32 * 1024 * 1024,
+                    shared_logical_cpus: (0..16).collect(),
+                },
+                L3Instance {
+                    size_bytes: 32 * 1024 * 1024,
+                    shared_logical_cpus: (16..32).collect(),
+                },
+            ],
+            l3_total_bytes: Some(64 * 1024 * 1024),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            topo.l3_summary().as_deref(),
+            Some("2 x 32 MiB (shared per cache domain), 64 MiB total")
+        );
+    }
+
+    #[test]
+    fn synthesizes_l3_instances_for_cpuid_fallback() {
+        let instances = synthesize_l3_instances(32 * 1024 * 1024, 16, 32);
+        assert_eq!(instances.len(), 2);
+        assert_eq!(
+            instances[0].shared_logical_cpus,
+            (0..16).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            instances[1].shared_logical_cpus,
+            (16..32).collect::<Vec<_>>()
+        );
+        assert!(instances.iter().all(|i| i.size_bytes == 32 * 1024 * 1024));
     }
 
     #[test]
