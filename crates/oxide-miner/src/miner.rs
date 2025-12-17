@@ -227,8 +227,17 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             yield_between_batches
         );
 
-        for detail in snap.cache.l3_instance_debug() {
+        for detail in snap.cache.debug_lines() {
             tracing::debug!("cache_topology" = %detail);
+        }
+        for warning in &snap.cache.warnings {
+            tracing::warn!("cache_topology_warning" = %warning);
+        }
+        if !args.affinity && !snap.cache.l3_instances.is_empty() {
+            tracing::info!(
+                l3_domains = snap.cache.l3_instances.len(),
+                "detected multiple L3 cache domains; consider --affinity to pin workers per domain"
+            );
         }
 
         // Run the benchmark
@@ -409,8 +418,17 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         cfg.yield_between_batches
     );
 
-    for detail in snap.cache.l3_instance_debug() {
+    for detail in snap.cache.debug_lines() {
         tracing::debug!("cache_topology" = %detail);
+    }
+    for warning in &snap.cache.warnings {
+        tracing::warn!("cache_topology_warning" = %warning);
+    }
+    if !cfg.affinity && !snap.cache.l3_instances.is_empty() {
+        tracing::info!(
+            l3_domains = snap.cache.l3_instances.len(),
+            "detected multiple L3 cache domains; consider --affinity to pin workers per domain"
+        );
     }
 
     // Optional explicit breadcrumbs, as you have:
