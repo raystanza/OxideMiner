@@ -107,13 +107,12 @@ pub async fn run_benchmark(
 }
 
 #[cfg(not(feature = "randomx"))]
-#[allow(unused_variables)]
 pub async fn run_benchmark(
-    threads: usize,
-    seconds: u64,
-    large_pages: bool,
-    batch_size: usize,
-    yield_between_batches: bool,
+    _threads: usize,
+    _seconds: u64,
+    _large_pages: bool,
+    _batch_size: usize,
+    _yield_between_batches: bool,
 ) -> Result<f64> {
     Err(anyhow!("built without RandomX support"))
 }
