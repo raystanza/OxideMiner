@@ -31,8 +31,9 @@ use windows_sys::Win32::{
     System::{
         Memory::GetLargePageMinimum,
         SystemInformation::{
-            CacheData, CacheInstruction, CacheUnified, GetLogicalProcessorInformationEx,
-            RelationCache, CACHE_RELATIONSHIP, GROUP_AFFINITY,
+            CacheData as CACHE_DATA, CacheInstruction as CACHE_INSTRUCTION,
+            CacheUnified as CACHE_UNIFIED, GetLogicalProcessorInformationEx,
+            RelationCache as RELATION_CACHE, CACHE_RELATIONSHIP, GROUP_AFFINITY,
             SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
         },
         Threading::{GetCurrentProcess, OpenProcessToken},
@@ -560,11 +561,12 @@ pub fn cache_hierarchy() -> CacheHierarchy {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        return cpuid_cache_hierarchy(CacheSource::RawCpuid);
+        cpuid_cache_hierarchy(CacheSource::RawCpuid)
     }
-
-    #[allow(unreachable_code)]
-    CacheHierarchy::default()
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        CacheHierarchy::default()
+    }
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -660,10 +662,7 @@ fn cpuid_cache_hierarchy(_source: CacheSource) -> CacheHierarchy {
     CacheHierarchy::default()
 }
 
-#[cfg_attr(
-    not(any(target_arch = "x86", target_arch = "x86_64")),
-    allow(dead_code)
-)]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn synthesize_l3_instances(
     size_bytes: usize,
     shared_cores: usize,
@@ -877,10 +876,9 @@ fn linux_cache_hierarchy(base: &Path) -> Option<CacheHierarchy> {
 }
 
 #[cfg(target_os = "windows")]
-#[allow(non_upper_case_globals)]
 unsafe fn windows_cache_hierarchy() -> Option<CacheHierarchy> {
     let mut len: u32 = 0;
-    let mut res = GetLogicalProcessorInformationEx(RelationCache, std::ptr::null_mut(), &mut len);
+    let mut res = GetLogicalProcessorInformationEx(RELATION_CACHE, std::ptr::null_mut(), &mut len);
     if res != 0 {
         return None;
     }
@@ -891,7 +889,7 @@ unsafe fn windows_cache_hierarchy() -> Option<CacheHierarchy> {
 
     let mut buf = vec![0u8; len as usize];
     res = GetLogicalProcessorInformationEx(
-        RelationCache,
+        RELATION_CACHE,
         buf.as_mut_ptr() as *mut SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
         &mut len,
     );
@@ -909,7 +907,7 @@ unsafe fn windows_cache_hierarchy() -> Option<CacheHierarchy> {
     while offset < len as usize {
         let ptr = buf.as_ptr().add(offset) as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX;
         let size = (*ptr).Size as usize;
-        if (*ptr).Relationship == RelationCache {
+        if (*ptr).Relationship == RELATION_CACHE {
             let cache: &CACHE_RELATIONSHIP = unsafe { &(*ptr).Anonymous.Cache };
             let masks = cache_group_masks(cache, size);
             let mut cpus: Vec<usize> = masks.iter().flat_map(affinity_mask_to_cpus).collect();
@@ -922,7 +920,7 @@ unsafe fn windows_cache_hierarchy() -> Option<CacheHierarchy> {
                 shared_cores: shared,
             };
             match cache.Level {
-                1 if matches!(cache.Type, CacheData | CacheUnified) => {
+                1 if matches!(cache.Type, CACHE_DATA | CACHE_UNIFIED) => {
                     if info
                         .l1_data
                         .map(|existing| existing.size_bytes < level.size_bytes)
@@ -931,7 +929,7 @@ unsafe fn windows_cache_hierarchy() -> Option<CacheHierarchy> {
                         info.l1_data = Some(level);
                     }
                 }
-                1 if cache.Type == CacheInstruction => {
+                1 if cache.Type == CACHE_INSTRUCTION => {
                     if info
                         .l1_instruction
                         .map(|existing| existing.size_bytes < level.size_bytes)
@@ -940,7 +938,7 @@ unsafe fn windows_cache_hierarchy() -> Option<CacheHierarchy> {
                         info.l1_instruction = Some(level);
                     }
                 }
-                2 if matches!(cache.Type, CacheData | CacheUnified) => {
+                2 if matches!(cache.Type, CACHE_DATA | CACHE_UNIFIED) => {
                     if info
                         .l2
                         .map(|existing| existing.size_bytes < level.size_bytes)
@@ -949,7 +947,7 @@ unsafe fn windows_cache_hierarchy() -> Option<CacheHierarchy> {
                         info.l2 = Some(level);
                     }
                 }
-                3 if cache.Type == CacheUnified => {
+                3 if cache.Type == CACHE_UNIFIED => {
                     if info
                         .l3
                         .map(|existing| existing.size_bytes < level.size_bytes)
@@ -1078,7 +1076,7 @@ fn parse_size_bytes(spec: &str) -> Option<usize> {
     value.checked_mul(multiplier)
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(target_os = "linux")]
 fn parse_shared_cpu_list(spec: &str) -> Option<Vec<usize>> {
     let mut cpus = Vec::new();
     for part in spec.trim().split(',') {
@@ -1385,6 +1383,7 @@ mod tests {
         assert_eq!(topo.l3_total(), Some(64 * 1024 * 1024));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn parses_cpu_lists() {
         assert_eq!(
@@ -1418,6 +1417,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[test]
     fn synthesizes_l3_instances_for_cpuid_fallback() {
         let instances = synthesize_l3_instances(32 * 1024 * 1024, 16, 32);

@@ -60,8 +60,6 @@ We ship a **command-line miner** with automatic CPU tuning, an **optional embedd
 
 - 🧠 **Auto-tuned intelligence:** At startup, OxideMiner introspects your CPU topology and cache sizes to pick the perfect thread count and batch size. You can always override them so you can squeeze every last drop of performance from you CPU.
 
-- L3 cache reporting is topology-aware: multi-CCD/LLC systems (e.g., Ryzen 9 5950X) log each L3 instance and the summed total (e.g., `2 x 32 MiB (shared per cache domain), 64 MiB total`) so you can verify what the auto-tuner is using.
-
 - 🔒 **TLS-ready stratum client:** Secure pool connectivity via `--tls`, with optional certificate pinning and custom CA support.
 
 - 📈 **Prometheus-compatible metrics:** The `/metrics` endpoint exposes rich counters and gauges, ready for Grafana dashboards or cluster monitoring.
