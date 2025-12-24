@@ -11,7 +11,7 @@ use hyper_util::rt::TokioIo;
 use serde_json::json;
 use std::borrow::Cow;
 use std::convert::Infallible;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{atomic::Ordering, Arc};
 use sysinfo::System;
@@ -197,12 +197,13 @@ async fn themed_dashboard_response(
 }
 
 pub async fn run_http_api(
+    bind_addr: IpAddr,
     port: u16,
     stats: Arc<Stats>,
     dashboard_dir: Option<PathBuf>,
     theme_dir: Option<PathBuf>,
 ) {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = SocketAddr::new(bind_addr, port);
     let theme_catalog = Arc::new(ThemeCatalog::discover(theme_dir));
     let listener = match TcpListener::bind(addr).await {
         Ok(v) => v,
@@ -288,7 +289,7 @@ pub async fn run_http_api(
                                 let values = &cfg.values;
                                 let applied = &cfg.applied;
                                 let info_labels = format!(
-                                    "path=\"{}\",pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",batch_size=\"{}\",affinity=\"{}\",huge_pages=\"{}\",tls=\"{}\",api_port=\"{}\",proxy=\"{}\",dashboard_dir=\"{}\",no_yield=\"{}\",debug=\"{}\"",
+                                    "path=\"{}\",pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",batch_size=\"{}\",affinity=\"{}\",huge_pages=\"{}\",tls=\"{}\",api_port=\"{}\",api_bind=\"{}\",proxy=\"{}\",dashboard_dir=\"{}\",no_yield=\"{}\",debug=\"{}\"",
                                     escape_label_value(&cfg.path.display().to_string()),
                                     escape_label_value(values.pool.as_deref().unwrap_or("")),
                                     escape_label_value(values.wallet.as_deref().unwrap_or("")),
@@ -299,6 +300,12 @@ pub async fn run_http_api(
                                     values.huge_pages.unwrap_or(false),
                                     values.tls.unwrap_or(false),
                                     escape_label_value(&values.api_port.map(|v| v.to_string()).unwrap_or_default()),
+                                    escape_label_value(
+                                        &values
+                                            .api_bind
+                                            .map(|v| v.to_string())
+                                            .unwrap_or_default()
+                                    ),
                                     escape_label_value(values.proxy.as_deref().unwrap_or("")),
                                     escape_label_value(
                                         &values
@@ -313,7 +320,7 @@ pub async fn run_http_api(
                                 writeln!(body, "oxide_config_info{{{}}} 1", info_labels).ok();
 
                                 let applied_labels = format!(
-                                    "pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",tls=\"{}\",tls_ca_cert=\"{}\",tls_cert_sha256=\"{}\",api_port=\"{}\",dashboard_dir=\"{}\",affinity=\"{}\",huge_pages=\"{}\",batch_size=\"{}\",no_yield=\"{}\",debug=\"{}\",proxy=\"{}\"",
+                                    "pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",tls=\"{}\",tls_ca_cert=\"{}\",tls_cert_sha256=\"{}\",api_port=\"{}\",api_bind=\"{}\",dashboard_dir=\"{}\",affinity=\"{}\",huge_pages=\"{}\",batch_size=\"{}\",no_yield=\"{}\",debug=\"{}\",proxy=\"{}\"",
                                     applied.pool,
                                     applied.wallet,
                                     applied.pass,
@@ -322,6 +329,7 @@ pub async fn run_http_api(
                                     applied.tls_ca_cert,
                                     applied.tls_cert_sha256,
                                     applied.api_port,
+                                    applied.api_bind,
                                     applied.dashboard_dir,
                                     applied.affinity,
                                     applied.huge_pages,
@@ -539,9 +547,12 @@ mod tests {
     use crate::stats::Stats;
     use hyper::header;
     use reqwest::Client;
+    use std::net::{IpAddr, Ipv4Addr};
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
+
+    const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
     #[tokio::test]
     async fn endpoints_report_stats() {
@@ -556,7 +567,7 @@ mod tests {
         stats.dev_accepted.store(1, Ordering::Relaxed);
         stats.hashes.store(100, Ordering::Relaxed);
 
-        let server = tokio::spawn(run_http_api(port, stats.clone(), None, None));
+        let server = tokio::spawn(run_http_api(LOCALHOST, port, stats.clone(), None, None));
         // Give the server a moment to start
         sleep(Duration::from_millis(50)).await;
 
@@ -607,6 +618,7 @@ mod tests {
         std::fs::write(dir.path().join("img").join("logo.png"), b"png").unwrap();
 
         let server = tokio::spawn(run_http_api(
+            LOCALHOST,
             port,
             stats.clone(),
             Some(dir.path().to_path_buf()),
@@ -646,7 +658,7 @@ mod tests {
         drop(listener);
 
         let stats = Arc::new(Stats::new("pool".into(), false, None));
-        let server = tokio::spawn(run_http_api(port, stats, None, None));
+        let server = tokio::spawn(run_http_api(LOCALHOST, port, stats, None, None));
         sleep(Duration::from_millis(50)).await;
 
         let client = Client::new();
@@ -690,6 +702,7 @@ mod tests {
         .unwrap();
 
         let server = tokio::spawn(run_http_api(
+            LOCALHOST,
             port,
             stats,
             None,
@@ -749,6 +762,7 @@ mod tests {
         .unwrap();
 
         let server = tokio::spawn(run_http_api(
+            LOCALHOST,
             port,
             stats,
             Some(dash_dir.path().to_path_buf()),
@@ -801,6 +815,7 @@ mod tests {
         .unwrap();
 
         let server = tokio::spawn(run_http_api(
+            LOCALHOST,
             port,
             stats,
             None,

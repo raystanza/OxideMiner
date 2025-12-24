@@ -6,6 +6,7 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     fs,
+    net::IpAddr,
     path::{Path, PathBuf},
 };
 
@@ -54,6 +55,14 @@ pub struct Args {
     /// Expose a simple HTTP API on this port
     #[arg(long = "api-port", value_parser = clap::value_parser!(u16).range(1..=65535))]
     pub api_port: Option<u16>,
+
+    /// Bind the HTTP API to this address (default 127.0.0.1)
+    #[arg(
+        long = "api-bind",
+        value_parser = clap::value_parser!(IpAddr),
+        default_value = "127.0.0.1"
+    )]
+    pub api_bind: IpAddr,
 
     /// Serve dashboard files from this directory instead of embedded assets
     #[arg(long = "dashboard-dir", value_name = "DIR", value_hint = ValueHint::DirPath)]
@@ -113,6 +122,7 @@ pub struct ConfigFile {
     pub tls_ca_cert: Option<PathBuf>,
     pub tls_cert_sha256: Option<String>,
     pub api_port: Option<u16>,
+    pub api_bind: Option<IpAddr>,
     pub dashboard_dir: Option<PathBuf>,
     pub affinity: Option<bool>,
     pub huge_pages: Option<bool>,
@@ -338,6 +348,13 @@ fn apply_config_defaults(
         }
     }
 
+    if let Some(bind) = config.api_bind.as_ref() {
+        if !has_arg(original_args, None, Some("api-bind")) {
+            push_value(args, "--api-bind", bind.to_string());
+            applied.api_bind = true;
+        }
+    }
+
     if let Some(dir) = config.dashboard_dir.as_ref() {
         if !has_arg(original_args, None, Some("dashboard-dir")) {
             push_value_os(args, "--dashboard-dir", dir.as_os_str());
@@ -434,6 +451,7 @@ pub struct ConfigApplied {
     pub tls_ca_cert: bool,
     pub tls_cert_sha256: bool,
     pub api_port: bool,
+    pub api_bind: bool,
     pub dashboard_dir: bool,
     pub affinity: bool,
     pub huge_pages: bool,
@@ -464,6 +482,8 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "tls-cert-sha256",
     "api_port",
     "api-port",
+    "api_bind",
+    "api-bind",
     "dashboard_dir",
     "dashboard-dir",
     "affinity",
@@ -502,7 +522,12 @@ fn format_toml_error(path: &Path, message: &str, line_col: Option<(usize, usize)
 mod tests {
     use super::{parse_with_config_from, Args};
     use clap::Parser;
-    use std::{env, ffi::OsString, fs};
+    use std::{
+        env,
+        ffi::OsString,
+        fs,
+        net::{IpAddr, Ipv4Addr},
+    };
     use tempfile::NamedTempFile;
 
     #[test]
@@ -592,6 +617,35 @@ mod tests {
         assert_eq!(parsed.args.pass, "configpass");
         assert_eq!(parsed.args.threads, Some(8));
         assert!(parsed.args.debug);
+    }
+
+    #[test]
+    fn api_bind_defaults_to_loopback() {
+        let args = Args::try_parse_from(["test", "-o", "pool:5555", "-u", "wallet"]).unwrap();
+        assert_eq!(args.api_bind, IpAddr::from(Ipv4Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn config_overrides_api_bind_when_flag_absent() {
+        let config = NamedTempFile::new().unwrap();
+        fs::write(
+            config.path(),
+            r#"
+pool = "pool:5555"
+wallet = "wallet"
+api_bind = "0.0.0.0"
+"#,
+        )
+        .unwrap();
+
+        let args = vec![
+            OsString::from("test"),
+            OsString::from("--config"),
+            config.path().as_os_str().to_os_string(),
+        ];
+
+        let parsed = parse_with_config_from(args).unwrap();
+        assert_eq!(parsed.args.api_bind, IpAddr::from(Ipv4Addr::UNSPECIFIED));
     }
 
     #[test]
