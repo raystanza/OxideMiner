@@ -126,6 +126,10 @@ fn system_uptime_seconds() -> u64 {
     System::uptime()
 }
 
+fn api_socket_addr(bind_addr: IpAddr, port: u16) -> SocketAddr {
+    SocketAddr::new(bind_addr, port)
+}
+
 fn escape_label_value(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -203,12 +207,12 @@ pub async fn run_http_api(
     dashboard_dir: Option<PathBuf>,
     theme_dir: Option<PathBuf>,
 ) {
-    let addr = SocketAddr::new(bind_addr, port);
+    let addr = api_socket_addr(bind_addr, port);
     let theme_catalog = Arc::new(ThemeCatalog::discover(theme_dir));
     let listener = match TcpListener::bind(addr).await {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("HTTP bind failed: {e}");
+            tracing::error!(%addr, error = %e, "HTTP bind failed");
             return;
         }
     };
@@ -543,16 +547,28 @@ pub async fn run_http_api(
 
 #[cfg(test)]
 mod tests {
-    use super::run_http_api;
+    use super::{api_socket_addr, run_http_api};
     use crate::stats::Stats;
     use hyper::header;
     use reqwest::Client;
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
 
     const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    #[test]
+    fn api_socket_addr_uses_bind_addr_and_port() {
+        let addr = api_socket_addr(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8080);
+        assert_eq!(
+            addr,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8080)
+        );
+
+        let addr = api_socket_addr(IpAddr::V6(Ipv6Addr::LOCALHOST), 9000);
+        assert_eq!(addr, SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 9000));
+    }
 
     #[tokio::test]
     async fn endpoints_report_stats() {

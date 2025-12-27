@@ -57,6 +57,7 @@ pub struct Args {
     pub api_port: Option<u16>,
 
     /// Bind the HTTP API to this address (default 127.0.0.1)
+    /// Only used when --api-port is set.
     #[arg(
         long = "api-bind",
         value_parser = clap::value_parser!(IpAddr),
@@ -119,14 +120,22 @@ pub struct ConfigFile {
     pub pass: Option<String>,
     pub threads: Option<usize>,
     pub tls: Option<bool>,
+    #[serde(alias = "tls-ca-cert")]
     pub tls_ca_cert: Option<PathBuf>,
+    #[serde(alias = "tls-cert-sha256")]
     pub tls_cert_sha256: Option<String>,
+    #[serde(alias = "api-port")]
     pub api_port: Option<u16>,
+    #[serde(alias = "api-bind")]
     pub api_bind: Option<IpAddr>,
+    #[serde(alias = "dashboard-dir")]
     pub dashboard_dir: Option<PathBuf>,
     pub affinity: Option<bool>,
+    #[serde(alias = "huge-pages")]
     pub huge_pages: Option<bool>,
+    #[serde(alias = "batch-size")]
     pub batch_size: Option<usize>,
+    #[serde(alias = "no-yield")]
     pub no_yield: Option<bool>,
     pub debug: Option<bool>,
     pub proxy: Option<String>,
@@ -185,14 +194,19 @@ where
         cfg
     });
 
-    match Args::try_parse_from(args_vec) {
-        Ok(args) => Ok(ParsedArgs {
-            args,
-            warnings,
-            config,
-        }),
-        Err(err) => Err(err),
+    let args = Args::try_parse_from(args_vec)?;
+    if should_warn_unused_api_bind(&args, &original_args, config.as_ref()) {
+        warnings.push(ConfigWarning::new(
+            "api_bind is set but api_port is not set; HTTP API will not start".to_string(),
+            false,
+        ));
     }
+
+    Ok(ParsedArgs {
+        args,
+        warnings,
+        config,
+    })
 }
 
 fn determine_config_path(args: &[OsString]) -> (PathBuf, bool) {
@@ -427,6 +441,23 @@ fn has_arg(args: &[OsString], short: Option<&str>, long: Option<&str>) -> bool {
     false
 }
 
+fn should_warn_unused_api_bind(
+    args: &Args,
+    original_args: &[OsString],
+    config: Option<&LoadedConfigFile>,
+) -> bool {
+    if args.benchmark || args.api_port.is_some() {
+        return false;
+    }
+
+    let cli_set = has_arg(original_args, None, Some("api-bind"));
+    let config_set = config
+        .map(|cfg| cfg.values.api_bind.is_some())
+        .unwrap_or(false);
+
+    cli_set || config_set
+}
+
 fn push_flag(args: &mut Vec<OsString>, flag: &str) {
     args.push(OsString::from(flag));
 }
@@ -526,7 +557,7 @@ mod tests {
         env,
         ffi::OsString,
         fs,
-        net::{IpAddr, Ipv4Addr},
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
     };
     use tempfile::NamedTempFile;
 
@@ -626,6 +657,53 @@ mod tests {
     }
 
     #[test]
+    fn api_bind_parses_ipv4_unspecified() {
+        let args = Args::try_parse_from([
+            "test",
+            "-o",
+            "pool:5555",
+            "-u",
+            "wallet",
+            "--api-bind",
+            "0.0.0.0",
+        ])
+        .unwrap();
+        assert_eq!(args.api_bind, IpAddr::from(Ipv4Addr::UNSPECIFIED));
+    }
+
+    #[test]
+    fn api_bind_parses_ipv6_loopback() {
+        let args = Args::try_parse_from([
+            "test",
+            "-o",
+            "pool:5555",
+            "-u",
+            "wallet",
+            "--api-bind",
+            "::1",
+        ])
+        .unwrap();
+        assert_eq!(args.api_bind, IpAddr::from(Ipv6Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn api_bind_rejects_invalid_values() {
+        let err = Args::try_parse_from([
+            "test",
+            "-o",
+            "pool:5555",
+            "-u",
+            "wallet",
+            "--api-bind",
+            "not-an-ip",
+        ])
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("--api-bind"));
+        assert!(message.to_lowercase().contains("invalid"));
+    }
+
+    #[test]
     fn config_overrides_api_bind_when_flag_absent() {
         let config = NamedTempFile::new().unwrap();
         fs::write(
@@ -646,6 +724,57 @@ api_bind = "0.0.0.0"
 
         let parsed = parse_with_config_from(args).unwrap();
         assert_eq!(parsed.args.api_bind, IpAddr::from(Ipv4Addr::UNSPECIFIED));
+    }
+
+    #[test]
+    fn config_kebab_case_api_bind_is_accepted() {
+        let config = NamedTempFile::new().unwrap();
+        fs::write(
+            config.path(),
+            r#"
+pool = "pool:5555"
+wallet = "wallet"
+api-bind = "0.0.0.0"
+"#,
+        )
+        .unwrap();
+
+        let args = vec![
+            OsString::from("test"),
+            OsString::from("--config"),
+            config.path().as_os_str().to_os_string(),
+        ];
+
+        let parsed = parse_with_config_from(args).unwrap();
+        assert_eq!(parsed.args.api_bind, IpAddr::from(Ipv4Addr::UNSPECIFIED));
+    }
+
+    #[test]
+    fn cli_overrides_config_api_bind() {
+        let config = NamedTempFile::new().unwrap();
+        fs::write(
+            config.path(),
+            r#"
+pool = "pool:5555"
+wallet = "wallet"
+api_bind = "0.0.0.0"
+"#,
+        )
+        .unwrap();
+
+        let args = vec![
+            OsString::from("test"),
+            OsString::from("--config"),
+            config.path().as_os_str().to_os_string(),
+            OsString::from("--api-bind"),
+            OsString::from("127.0.0.2"),
+        ];
+
+        let parsed = parse_with_config_from(args).unwrap();
+        assert_eq!(
+            parsed.args.api_bind,
+            IpAddr::from(Ipv4Addr::new(127, 0, 0, 2))
+        );
     }
 
     #[test]
