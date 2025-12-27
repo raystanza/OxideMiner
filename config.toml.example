@@ -42,7 +42,8 @@
 # Expose a simple HTTP API on this TCP port (e.g., /metrics and /api/stats endpoints).
 #api_port = 8080
 
-# Bind the HTTP API to this address (default 127.0.0.1). Use 0.0.0.0 to listen on all interfaces.
+# Bind the HTTP API to this address (default 127.0.0.1). Only used when api_port is set.
+# Use 0.0.0.0 to listen on all interfaces.
 #api_bind = "127.0.0.1"
 
 # Serve dashboard files from this directory instead of the embedded assets.

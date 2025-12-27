@@ -84,7 +84,7 @@ Download a pre-built binary from the [Relases](https://github.com/raystanza/Oxid
 
 _By default OxideMiner will look for a 'config.toml' file in the same directory as the binary, but you can supply the '--config \<PATH_to_CONFIG.TOML>' argument._
 
->[CLI Screenshot](oxideminer_cli_screenshot.png)
+> [CLI Screenshot](oxideminer_cli_screenshot.png)
 
 ## Build from source
 
@@ -249,26 +249,26 @@ chmod +x enable_hugepages.sh
 
 Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all options. Key flags include:
 
-| Flag                      | Purpose                                                                           |
-| ------------------------- | --------------------------------------------------------------------------------- |
-| `-o, --url <HOST:PORT>`   | Mining pool endpoint (required unless `--benchmark`).                             |
-| `-u, --user <ADDRESS>`    | Primary Monero wallet or subaddress.                                              |
-| `-p, --pass <STRING>`     | Pool password/rig identifier (default `x`).                                       |
-| `-t, --threads <N>`       | Override auto-selected worker threads.                                            |
-| `--batch-size <N>`        | Manual hashes per batch (default auto recommendation).                            |
-| `--no-yield`              | Disable cooperative yields between batches (less friendly to shared hosts).       |
-| `--affinity`              | Pin worker threads to CPU cores.                                                  |
-| `--huge-pages`            | Request large pages for RandomX dataset (requires OS support).                    |
-| `--proxy <URL>`           | Route stratum traffic via SOCKS5 proxy. Format: `socks5://[user:pass@]host:port`. |
-| `--tls`                   | Enable TLS for the stratum connection.                                            |
-| `--tls-ca-cert <PATH>`    | Add a custom CA certificate (PEM/DER) when TLS is enabled.                        |
-| `--tls-cert-sha256 <HEX>` | Pin the pool certificate by SHA-256 fingerprint.                                  |
-| `--api-port <PORT>`       | Expose the dashboard/API on the given port (paired with `--api-bind`).            |
-| `--api-bind <ADDR>`       | Address to bind the HTTP API/dashboard (default `127.0.0.1`).                      |
-| `--dashboard-dir <DIR>`   | Serve dashboard assets from disk instead of embedded versions.                    |
-| `--debug`                 | Increase log verbosity and tee output to rotating files in `./logs/`.             |
-| `--config <PATH>`         | Load defaults from a TOML file (defaults to `./config.toml`).                     |
-| `--benchmark`             | Run the RandomX benchmark and exit (no pool connection).                          |
+| Flag                      | Purpose                                                                                    |
+| ------------------------- | ------------------------------------------------------------------------------------------ |
+| `-o, --url <HOST:PORT>`   | Mining pool endpoint (required unless `--benchmark`).                                      |
+| `-u, --user <ADDRESS>`    | Primary Monero wallet or subaddress.                                                       |
+| `-p, --pass <STRING>`     | Pool password/rig identifier (default `x`).                                                |
+| `-t, --threads <N>`       | Override auto-selected worker threads.                                                     |
+| `--batch-size <N>`        | Manual hashes per batch (default auto recommendation).                                     |
+| `--no-yield`              | Disable cooperative yields between batches (less friendly to shared hosts).                |
+| `--affinity`              | Pin worker threads to CPU cores.                                                           |
+| `--huge-pages`            | Request large pages for RandomX dataset (requires OS support).                             |
+| `--proxy <URL>`           | Route stratum traffic via SOCKS5 proxy. Format: `socks5://[user:pass@]host:port`.          |
+| `--tls`                   | Enable TLS for the stratum connection.                                                     |
+| `--tls-ca-cert <PATH>`    | Add a custom CA certificate (PEM/DER) when TLS is enabled.                                 |
+| `--tls-cert-sha256 <HEX>` | Pin the pool certificate by SHA-256 fingerprint.                                           |
+| `--api-port <PORT>`       | Expose the dashboard/API on the given port (paired with `--api-bind`).                     |
+| `--api-bind <ADDR>`       | Address to bind the HTTP API/dashboard (default `127.0.0.1`, only used with `--api-port`). |
+| `--dashboard-dir <DIR>`   | Serve dashboard assets from disk instead of embedded versions.                             |
+| `--debug`                 | Increase log verbosity and tee output to rotating files in `./logs/`.                      |
+| `--config <PATH>`         | Load defaults from a TOML file (defaults to `./config.toml`).                              |
+| `--benchmark`             | Run the RandomX benchmark and exit (no pool connection).                                   |
 
 ### Sample `config.toml`
 
@@ -281,7 +281,7 @@ wallet = "48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaa
 pass = "rig001"
 threads = 8          # omit to auto-tune
 api_port = 8080      # enable HTTP dashboard
-api_bind = "127.0.0.1"   # address to bind the dashboard/API (default 127.0.0.1)
+api_bind = "127.0.0.1"   # address to bind the dashboard/API (default 127.0.0.1, only used with api_port)
 huge_pages = true    # request HugeTLB / large pages if OS allows it
 # dashboard_dir = "./crates/oxide-miner/assets"   # serve custom UI while developing
 # (on Windows, escape backslashes [e.g. "C:\\path\\to\\dashboard"] or use single quotes [e.g. 'C:\path\to\dashboard'])
@@ -332,7 +332,7 @@ Run these scripts with administrative privileges and review their contents befor
 
 ### HTTP dashboard & API
 
-Setting `--api-port` starts the HTTP server on `<api_bind>:<PORT>`. `--api-bind` controls the address (default `127.0.0.1`), so `--api-bind 0.0.0.0 --api-port 8080` exposes it on all interfaces. You can reverse proxy this elsewhere if needed. The following endpoints are served:
+Setting `--api-port` starts the HTTP server on `<api_bind>:<PORT>`. `--api-bind` controls the address (default `127.0.0.1`); if `--api-port` is not set, the bind value is unused. `--api-bind 0.0.0.0 --api-port 8080` exposes it on all interfaces. You can reverse proxy this elsewhere if needed. The following endpoints are served:
 
 - `/` (and `/index.html`): Embedded dashboard UI.
 - `/dashboard.css`, `/dashboard.js`, `/img/*`: Embedded static assets. Override via `--dashboard-dir` for local UI development.
