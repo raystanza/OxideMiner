@@ -57,7 +57,7 @@ Optional fields:
 ## Using themes
 
 1. Place the theme under `plugins/themes/`.
-2. Start the miner with the default dashboard (`--api-port <port>` without `--dashboard-dir`).
+2. Start the miner with the default dashboard (`--api-port <port>` without `--dashboard-dir`; adjust `--api-bind` if you need to listen on a non-default address).
 3. Open the hamburger menu -> Plugins -> Themes (or visit `/plugins/themes`).
 4. Apply a theme to load its CSS/JS/HTML immediately. Selection is stored in `localStorage` and mirrored to a cookie so reloads keep the chosen look.
 5. Use "Reset to default" to return to the built-in Light/Dark/Monero options.

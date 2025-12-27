@@ -117,7 +117,7 @@ The CLI can also be run directly with `cargo run -p oxide-miner --release -- <fl
 Supply your pool, wallet, and optional password. Leave threads and batch size unset to accept the auto-tuned values gathered at startup.
 
 ```bash
-# Example: plaintext stratum connection with HTTP dashboard on 127.0.0.1:8080
+# Example: plaintext stratum connection with HTTP dashboard on localhost (127.0.0.1:8080 by default)
 
 oxide-miner \
   --url <Your.Pool.of.Choice:Port> \
@@ -125,6 +125,8 @@ oxide-miner \
   --pass rig001 \
   --api-port 8080
 ```
+
+Use `--api-bind <ADDR>` (for example `--api-bind 0.0.0.0`) if you need the dashboard reachable beyond `127.0.0.1`.
 
 Expected startup log flow:
 
@@ -261,7 +263,8 @@ Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all o
 | `--tls`                   | Enable TLS for the stratum connection.                                            |
 | `--tls-ca-cert <PATH>`    | Add a custom CA certificate (PEM/DER) when TLS is enabled.                        |
 | `--tls-cert-sha256 <HEX>` | Pin the pool certificate by SHA-256 fingerprint.                                  |
-| `--api-port <PORT>`       | Serve the dashboard/API on `127.0.0.1:<PORT>`.                                    |
+| `--api-port <PORT>`       | Expose the dashboard/API on the given port (paired with `--api-bind`).            |
+| `--api-bind <ADDR>`       | Address to bind the HTTP API/dashboard (default `127.0.0.1`).                      |
 | `--dashboard-dir <DIR>`   | Serve dashboard assets from disk instead of embedded versions.                    |
 | `--debug`                 | Increase log verbosity and tee output to rotating files in `./logs/`.             |
 | `--config <PATH>`         | Load defaults from a TOML file (defaults to `./config.toml`).                     |
@@ -278,6 +281,7 @@ wallet = "48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaa
 pass = "rig001"
 threads = 8          # omit to auto-tune
 api_port = 8080      # enable HTTP dashboard
+api_bind = "127.0.0.1"   # address to bind the dashboard/API (default 127.0.0.1)
 huge_pages = true    # request HugeTLB / large pages if OS allows it
 # dashboard_dir = "./crates/oxide-miner/assets"   # serve custom UI while developing
 # (on Windows, escape backslashes [e.g. "C:\\path\\to\\dashboard"] or use single quotes [e.g. 'C:\path\to\dashboard'])
@@ -328,7 +332,7 @@ Run these scripts with administrative privileges and review their contents befor
 
 ### HTTP dashboard & API
 
-Setting `--api-port` binds the HTTP server to `127.0.0.1:<PORT>`. You can reverse proxy this elsewhere if needed. The following endpoints are served:
+Setting `--api-port` starts the HTTP server on `<api_bind>:<PORT>`. `--api-bind` controls the address (default `127.0.0.1`), so `--api-bind 0.0.0.0 --api-port 8080` exposes it on all interfaces. You can reverse proxy this elsewhere if needed. The following endpoints are served:
 
 - `/` (and `/index.html`): Embedded dashboard UI.
 - `/dashboard.css`, `/dashboard.js`, `/img/*`: Embedded static assets. Override via `--dashboard-dir` for local UI development.
@@ -363,7 +367,7 @@ Use these to drive alerting or dashboards. All counters are updated atomically i
 
 - The default dashboard ships with Light, Dark, and Monero themes. Additional themes can be dropped into `plugins/themes/<theme_id>/`.
 - Each theme needs a `theme.json` manifest describing the entry CSS (and optional JS/HTML fragments). See [docs/themes.md](docs/themes.md) for the full manifest layout and authoring tips.
-- Access the management UI from the hamburger menu -> **Plugins -> Themes** or visit `http://127.0.0.1:<port>/plugins/themes` directly.
+- Access the management UI from the hamburger menu -> **Plugins -> Themes** or visit `http://<api_bind>:<port>/plugins/themes` directly (defaults to `http://127.0.0.1:<port>/plugins/themes`).
 - If the active theme includes `theme.html` (or `entry_html`), the bundled dashboard entrypoint is served from that file; custom dashboards served via `--dashboard-dir` are never overridden.
 - The `--dashboard-dir` flag continues to serve a completely custom dashboard; the theme plugin system only augments the bundled UI.
 

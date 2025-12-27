@@ -479,8 +479,9 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
     if let Some(port) = cfg.api_port {
         let s = stats.clone();
         let dir = dashboard_dir.clone();
+        let bind = args.api_bind;
         tokio::spawn(async move {
-            run_http_api(port, s, dir, None).await;
+            run_http_api(bind, port, s, dir, None).await;
         });
     }
 
@@ -975,6 +976,15 @@ fn log_config_overview(cfg: &LoadedConfigFile, args: &Args) {
             format!("API port (--api-port): {port} (from config.toml)")
         } else {
             format!("API port (--api-port): {port} (config.toml, overridden by CLI)")
+        };
+        lines.push(detail);
+    }
+
+    if let Some(bind) = cfg.values.api_bind {
+        let detail = if cfg.applied.api_bind {
+            format!("API bind (--api-bind): {bind} (from config.toml)")
+        } else {
+            format!("API bind (--api-bind): {bind} (config.toml, overridden by CLI)")
         };
         lines.push(detail);
     }
