@@ -71,6 +71,8 @@ We ship a **command-line miner** with automatic CPU tuning, an **optional embedd
 - 📊 **Built-in dashboard (with themes!):** A modern, static web UI (HTML/CSS/JS fully embedded in the binary) shows hashrate, shares, uptime, connection state, and build metadata.
 
 ![Screenshot1](oxideminer_themes_screenshot.png)
+
+Now with extensible _Themes_ like `aurora` and `retro`
 ![Screenshot2](oxideminer_themes_screenshot_2.png)
 
 ## Quick start
@@ -79,7 +81,7 @@ We ship a **command-line miner** with automatic CPU tuning, an **optional embedd
 
 Download a pre-built binary from the [Relases](https://github.com/raystanza/OxideMiner/releases/) page, copy and rename 'config.toml.example' -> 'config.toml', fill in your desired pool & wallet address, run the miner:
 
-> **Windows**: .\oxide-miner.exe \
+> **Windows**: .\oxide-miner.exe  
 > **Linux**: ./oxide-miner
 
 _By default OxideMiner will look for a 'config.toml' file in the same directory as the binary, but you can supply the '--config \<PATH_to_CONFIG.TOML>' argument._
@@ -92,29 +94,74 @@ _By default OxideMiner will look for a 'config.toml' file in the same directory 
 
 > The steps below are for if you want to build from source.
 
-- Rust toolchain via [rustup](https://rustup.rs/) (stable channel). The workspace targets Rust 2021 edition.
+- Rust toolchain via [rustup](https://rustup.rs/) (stable channel). The workspace targets _Rust 2021 edition_.
 - A Monero-compatible mining pool endpoint and wallet address.
 - Optional: elevated privileges for huge/large page support (see below).
 
 ### Build and install
 
+#### Clone the repository
+
 ```bash
-# Clone the repository
 git clone https://github.com/raystanza/OxideMiner.git
 cd OxideMiner
+```
 
-# Compile an optimized binary
+#### Pick your compile method
+
+OxideMiner supports multiple build configurations, depending on whether you want **maximum compatibility** or **maximum performance on a specific machine**.
+
+```bash
 cargo build --release
+    [OR]
+cargo build --profile maxperf
+    [OR]
+RUSTFLAGS="-C target-cpu=native" cargo build --profile maxperf
+```
 
-# Copy the executable to a location on your PATH (optional, Debian Linux)
+**Explanation of each option:**
+
+- **`cargo build --release`**
+  Builds OxideMiner using Cargo’s standard `release` profile.
+  This produces a **portable, optimized binary** suitable for distribution and for running on a wide range of CPUs.
+  Runtime CPU feature detection (AES, AVX2, etc.) is used to select the best available RandomX code paths at execution time.
+
+- **`cargo build --profile maxperf`**
+  Builds using OxideMiner’s custom `maxperf` profile, which enables more aggressive compiler optimizations (e.g. fat LTO, single codegen unit, stripped symbols).
+  This improves performance while **remaining portable** across different CPUs.
+  Recommended if you want better performance than `--release` without sacrificing compatibility.
+
+- **`RUSTFLAGS="-C target-cpu=native" cargo build --profile maxperf`**
+  Builds a **host-optimized binary** tuned specifically for the CPU on the machine performing the build.
+  LLVM is allowed to fully specialize code generation for the host CPU (e.g. aes_ni, ssse3, avx2, avx512f, sse2).
+  This typically yields the **highest possible hash rate**, but the resulting binary **may not run on other machines**.
+
+> **Recommendation:**
+>
+> - Use `--release` for general use and distribution.
+> - Use `--profile maxperf` for improved performance with broad compatibility.
+> - Use `--profile maxperf` **with `target-cpu=native`** when building for a specific machine and **absolute maximum performance** is desired.
+
+#### Install executable on your PATH (optional, Debian Linux)
+
+```bash
 install -Dm755 target/release/oxide-miner "$HOME/.local/bin/oxide-miner"
 ```
 
-The CLI can also be run directly with `cargo run -p oxide-miner --release -- <flags>` while testing changes.
+> The CLI can also be run directly with `cargo run -p oxide-miner --release -- <flags>` while testing changes.
 
 ### First run
 
-Supply your pool, wallet, and optional password. Leave threads and batch size unset to accept the auto-tuned values gathered at startup.
+Prefer the `config.toml` file for your first run. Copy `config.toml.example` to `config.toml`, fill in your pool and wallet, then run the miner.
+
+```bash
+# Preferred: config.toml in the same directory as the binary
+./oxide-miner
+```
+
+By default OxideMiner looks for `config.toml` alongside the binary. Use `--config <PATH>` to point at a different file.
+
+Command-line flags are also available if you prefer to launch without a config file:
 
 ```bash
 # Example: plaintext stratum connection with HTTP dashboard on localhost (127.0.0.1:8080 by default)
@@ -143,8 +190,8 @@ GPG signatures (`.asc`). Always verify downloads before running them to protect 
 
 ### 1. Download the official artifacts
 
-1. Visit the [Releases](https://github.com/raystanza/OxideMiner/releases) page and choose the tag you want (for example, `v1.2.3`).
-2. Download the archive for your operating system and the accompanying checksum (`.sha256`). If signatures are available, download the `.asc` files as well.
+1. Visit the [Releases](https://github.com/raystanza/OxideMiner/releases) page and choose the tag you want (for example, `v0.3.7`).
+2. Download the archive for your operating system and the accompanying checksum (`.sha256`). Download the `.asc` signature files as well.
 
 ### 2. Verify SHA-256 checksums
 
@@ -154,7 +201,7 @@ Validating checksums ensures that the file you downloaded matches what the relea
 
 ```bash
 # Replace the filenames with the release assets you downloaded
-sha256sum -c oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.sha256
+sha256sum -c oxide-miner-v0.3.7-x86_64-ubuntu-linux-gnu.sha256
 ```
 
 The command reports `OK` when the archive’s digest matches the expected value. If it fails, delete the file immediately and
@@ -164,16 +211,16 @@ re-download it from the official release page.
 
 ```cmd
 :: Replace the file names with the versions you downloaded
-certutil -hashfile oxide-miner-v1.2.3-x86_64-pc-windows-msvc.zip SHA256
+certutil -hashfile oxide-miner-v0.3.7-x86_64-pc-windows-msvc.zip SHA256
 ```
 
-Compare the printed hash with the value inside `oxide-miner-v1.2.3-x86_64-pc-windows-msvc.sha256`. The values must match exactly.
+Compare the printed hash with the value inside `oxide-miner-v0.3.7-x86_64-pc-windows-msvc.zip.sha256`. The values must match exactly.
 
 #### Windows 10/11 (PowerShell)
 
 ```powershell
 # Replace the file names with the versions you downloaded
-Get-FileHash .\oxide-miner-v1.2.3-x86_64-pc-windows-msvc.zip -Algorithm SHA256
+Get-FileHash .\oxide-miner-v0.3.7-x86_64-pc-windows-msvc.zip -Algorithm SHA256
 ```
 
 Compare the `Hash` field in the output with the value in the `.sha256` file. If they differ, do not run the binary.
@@ -195,25 +242,27 @@ gpg --import release-subkey-ci-public-20251012.asc
 gpg --keyserver hkps://keys.openpgp.org --recv-keys FDA06CAE264DAC0D29B03F5195EDEDFDCB4DD826
 ```
 
-### 2. Verify the signature for the archive (and the checksum file, if provided)
+### 2. Verify the signature for the archive (and the checksum file)
+
+Debian / Ubuntu Linux
 
 ```bash
-gpg --verify oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.tar.gz.asc oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.tar.gz
-gpg --verify oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.sha256.asc oxide-miner-v1.2.3-x86_64-unknown-linux-gnu.sha256
+gpg --verify oxide-miner-v0.3.7-x86_64-ubuntu-linux-gnu.tar.gz.asc oxide-miner-v0.3.7-x86_64-ubuntu-linux-gnu.tar.gz
+gpg --verify oxide-miner-v0.3.7-x86_64-ubuntu-linux-gnu.sha256.asc oxide-miner-v0.3.7-x86_64-ubuntu-linux-gnu.sha256
 ```
 
 On Windows PowerShell, use the same commands inside `gpg` (installed with Git for Windows or Gpg4win):
 
 ```powershell
-gpg --verify oxide-miner-v1.2.3-x86_64-pc-windows-msvc.zip.asc oxide-miner-v1.2.3-x86_64-pc-windows-msvc.zip
+gpg --verify oxide-miner-v0.3.7-x86_64-pc-windows-msvc.zip.asc oxide-miner-v0.3.7-x86_64-pc-windows-msvc.zip
+gpg --verify oxide-miner-v0.3.7-x86_64-pc-windows-msvc.sha256.asc oxide-miner-v0.3.7-x86_64-pc-windows-msvc.sha256
 ```
 
 ### 3. Confirm the signing key’s fingerprint matches the fingerprint published by the project maintainer ([@raystanza](https://github.com/raystanza/))
 
 **If it does not**, discard the artifacts and investigate before proceeding!
 
-Only run the miner when both the checksum and signature verifications succeed. This defense-in-depth approach reduces exposure to
-malicious mirrors and supply-chain attacks.
+Only run the miner when both the checksum and signature verifications succeed. This defense-in-depth approach reduces exposure to malicious mirrors and supply-chain attacks.
 
 ## Configuration
 
@@ -277,17 +326,12 @@ The repository ships with [`config.toml.example`](config.toml.example). Copy it 
 ```toml
 # Save as config.toml next to the oxide-miner binary
 pool = "pool.supportxmr.com:5555"
-wallet = "48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaaVYMpBBd2QQUiTY84qaSXJYVPS"
+wallet = "<YOUR_WALLET_ADDRESS>"
 pass = "rig001"
-threads = 8          # omit to auto-tune
-api_port = 8080      # enable HTTP dashboard
-api_bind = "127.0.0.1"   # address to bind the dashboard/API (default 127.0.0.1, only used with api_port)
-huge_pages = true    # request HugeTLB / large pages if OS allows it
-# dashboard_dir = "./crates/oxide-miner/assets"   # serve custom UI while developing
-# (on Windows, escape backslashes [e.g. "C:\\path\\to\\dashboard"] or use single quotes [e.g. 'C:\path\to\dashboard'])
-# tls = true
-# tls_ca_cert = "/etc/ssl/certs/ca-certificates.crt"
-# tls_cert_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+threads = 8             # omit to auto-tune
+api_port = 8080         # enable HTTP dashboard
+api_bind = "127.0.0.1"  # address to bind the dashboard/API (default 127.0.0.1, only used with api_port)
+huge_pages = true       # request HugeTLB / large pages if OS allows it
 ```
 
 ### Configuration warnings

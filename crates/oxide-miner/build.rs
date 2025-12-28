@@ -61,36 +61,45 @@ fn copy_config_example(root: &Path) {
         println!("cargo:rerun-if-changed={}", template.display());
     }
 
-    let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_owned());
-    let dest_dir = root.join("ox-build").join("target").join(&profile);
-    if let Err(err) = fs::create_dir_all(&dest_dir) {
+    let Some((profile_dir, dst_secondary)) = profile_dirs_from_out_dir() else {
         println!(
-            "cargo:warning=Failed to create config destination directory {}: {}",
-            dest_dir.display(),
-            err
+            "cargo:warning=Skipping config.toml.example copy: could not resolve OUT_DIR/profile dir"
         );
         return;
+    };
+
+    let template_name = template
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("config.toml.example"));
+
+    for dest_dir in std::iter::once(profile_dir).chain(dst_secondary.into_iter()) {
+        if let Err(err) = fs::create_dir_all(&dest_dir) {
+            println!(
+                "cargo:warning=Failed to create config destination directory {}: {}",
+                dest_dir.display(),
+                err
+            );
+            continue;
+        }
+
+        let dest_path = dest_dir.join(template_name);
+        if dest_path.exists() {
+            // Respect existing configuration artifacts to avoid clobbering manual edits.
+            continue;
+        }
+
+        if let Err(err) = fs::copy(&template, &dest_path) {
+            println!(
+                "cargo:warning=Failed to copy {} to {}: {}",
+                template.display(),
+                dest_path.display(),
+                err
+            );
+        }
     }
 
-    let dest_path = dest_dir.join(
-        template
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("config.toml.example")),
-    );
-
-    if dest_path.exists() {
-        // Respect existing configuration artifacts to avoid clobbering manual edits.
-        return;
-    }
-
-    if let Err(err) = fs::copy(&template, &dest_path) {
-        println!(
-            "cargo:warning=Failed to copy {} to {}: {}",
-            template.display(),
-            dest_path.display(),
-            err
-        );
-    }
+    println!("cargo:rerun-if-env-changed=CARGO_TARGET_DIR");
+    println!("cargo:rerun-if-env-changed=PROFILE");
 }
 
 /// Recursively copy a directory tree using only std.

@@ -53,8 +53,12 @@ codegen-units = 1
 
 [profile.maxperf]
 inherits = "release"
-# Extra-aggressive build tuned for the host CPU. Users can opt-in via `cargo build --profile maxperf`.
-lto = "fat"
-codegen-units = 1
 opt-level = 3
-strip = "debuginfo"
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+overflow-checks = false
+debug-assertions = false
+debug = 0
+incremental = false
+strip = "symbols"
