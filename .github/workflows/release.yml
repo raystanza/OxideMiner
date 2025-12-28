@@ -154,7 +154,7 @@ jobs:
             cp -r "scripts/windows" "$pkg_dir/scripts/"
             # (PowerShell scripts don't need chmod on Linux, fine as-is)
           fi
-          # Optional readme for scripts if you want it shipped:
+          # Optional readme for scripts:
           if [[ -f "scripts/README.md" ]]; then
             mkdir -p "$pkg_dir/scripts"
             cp "scripts/README.md" "$pkg_dir/scripts/"
@@ -359,7 +359,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Generating changelog for ${RELEASE_TAG}..."
-          changelog_file=$(bash dev/list_changes_linux.sh --latest | sed -n 's/^Generated //p')
+          changelog_file=$(bash scripts/release/list_changes_linux.sh --latest | sed -n 's/^Generated //p')
           if [[ -z "$changelog_file" || ! -f "$changelog_file" ]]; then
             echo "Changelog file not found after generation."
             ls -la dev
