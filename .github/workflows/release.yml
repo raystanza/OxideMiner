@@ -329,6 +329,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # Needed for tag-based changelog generation;
+      # "fetch-depth: 0" ensures tags/history are available.
+      - name: Checkout repository for changelog
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -338,11 +345,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "Generating changelog for ${RELEASE_TAG}..."
+          changelog_file=$(bash dev/list_changes_linux.sh --latest | sed -n 's/^Generated //p')
+          if [[ -z "$changelog_file" || ! -f "$changelog_file" ]]; then
+            echo "Changelog file not found after generation."
+            ls -la dev
+            exit 1
+          fi
+          echo "Using changelog file: $changelog_file"
           mkdir -p notes
           {
             echo "## OxideMiner ${RELEASE_TAG}"
             echo
-            echo "Automated release for tag ${RELEASE_TAG}."
+            cat "$changelog_file"
           } > notes/body.md
 
       - name: Create release as draft if needed
