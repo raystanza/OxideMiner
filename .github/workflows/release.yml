@@ -16,7 +16,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RELEASE_TAG: ${{ github.ref_name }}
-  LINUX_ARCHIVE_LABEL: x86_64-ubuntu-linux-gnu
 
 jobs:
   build:
@@ -26,14 +25,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive-extension: tar.gz
             binary-extension: ''
+            linux_archive_label: x86_64-ubuntu24-linux-gnu
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive-extension: tar.gz
+            binary-extension: ''
+            linux_archive_label: x86_64-ubuntu22-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive-extension: zip
             binary-extension: .exe
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive-extension: tar.gz
+            binary-extension: ''
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -69,8 +78,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
-            release_suffix="$LINUX_ARCHIVE_LABEL"
+          if [[ "${{ matrix.os }}" == ubuntu-* ]]; then
+            release_suffix="${{ matrix.linux_archive_label }}"
           else
             release_suffix="${{ matrix.target }}"
           fi
@@ -79,7 +88,7 @@ jobs:
           echo "CHECKSUM_NAME=oxide-miner-${RELEASE_TAG}-${release_suffix}.sha256" >> "$GITHUB_ENV"
 
       - name: List built files (Linux)
-        if: ${{ matrix.os == 'ubuntu-latest' }}
+        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -88,7 +97,7 @@ jobs:
           ls -la "$CARGO_TARGET_DIR/release" || true
 
       - name: Prepare Linux artifact (binary + config + scripts)
-        if: ${{ matrix.os == 'ubuntu-latest' }}
+        if: ${{ startsWith(matrix.os, 'ubuntu-') || matrix.os == 'macos-13' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -162,7 +171,11 @@ jobs:
           rm -rf "$pkg_dir"
 
           # Checksums (archive only)
-          bash scripts/release/generate-checksums.sh "$dist_dir/$CHECKSUM_NAME" "$dist_dir/$ARCHIVE_NAME"
+          if [[ "${{ matrix.os }}" == "macos-13" ]]; then
+            shasum -a 256 "$dist_dir/$ARCHIVE_NAME" > "$dist_dir/$CHECKSUM_NAME"
+          else
+            bash scripts/release/generate-checksums.sh "$dist_dir/$CHECKSUM_NAME" "$dist_dir/$ARCHIVE_NAME"
+          fi
 
       # Setup GPG on Windows, with choco fallback
       - name: Ensure GnuPG (Windows)
@@ -271,7 +284,7 @@ jobs:
           "$($hash.Hash.ToLower())  $($env:ARCHIVE_NAME)" | Out-File -FilePath $checksumFile -Encoding ascii
 
       - name: Sign artifacts (Linux)
-        if: ${{ matrix.os == 'ubuntu-latest' }}
+        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
@@ -320,7 +333,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: oxide-miner-${{ matrix.target }}
+          name: oxide-miner-${{ matrix.os }}-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
 
@@ -329,6 +342,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # Needed for tag-based changelog generation;
+      # "fetch-depth: 0" ensures tags/history are available.
+      - name: Checkout repository for changelog
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -338,11 +358,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "Generating changelog for ${RELEASE_TAG}..."
+          changelog_file=$(bash dev/list_changes_linux.sh --latest | sed -n 's/^Generated //p')
+          if [[ -z "$changelog_file" || ! -f "$changelog_file" ]]; then
+            echo "Changelog file not found after generation."
+            ls -la dev
+            exit 1
+          fi
+          echo "Using changelog file: $changelog_file"
           mkdir -p notes
           {
             echo "## OxideMiner ${RELEASE_TAG}"
             echo
-            echo "Automated release for tag ${RELEASE_TAG}."
+            cat "$changelog_file"
           } > notes/body.md
 
       - name: Create release as draft if needed
