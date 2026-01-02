@@ -3,6 +3,7 @@
 mod args;
 mod http_api;
 mod miner;
+mod solo;
 mod stats;
 mod themes;
 mod util;

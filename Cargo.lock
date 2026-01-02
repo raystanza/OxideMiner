@@ -980,6 +980,7 @@ name = "oxide-miner"
 version = "0.3.7"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "embed-resource",
@@ -997,11 +998,13 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "toml",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

@@ -1,6 +1,8 @@
 // OxideMiner/crates/oxide-miner/src/args.rs
 
-use clap::{builder::TypedValueParser, error::ErrorKind, CommandFactory, Parser, ValueHint};
+use clap::{
+    builder::TypedValueParser, error::ErrorKind, CommandFactory, Parser, ValueEnum, ValueHint,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -10,6 +12,22 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum MiningMode {
+    Pool,
+    Solo,
+}
+
+impl MiningMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MiningMode::Pool => "pool",
+            MiningMode::Solo => "solo",
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(
     author,
@@ -17,12 +35,16 @@ use std::{
     about = "OxideMiner - Rust Monero RandomX CPU miner (CLI MVP)"
 )]
 pub struct Args {
+    /// Mining backend mode (pool or solo)
+    #[arg(long = "mode", value_enum, default_value_t = MiningMode::Pool)]
+    pub mode: MiningMode,
+
     /// pool like "pool.supportxmr.com:5555"
-    #[arg(short = 'o', long = "url", required_unless_present = "benchmark")]
+    #[arg(short = 'o', long = "url")]
     pub pool: Option<String>,
 
     /// Your XMR wallet address
-    #[arg(short = 'u', long = "user", required_unless_present = "benchmark")]
+    #[arg(short = 'u', long = "user")]
     pub wallet: Option<String>,
 
     /// Pool password (often 'x')
@@ -108,6 +130,40 @@ pub struct Args {
     /// Route pool connections through a SOCKS5 proxy (socks5://[user:pass@]host:port)
     #[arg(long = "proxy", value_name = "URL", value_hint = ValueHint::Url)]
     pub proxy: Option<String>,
+
+    /// Monerod JSON-RPC URL for solo mining
+    #[arg(
+        long = "node-rpc-url",
+        value_name = "URL",
+        value_hint = ValueHint::Url,
+        default_value = "http://127.0.0.1:18081"
+    )]
+    pub node_rpc_url: String,
+
+    /// Monerod JSON-RPC username (HTTP basic auth)
+    #[arg(long = "node-rpc-user", value_name = "USER")]
+    pub node_rpc_user: Option<String>,
+
+    /// Monerod JSON-RPC password (HTTP basic auth)
+    #[arg(long = "node-rpc-pass", value_name = "PASS")]
+    pub node_rpc_pass: Option<String>,
+
+    /// Wallet address for solo mining (used in get_block_template)
+    #[arg(long = "solo-wallet", value_name = "ADDRESS")]
+    pub solo_wallet: Option<String>,
+
+    /// Reserve size (bytes) for get_block_template
+    #[arg(
+        long = "solo-reserve-size",
+        value_name = "BYTES",
+        default_value_t = 60,
+        value_parser = clap::value_parser!(u32).range(0..=255)
+    )]
+    pub solo_reserve_size: u32,
+
+    /// ZMQ endpoint for monerod new-block notifications (optional)
+    #[arg(long = "solo-zmq", value_name = "URL", value_hint = ValueHint::Url)]
+    pub solo_zmq: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -139,6 +195,30 @@ pub struct ConfigFile {
     pub no_yield: Option<bool>,
     pub debug: Option<bool>,
     pub proxy: Option<String>,
+    pub mode: Option<MiningMode>,
+    pub solo: Option<SoloConfigFile>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SoloConfigFile {
+    #[serde(alias = "node-rpc-url", alias = "node_rpc_url", alias = "rpc-url")]
+    pub rpc_url: Option<String>,
+    #[serde(alias = "node-rpc-user", alias = "node_rpc_user", alias = "rpc-user")]
+    pub rpc_user: Option<String>,
+    #[serde(
+        alias = "node-rpc-pass",
+        alias = "node_rpc_pass",
+        alias = "rpc-pass",
+        skip_serializing
+    )]
+    pub rpc_pass: Option<String>,
+    #[serde(alias = "solo-wallet", alias = "solo_wallet")]
+    pub wallet: Option<String>,
+    #[serde(alias = "reserve-size", alias = "reserve_size")]
+    pub reserve_size: Option<u32>,
+    #[serde(alias = "solo-zmq", alias = "zmq")]
+    pub zmq: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +275,7 @@ where
     });
 
     let args = Args::try_parse_from(args_vec)?;
+    validate_args(&args)?;
     if should_warn_unused_api_bind(&args, &original_args, config.as_ref()) {
         warnings.push(ConfigWarning::new(
             "api_bind is set but api_port is not set; HTTP API will not start".to_string(),
@@ -409,6 +490,52 @@ fn apply_config_defaults(
             applied.proxy = true;
         }
     }
+
+    if let Some(mode) = config.mode {
+        if !has_arg(original_args, None, Some("mode")) {
+            push_value(args, "--mode", mode.as_str());
+            applied.mode = true;
+        }
+    }
+
+    if let Some(solo) = config.solo.as_ref() {
+        if let Some(url) = solo.rpc_url.as_ref() {
+            if !has_arg(original_args, None, Some("node-rpc-url")) {
+                push_value(args, "--node-rpc-url", url.as_str());
+                applied.solo_rpc_url = true;
+            }
+        }
+        if let Some(user) = solo.rpc_user.as_ref() {
+            if !has_arg(original_args, None, Some("node-rpc-user")) {
+                push_value(args, "--node-rpc-user", user.as_str());
+                applied.solo_rpc_user = true;
+            }
+        }
+        if let Some(pass) = solo.rpc_pass.as_ref() {
+            if !has_arg(original_args, None, Some("node-rpc-pass")) {
+                push_value(args, "--node-rpc-pass", pass.as_str());
+                applied.solo_rpc_pass = true;
+            }
+        }
+        if let Some(wallet) = solo.wallet.as_ref() {
+            if !has_arg(original_args, None, Some("solo-wallet")) {
+                push_value(args, "--solo-wallet", wallet.as_str());
+                applied.solo_wallet = true;
+            }
+        }
+        if let Some(reserve_size) = solo.reserve_size {
+            if !has_arg(original_args, None, Some("solo-reserve-size")) {
+                push_value(args, "--solo-reserve-size", reserve_size.to_string());
+                applied.solo_reserve_size = true;
+            }
+        }
+        if let Some(zmq) = solo.zmq.as_ref() {
+            if !has_arg(original_args, None, Some("solo-zmq")) {
+                push_value(args, "--solo-zmq", zmq.as_str());
+                applied.solo_zmq = true;
+            }
+        }
+    }
 }
 
 fn has_arg(args: &[OsString], short: Option<&str>, long: Option<&str>) -> bool {
@@ -490,6 +617,13 @@ pub struct ConfigApplied {
     pub no_yield: bool,
     pub debug: bool,
     pub proxy: bool,
+    pub mode: bool,
+    pub solo_rpc_url: bool,
+    pub solo_rpc_user: bool,
+    pub solo_rpc_pass: bool,
+    pub solo_wallet: bool,
+    pub solo_reserve_size: bool,
+    pub solo_zmq: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -526,6 +660,8 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "no-yield",
     "debug",
     "proxy",
+    "mode",
+    "solo",
 ];
 
 fn config_error(mut cmd: clap::Command, msg: String) -> clap::Error {
@@ -535,6 +671,66 @@ fn config_error(mut cmd: clap::Command, msg: String) -> clap::Error {
         clap::error::ContextValue::StyledStr(cmd.render_usage()),
     );
     err
+}
+
+fn args_error(mut cmd: clap::Command, msg: String) -> clap::Error {
+    let mut err = clap::Error::raw(ErrorKind::InvalidValue, msg);
+    err.insert(
+        clap::error::ContextKind::Usage,
+        clap::error::ContextValue::StyledStr(cmd.render_usage()),
+    );
+    err
+}
+
+fn validate_args(args: &Args) -> Result<(), clap::Error> {
+    if args.benchmark {
+        return Ok(());
+    }
+
+    if args.node_rpc_pass.is_some() && args.node_rpc_user.is_none() {
+        return Err(args_error(
+            Args::command(),
+            "--node-rpc-pass requires --node-rpc-user".to_string(),
+        ));
+    }
+
+    match args.mode {
+        MiningMode::Pool => {
+            if args.pool.as_deref().unwrap_or_default().is_empty() {
+                return Err(args_error(
+                    Args::command(),
+                    "missing pool URL (use --url or set pool in config)".to_string(),
+                ));
+            }
+            if args.wallet.as_deref().unwrap_or_default().is_empty() {
+                return Err(args_error(
+                    Args::command(),
+                    "missing wallet address (use --user or set wallet in config)".to_string(),
+                ));
+            }
+        }
+        MiningMode::Solo => {
+            if args.solo_wallet.as_deref().unwrap_or_default().is_empty() {
+                return Err(args_error(
+                    Args::command(),
+                    "missing solo wallet address (use --solo-wallet or [solo].wallet in config)"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+
+    if matches!(args.mode, MiningMode::Pool)
+        && !args.tls
+        && (args.tls_ca_cert.is_some() || args.tls_cert_sha256.is_some())
+    {
+        return Err(args_error(
+            Args::command(),
+            "--tls-ca-cert and --tls-cert-sha256 require --tls to be enabled".to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 fn format_toml_error(path: &Path, message: &str, line_col: Option<(usize, usize)>) -> String {
@@ -551,7 +747,7 @@ fn format_toml_error(path: &Path, message: &str, line_col: Option<(usize, usize)
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_with_config_from, Args};
+    use super::{parse_with_config_from, validate_args, Args, MiningMode};
     use clap::Parser;
     use std::{
         env,
@@ -568,14 +764,75 @@ mod tests {
 
     #[test]
     fn mining_mode_parses_with_pool_and_wallet() {
-        assert!(Args::try_parse_from(["test", "-o", "pool:5555", "-u", "wallet"]).is_ok());
+        let args = Args::try_parse_from(["test", "-o", "pool:5555", "-u", "wallet"]).unwrap();
+        assert!(validate_args(&args).is_ok());
     }
 
     #[test]
     fn mining_mode_missing_pool_or_wallet_fails() {
-        assert!(Args::try_parse_from(["test"]).is_err());
-        assert!(Args::try_parse_from(["test", "-o", "pool:5555"]).is_err());
-        assert!(Args::try_parse_from(["test", "-u", "wallet"]).is_err());
+        let args = Args::try_parse_from(["test"]).unwrap();
+        assert!(validate_args(&args).is_err());
+        let args = Args::try_parse_from(["test", "-o", "pool:5555"]).unwrap();
+        assert!(validate_args(&args).is_err());
+        let args = Args::try_parse_from(["test", "-u", "wallet"]).unwrap();
+        assert!(validate_args(&args).is_err());
+    }
+
+    #[test]
+    fn solo_mode_parses_without_pool_wallet() {
+        let args = Args::try_parse_from(["test", "--mode", "solo", "--solo-wallet", "solo-wallet"])
+            .unwrap();
+        assert_eq!(args.mode, MiningMode::Solo);
+        assert!(validate_args(&args).is_ok());
+    }
+
+    #[test]
+    fn solo_mode_requires_wallet() {
+        let args = Args::try_parse_from(["test", "--mode", "solo"]).unwrap();
+        assert!(validate_args(&args).is_err());
+    }
+
+    #[test]
+    fn config_file_supplies_solo_defaults() {
+        let config = NamedTempFile::new().unwrap();
+        fs::write(
+            config.path(),
+            r#"
+mode = "solo"
+[solo]
+wallet = "solo-wallet"
+rpc_url = "http://127.0.0.1:18081"
+reserve_size = 64
+"#,
+        )
+        .unwrap();
+
+        let args = vec![
+            OsString::from("test"),
+            OsString::from("--config"),
+            config.path().as_os_str().to_os_string(),
+        ];
+
+        let parsed = parse_with_config_from(args).unwrap();
+        assert_eq!(parsed.args.mode, MiningMode::Solo);
+        assert_eq!(parsed.args.solo_wallet.as_deref(), Some("solo-wallet"));
+        assert_eq!(parsed.args.node_rpc_url.as_str(), "http://127.0.0.1:18081");
+        assert_eq!(parsed.args.solo_reserve_size, 64);
+    }
+
+    #[test]
+    fn solo_rpc_pass_requires_user() {
+        let args = Args::try_parse_from([
+            "test",
+            "--mode",
+            "solo",
+            "--solo-wallet",
+            "wallet",
+            "--node-rpc-pass",
+            "secret",
+        ])
+        .unwrap();
+        assert!(validate_args(&args).is_err());
     }
 
     #[test]

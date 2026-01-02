@@ -5,9 +5,13 @@ name = "oxide-miner"
 version = "0.3.7"
 edition = "2021"
 
+[features]
+integration-tests = []
+
 [dependencies]
 oxide-core = { path = "../oxide-core", features = ["randomx"] }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -25,6 +29,8 @@ sysinfo = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 ring = { workspace = true }
+url = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

@@ -116,6 +116,12 @@ function formatIsoLocal(iso) {
   return Number.isNaN(d.getTime()) ? null : d.toLocaleString();
 }
 
+function formatUnixTimestamp(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  const d = new Date(seconds * 1000);
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleString();
+}
+
 function applyStats(data) {
   const hashrateEl = document.getElementById('hashrate');
   if (hashrateEl) {
@@ -155,6 +161,12 @@ function applyStats(data) {
     connectedEl.textContent = data.connected ? 'Yes' : 'No';
   }
 
+  const modeEl = document.getElementById('mode');
+  if (modeEl) {
+    const mode = typeof data.mode === 'string' ? data.mode : '-';
+    modeEl.textContent = mode !== '-' ? mode.charAt(0).toUpperCase() + mode.slice(1) : '-';
+  }
+
   const tlsEl = document.getElementById('tls');
   if (tlsEl) {
     tlsEl.textContent = data.tls ? 'Yes' : 'No';
@@ -168,6 +180,56 @@ function applyStats(data) {
   const miningTimeEl = document.getElementById('mining_time');
   if (miningTimeEl) {
     miningTimeEl.textContent = formatDuration(Number(timing.mining_time_seconds));
+  }
+
+  const solo = data.solo || {};
+  const nodeHeightEl = document.getElementById('node_height');
+  if (nodeHeightEl) {
+    const height = Number(solo.node_height);
+    nodeHeightEl.textContent = Number.isFinite(height) ? intFmt.format(height) : '-';
+  }
+
+  const templateHeightEl = document.getElementById('template_height');
+  if (templateHeightEl) {
+    const height = Number(solo.template_height);
+    templateHeightEl.textContent = Number.isFinite(height) ? intFmt.format(height) : '-';
+  }
+
+  const templateAgeEl = document.getElementById('template_age');
+  if (templateAgeEl) {
+    const ageValue = solo.template_age_seconds;
+    const age = Number(ageValue);
+    const valid = ageValue !== null && ageValue !== undefined && Number.isFinite(age);
+    templateAgeEl.textContent = valid ? formatDuration(age) : '-';
+  }
+
+  const blocks = solo.blocks || {};
+  const soloBlocksEl = document.getElementById('solo_blocks');
+  if (soloBlocksEl) {
+    const accepted = Number.isFinite(Number(blocks.accepted)) ? blocks.accepted : '-';
+    const rejected = Number.isFinite(Number(blocks.rejected)) ? blocks.rejected : '-';
+    const submitted = Number.isFinite(Number(blocks.submitted)) ? blocks.submitted : '-';
+    soloBlocksEl.textContent = `${accepted} / ${rejected} (${submitted})`;
+  }
+
+  const lastSubmitEl = document.getElementById('last_submit');
+  if (lastSubmitEl) {
+    const last = solo.last_submit;
+    if (last && typeof last === 'object') {
+      const outcome = typeof last.outcome === 'string' ? last.outcome : 'unknown';
+      const detail = typeof last.detail === 'string' ? last.detail : '';
+      const when = formatUnixTimestamp(Number(last.timestamp));
+      let text = outcome;
+      if (detail) {
+        text += `: ${detail}`;
+      }
+      if (when) {
+        text += ` (${when})`;
+      }
+      lastSubmitEl.textContent = text;
+    } else {
+      lastSubmitEl.textContent = '-';
+    }
   }
 
   updateFooter(data);

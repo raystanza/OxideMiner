@@ -3,11 +3,15 @@
 # Any CLI flag can still override these values. Omit a key to use the built-in default / auto behavior.
 #
 # Minimal example (uncomment & edit the next 3 lines to get started):
+# mode = "pool"                        # "pool" (default) or "solo"
 # pool = "pool.supportxmr.com:5555"    # Your pool host:port
 # wallet = "<YOUR_XMR_ADDRESS>"        # Your primary XMR wallet address
 # pass = "x"                           # Pool password / miner name (many pools accept 'x')
 
 # --- Connection ---
+
+# Mining backend mode. Use "solo" to mine against a local monerod (see [solo] below).
+#mode = "pool"
 
 # Replace with the mining pool of your choice (host:port)
 #pool = "pool.supportxmr.com:3333"
@@ -17,6 +21,20 @@
 
 # Optional password / miner name
 #pass = "x"
+
+# --- Solo mining (local monerod) ---
+#
+# Requires a fully-synced monerod with RPC enabled (default http://127.0.0.1:18081).
+# Example:
+# monerod --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081 --rpc-login user:pass
+
+#[solo]
+#rpc_url = "http://127.0.0.1:18081"
+#rpc_user = "user"
+#rpc_pass = "pass"
+#wallet = "<YOUR_XMR_ADDRESS>"
+#reserve_size = 60
+#zmq = "tcp://127.0.0.1:18083"
 
 # Route pool traffic through a SOCKS5 proxy (useful for Tor/VPN privacy)
 #proxy = "socks5://127.0.0.1:9050"

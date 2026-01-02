@@ -1,9 +1,9 @@
 // OxideMiner/crates/oxide-miner/src/stats.rs
 
-use crate::args::LoadedConfigFile;
+use crate::args::{LoadedConfigFile, MiningMode};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Shared miner statistics updated across tasks and exposed via the HTTP API.
 pub struct Stats {
@@ -17,12 +17,25 @@ pub struct Stats {
     pub pool_connected: AtomicBool,
     pub tls: bool,
     pub pool: String,
+    pub mode: MiningMode,
     pub config: Option<LoadedConfigFile>,
+    pub node_height: AtomicU64,
+    pub template_height: AtomicU64,
+    pub template_timestamp: AtomicU64,
+    pub blocks_submitted: AtomicU64,
+    pub blocks_accepted: AtomicU64,
+    pub blocks_rejected: AtomicU64,
+    pub last_submit: Mutex<Option<SubmitRecord>>,
     hashrate_sample: Mutex<HashrateSample>,
 }
 
 impl Stats {
-    pub fn new(pool: String, tls: bool, config: Option<LoadedConfigFile>) -> Self {
+    pub fn new(
+        mode: MiningMode,
+        pool: String,
+        tls: bool,
+        config: Option<LoadedConfigFile>,
+    ) -> Self {
         Self {
             start: Instant::now(),
             accepted: AtomicU64::new(0),
@@ -33,7 +46,15 @@ impl Stats {
             pool_connected: AtomicBool::new(false),
             tls,
             pool,
+            mode,
             config,
+            node_height: AtomicU64::new(0),
+            template_height: AtomicU64::new(0),
+            template_timestamp: AtomicU64::new(0),
+            blocks_submitted: AtomicU64::new(0),
+            blocks_accepted: AtomicU64::new(0),
+            blocks_rejected: AtomicU64::new(0),
+            last_submit: Mutex::new(None),
             hashrate_sample: Mutex::new(HashrateSample::new()),
         }
     }
@@ -74,6 +95,18 @@ impl Stats {
     pub fn mining_duration(&self) -> Duration {
         self.start.elapsed()
     }
+
+    pub fn template_age_seconds(&self) -> Option<u64> {
+        let ts = self.template_timestamp.load(Ordering::Relaxed);
+        if ts == 0 {
+            return None;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        Some(now.saturating_sub(ts))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -91,16 +124,59 @@ impl HashrateSample {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum SubmitOutcome {
+    Accepted,
+    Rejected,
+    Error,
+}
+
+impl SubmitOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SubmitOutcome::Accepted => "accepted",
+            SubmitOutcome::Rejected => "rejected",
+            SubmitOutcome::Error => "error",
+        }
+    }
+
+    pub fn is_success(self) -> bool {
+        matches!(self, SubmitOutcome::Accepted)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SubmitRecord {
+    pub outcome: SubmitOutcome,
+    pub detail: String,
+    pub timestamp: u64,
+}
+
+impl SubmitRecord {
+    pub fn new(outcome: SubmitOutcome, detail: String) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        Self {
+            outcome,
+            detail,
+            timestamp,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{HashrateSample, Stats};
+    use crate::args::MiningMode;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     #[test]
     fn stats_initializes_counters() {
-        let stats = Stats::new("pool".into(), true, None);
+        let stats = Stats::new(MiningMode::Pool, "pool".into(), true, None);
         assert_eq!(stats.accepted.load(Ordering::Relaxed), 0);
         assert_eq!(stats.rejected.load(Ordering::Relaxed), 0);
         assert_eq!(stats.dev_accepted.load(Ordering::Relaxed), 0);
@@ -112,7 +188,7 @@ mod tests {
 
     #[test]
     fn hashrate_avg_uses_elapsed_time() {
-        let stats = Stats::new("pool".into(), false, None);
+        let stats = Stats::new(MiningMode::Pool, "pool".into(), false, None);
         // Replace hashes with a pre-filled counter for deterministic check
         stats.hashes.store(1000, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
@@ -132,7 +208,15 @@ mod tests {
             pool_connected: AtomicBool::new(false),
             tls: false,
             pool: String::new(),
+            mode: MiningMode::Pool,
             config: None,
+            node_height: AtomicU64::new(0),
+            template_height: AtomicU64::new(0),
+            template_timestamp: AtomicU64::new(0),
+            blocks_submitted: AtomicU64::new(0),
+            blocks_accepted: AtomicU64::new(0),
+            blocks_rejected: AtomicU64::new(0),
+            last_submit: Mutex::new(None),
             hashrate_sample: Mutex::new(HashrateSample::new()),
         };
         assert_eq!(manual.hashrate_avg(), 0.0);
@@ -140,7 +224,7 @@ mod tests {
 
     #[test]
     fn instant_hashrate_tracks_recent_progress() {
-        let stats = Stats::new("pool".into(), false, None);
+        let stats = Stats::new(MiningMode::Pool, "pool".into(), false, None);
         stats.hashes.store(0, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
         stats.hashes.store(1000, Ordering::Relaxed);
@@ -156,7 +240,7 @@ mod tests {
 
     #[test]
     fn mining_duration_tracks_elapsed_time() {
-        let stats = Stats::new("pool".into(), false, None);
+        let stats = Stats::new(MiningMode::Pool, "pool".into(), false, None);
         std::thread::sleep(Duration::from_millis(5));
         let elapsed = stats.mining_duration();
         assert!(elapsed >= Duration::from_millis(5));
