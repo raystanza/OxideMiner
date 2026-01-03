@@ -4,7 +4,7 @@
 #
 # Minimal example (uncomment & edit the next 3 lines to get started):
 # mode = "pool"                        # "pool" (default) or "solo"
-# pool = "pool.supportxmr.com:5555"    # Your pool host:port
+# pool = "xmr.kryptex.network:7029"    # Your pool host:port
 # wallet = "<YOUR_XMR_ADDRESS>"        # Your primary XMR wallet address
 # pass = "x"                           # Pool password / miner name (many pools accept 'x')
 
@@ -14,7 +14,7 @@
 #mode = "pool"
 
 # Replace with the mining pool of your choice (host:port)
-#pool = "pool.supportxmr.com:3333"
+#pool = "xmr.kryptex.network:7029"
 
 # Replace with your Monero wallet address (primary)
 #wallet = "48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaaVYMpBBd2QQUiTY84qaSXJYVPS"
