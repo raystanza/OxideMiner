@@ -69,7 +69,7 @@ We ship a **command-line miner** with automatic CPU tuning, an **optional embedd
 
 - 💎 **Transparent dev fee:** A fixed 1% developer fee, clearly logged and accounted for in metrics. No stealth mining, no surprises, just honesty.
 
-- 📊 **Built-in dashboard (with themes!):** A modern, static web UI (HTML/CSS/JS fully embedded in the binary) shows hashrate, shares, uptime, connection state, and build metadata.
+- 📊 **Built-in dashboard (with themes!):** A modern, static web UI (HTML/CSS/JS fully embedded in the binary) shows hashrate, shares, uptime, connection state, build metadata, and a live ZMQ feed when solo ZMQ is enabled.
 
 ![Screenshot1](oxideminer_themes_screenshot.png)
 
@@ -328,7 +328,7 @@ Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all o
 | `--node-rpc-pass <PASS>`  | Monerod JSON-RPC password (HTTP digest auth).                                              |
 | `--solo-wallet <ADDRESS>` | Wallet address for solo mining (`get_block_template`).                                     |
 | `--solo-reserve-size <N>` | Reserve size in bytes for solo templates (default 60).                                     |
-| `--solo-zmq <URL>`        | Optional ZMQ endpoint for monerod events (template refresh on chain/txpool updates).        |
+| `--solo-zmq <URL>`        | Optional ZMQ endpoint for monerod events (template refresh on chain/txpool updates).       |
 
 ### Sample `config.toml`
 

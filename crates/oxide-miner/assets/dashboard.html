@@ -51,6 +51,11 @@
             </div>
         </header>
 
+        <section class="mode-banner" aria-live="polite">
+            <div class="mode-title" id="mode-banner-title">Mode: -</div>
+            <div class="mode-subtitle" id="mode-banner-subtitle"></div>
+        </section>
+
         <div id="theme-root" class="theme-root" aria-live="polite"></div>
 
         <div class="grid">
@@ -58,7 +63,7 @@
                 <div class="label">Hashrate (Avg / Inst)</div>
                 <div class="value" id="hashrate">0 H/s / 0 H/s</div>
             </div>
-            <div class="card">
+            <div class="card" data-mode="pool">
                 <div class="label">Shares Accepted / Rejected</div>
                 <div class="value" id="shares">0 / 0</div>
             </div>
@@ -70,23 +75,23 @@
                 <div class="label">Mining Time</div>
                 <div class="value" id="mining_time">-</div>
             </div>
-            <div class="card">
+            <div class="card" data-mode="pool">
                 <div class="label">Dev Shares Accepted / Rejected</div>
                 <div class="value" id="dev_shares">0 / 0</div>
             </div>
-            <div class="card">
-                <div class="label">Connected</div>
+            <div class="card" data-mode="pool">
+                <div class="label">Pool Connected</div>
                 <div class="value" id="connected">-</div>
             </div>
             <div class="card">
                 <div class="label">Mode</div>
                 <div class="value" id="mode">-</div>
             </div>
-            <div class="card">
-                <div class="label">Pool</div>
+            <div class="card" data-mode="pool">
+                <div class="label">Pool Endpoint</div>
                 <div class="value" id="pool">-</div>
             </div>
-            <div class="card">
+            <div class="card" data-mode="pool">
                 <div class="label">TLS</div>
                 <div class="value" id="tls">-</div>
             </div>
@@ -94,25 +99,41 @@
                 <div class="label">System Uptime</div>
                 <div class="value" id="system_uptime">-</div>
             </div>
-            <div class="card">
+            <div class="card" data-mode="solo">
                 <div class="label">Node Height</div>
                 <div class="value" id="node_height">-</div>
             </div>
-            <div class="card">
+            <div class="card" data-mode="solo">
                 <div class="label">Template Height</div>
                 <div class="value" id="template_height">-</div>
             </div>
-            <div class="card">
+            <div class="card" data-mode="solo">
                 <div class="label">Template Age</div>
                 <div class="value" id="template_age">-</div>
             </div>
-            <div class="card">
+            <div class="card" data-mode="solo">
                 <div class="label">Solo Blocks Accepted / Rejected (Submitted)</div>
                 <div class="value" id="solo_blocks">-</div>
             </div>
-            <div class="card">
+            <div class="card" data-mode="solo">
                 <div class="label">Last Submit</div>
                 <div class="value" id="last_submit">-</div>
+            </div>
+            <div class="card" data-mode="solo" data-requires="zmq">
+                <div class="label">ZMQ Connected</div>
+                <div class="value" id="zmq_connected">-</div>
+            </div>
+            <div class="card" data-mode="solo" data-requires="zmq">
+                <div class="label">ZMQ Events (Total)</div>
+                <div class="value" id="zmq_events">-</div>
+            </div>
+            <div class="card" data-mode="solo" data-requires="zmq">
+                <div class="label">ZMQ Last Event</div>
+                <div class="value" id="zmq_last_event">-</div>
+            </div>
+            <div class="card terminal-card" data-mode="solo" data-requires="zmq">
+                <div class="label">ZMQ Feed</div>
+                <pre class="terminal" id="zmq_terminal" role="log" aria-live="off"></pre>
             </div>
         </div>
         <footer class="footer" role="contentinfo">

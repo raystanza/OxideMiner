@@ -1,8 +1,9 @@
 // OxideMiner/crates/oxide-miner/src/solo/zmq.rs
 
 use crate::solo::unix_timestamp_seconds;
-use crate::stats::Stats;
+use crate::stats::{Stats, ZmqFeedEntry};
 use crate::util::tiny_jitter_ms;
+use serde_json::Value;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,6 +17,8 @@ pub const TOPIC_TXPOOL_ADD: &str = "json-minimal-txpool_add";
 const EVENT_CHANNEL_SIZE: usize = 64;
 const LOG_THROTTLE: Duration = Duration::from_secs(30);
 const MAX_BACKOFF_MS: u64 = 30_000;
+const MAX_PAYLOAD_BYTES: usize = 2048;
+const MAX_FEED_SUMMARY_LEN: usize = 160;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZmqEventKind {
@@ -45,6 +48,143 @@ pub fn classify_topic(topic: &str) -> ZmqEventKind {
         Some("miner_data") => ZmqEventKind::MinerData,
         _ => ZmqEventKind::Unknown,
     }
+}
+
+fn canonical_topic(topic: &str) -> &str {
+    topic
+        .rsplit_once('-')
+        .map(|(_, tail)| tail)
+        .unwrap_or(topic)
+}
+
+fn truncate_text(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        return text.to_string();
+    }
+    let take = max_len.saturating_sub(3);
+    let mut out: String = text.chars().take(take).collect();
+    out.push_str("...");
+    out
+}
+
+fn sanitize_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch == '\n' || ch == '\r' || ch == '\t' {
+            out.push(' ');
+        } else if ch.is_control() {
+            out.push('?');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn shorten_hash(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() <= 12 {
+        trimmed.to_string()
+    } else {
+        let prefix: String = trimmed.chars().take(8).collect();
+        format!("{prefix}...")
+    }
+}
+
+fn extract_u64(value: &Value, keys: &[&str]) -> Option<u64> {
+    for key in keys {
+        if let Some(v) = value.get(*key) {
+            if let Some(num) = v.as_u64() {
+                return Some(num);
+            }
+            if let Some(text) = v.as_str() {
+                if let Ok(parsed) = text.parse::<u64>() {
+                    return Some(parsed);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_string(value: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(v) = value.get(*key) {
+            if let Some(text) = v.as_str() {
+                if !text.is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn summarize_json(topic_label: &str, value: &Value) -> Option<String> {
+    if !value.is_object() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    if topic_label == "txpool_add" {
+        if let Some(tx) = extract_string(value, &["tx_hash", "txid", "id", "hash"]) {
+            parts.push(format!("tx={}", shorten_hash(&tx)));
+        }
+        if let Some(size) = extract_u64(value, &["size", "tx_size", "blob_size"]) {
+            parts.push(format!("size={}", size));
+        }
+    } else {
+        if let Some(height) = extract_u64(
+            value,
+            &["height", "block_height", "chain_height", "top_height"],
+        ) {
+            parts.push(format!("height={}", height));
+        }
+        if let Some(hash) = extract_string(
+            value,
+            &[
+                "hash",
+                "block_hash",
+                "block_id",
+                "id",
+                "top_hash",
+                "prev_id",
+                "prev_hash",
+            ],
+        ) {
+            parts.push(format!("hash={}", shorten_hash(&hash)));
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("{topic_label}: {}", parts.join(" ")))
+    }
+}
+
+fn summarize_payload(topic_label: &str, payload: Option<&[u8]>) -> String {
+    let Some(bytes) = payload else {
+        return format!("{topic_label}: <no payload>");
+    };
+
+    if bytes.len() > MAX_PAYLOAD_BYTES {
+        return format!("{topic_label}: payload len={}", bytes.len());
+    }
+
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        let trimmed = text.trim();
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+                if let Some(summary) = summarize_json(topic_label, &value) {
+                    let cleaned = sanitize_line(&summary);
+                    return truncate_text(&cleaned, MAX_FEED_SUMMARY_LEN);
+                }
+            }
+        }
+    }
+
+    format!("{topic_label}: unparsed payload len={}", bytes.len())
 }
 
 pub fn coalesce_refresh_deadline(
@@ -241,14 +381,22 @@ fn decode_event(
         }
     };
 
+    let canonical = canonical_topic(&topic);
     let kind = classify_topic(&topic);
     stats.solo_zmq_events_total.fetch_add(1, Ordering::Relaxed);
+    let now = unix_timestamp_seconds();
     stats
         .solo_zmq_last_event_timestamp
-        .store(unix_timestamp_seconds(), Ordering::Relaxed);
+        .store(now, Ordering::Relaxed);
     if let Ok(mut guard) = stats.solo_zmq_last_topic.lock() {
         *guard = Some(topic.clone());
     }
+    let summary = summarize_payload(canonical, message.get(1).map(|frame| frame.as_ref()));
+    stats.push_zmq_feed_entry(ZmqFeedEntry {
+        ts: now,
+        topic: canonical.to_string(),
+        summary,
+    });
 
     Some(ZmqEvent { kind })
 }

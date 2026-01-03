@@ -7,6 +7,11 @@ window.__OXIDE_DASHBOARD_BOOTED__ = true;
 
 const controlElements = Array.from(document.querySelectorAll('.toolbar select'));
 const themeSelect = document.getElementById('theme-select');
+const cardElements = Array.from(document.querySelectorAll('.card'));
+const modeBannerTitleEl = document.getElementById('mode-banner-title');
+const modeBannerSubtitleEl = document.getElementById('mode-banner-subtitle');
+const zmqTerminalEl = document.getElementById('zmq_terminal');
+let lastZmqFeedText = '';
 
 function setControlsDisabled(disabled) {
   controlElements.forEach((el) => {
@@ -122,7 +127,217 @@ function formatUnixTimestamp(seconds) {
   return Number.isNaN(d.getTime()) ? null : d.toLocaleString();
 }
 
+function formatTimeShort(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  const d = new Date(seconds * 1000);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+
+function isNearBottom(el) {
+  const threshold = 24;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+}
+
+function formatZmqLine(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const when = formatTimeShort(Number(entry.ts)) || '--:--:--';
+  const summary = typeof entry.summary === 'string' && entry.summary ? entry.summary : '';
+  const topic = typeof entry.topic === 'string' && entry.topic ? entry.topic : '';
+  const text = summary || topic || 'event';
+  return `[${when}] ${text}`;
+}
+
+function updateZmqTerminal(zmq) {
+  if (!zmqTerminalEl) return;
+  const entries = Array.isArray(zmq.recent) ? zmq.recent : [];
+  let lines = [];
+  if (entries.length === 0) {
+    if (zmq.enabled) {
+      lines = ['Waiting for ZMQ events...'];
+    } else {
+      lines = ['ZMQ disabled.'];
+    }
+  } else {
+    lines = entries.map(formatZmqLine).filter(Boolean);
+  }
+
+  const text = lines.join('\n');
+  if (text === lastZmqFeedText) return;
+
+  const shouldScroll = isNearBottom(zmqTerminalEl);
+  zmqTerminalEl.textContent = text;
+  lastZmqFeedText = text;
+  if (shouldScroll) {
+    zmqTerminalEl.scrollTop = zmqTerminalEl.scrollHeight;
+  }
+}
+
+function normalizeMode(value) {
+  if (typeof value !== 'string') return null;
+  const mode = value.trim().toLowerCase();
+  if (!mode) return null;
+  return mode;
+}
+
+function readZmqState(data) {
+  const solo = data && typeof data === 'object' ? data.solo || {} : {};
+  const soloZmq = solo && typeof solo === 'object' ? solo.zmq || {} : {};
+
+  const enabled = typeof data.solo_zmq_enabled === 'boolean'
+    ? data.solo_zmq_enabled
+    : (typeof soloZmq.enabled === 'boolean' ? soloZmq.enabled : false);
+  const connected = typeof data.solo_zmq_connected === 'boolean'
+    ? data.solo_zmq_connected
+    : (typeof soloZmq.connected === 'boolean' ? soloZmq.connected : false);
+
+  const eventsRaw = data.solo_zmq_events_total ?? soloZmq.events_total;
+  const eventsTotal = Number.isFinite(Number(eventsRaw)) ? Number(eventsRaw) : null;
+
+  const lastEventRaw = data.solo_zmq_last_event_timestamp ?? soloZmq.last_event_timestamp;
+  const lastEventTimestamp = Number.isFinite(Number(lastEventRaw)) ? Number(lastEventRaw) : null;
+
+  const lastTopicRaw = data.solo_zmq_last_topic ?? soloZmq.last_topic;
+  const lastTopic = typeof lastTopicRaw === 'string' && lastTopicRaw ? lastTopicRaw : null;
+
+  const recentRaw = Array.isArray(soloZmq.recent)
+    ? soloZmq.recent
+    : (Array.isArray(data.solo_zmq_recent) ? data.solo_zmq_recent : []);
+
+  return {
+    enabled: Boolean(enabled),
+    connected: Boolean(connected),
+    eventsTotal,
+    lastEventTimestamp,
+    lastTopic,
+    recent: recentRaw,
+  };
+}
+
+function formatZmqTopic(topic) {
+  if (!topic) return null;
+  const parts = String(topic).split('-');
+  const last = parts[parts.length - 1];
+  if (!last) return topic;
+  return last
+    .split('_')
+    .map((part) => part ? part[0].toUpperCase() + part.slice(1) : '')
+    .join(' ')
+    .trim();
+}
+
+function buildModeInfo(rawMode, normalizedMode, zmq) {
+  if (normalizedMode === 'pool') {
+    return {
+      title: 'Pool mining',
+      subtitle: 'Solo metrics hidden in pool mode.',
+      shortLabel: 'Pool',
+    };
+  }
+
+  if (normalizedMode === 'solo') {
+    if (zmq.enabled) {
+      const status = zmq.connected
+        ? 'ZMQ connected; events drive refresh.'
+        : 'ZMQ enabled; waiting for events.';
+      return {
+        title: 'Solo mining (ZMQ)',
+        subtitle: status,
+        shortLabel: 'Solo (ZMQ)',
+      };
+    }
+    return {
+      title: 'Solo mining (polling)',
+      subtitle: 'Polling for templates (ZMQ disabled).',
+      shortLabel: 'Solo (polling)',
+    };
+  }
+
+  const raw = typeof rawMode === 'string' && rawMode ? rawMode : 'Unknown';
+  const pretty = raw.charAt(0).toUpperCase() + raw.slice(1);
+  return {
+    title: `Mode: ${pretty}`,
+    subtitle: '',
+    shortLabel: pretty,
+  };
+}
+
+function updateModeBanner(modeInfo) {
+  if (modeBannerTitleEl) {
+    modeBannerTitleEl.textContent = modeInfo.title;
+  }
+  if (modeBannerSubtitleEl) {
+    if (modeInfo.subtitle) {
+      modeBannerSubtitleEl.textContent = modeInfo.subtitle;
+      modeBannerSubtitleEl.hidden = false;
+    } else {
+      modeBannerSubtitleEl.textContent = '';
+      modeBannerSubtitleEl.hidden = true;
+    }
+  }
+}
+
+function updateCardVisibility(mode, zmqEnabled) {
+  const normalized = mode === 'pool' || mode === 'solo' ? mode : null;
+  cardElements.forEach((card) => {
+    let visible = true;
+    const modeAttr = card.getAttribute('data-mode');
+    if (modeAttr) {
+      if (!normalized) {
+        visible = true;
+      } else {
+        const allowed = modeAttr
+          .split(',')
+          .map((entry) => entry.trim().toLowerCase())
+          .filter(Boolean);
+        visible = allowed.includes(normalized);
+      }
+    }
+
+    const requires = card.getAttribute('data-requires');
+    if (visible && requires) {
+      if (requires === 'zmq') {
+        visible = Boolean(zmqEnabled);
+      }
+    }
+
+    card.hidden = !visible;
+  });
+}
+
+function updateZmqCards(zmq) {
+  const connectedEl = document.getElementById('zmq_connected');
+  if (connectedEl) {
+    connectedEl.textContent = zmq.connected ? 'Yes' : 'No';
+  }
+
+  const eventsEl = document.getElementById('zmq_events');
+  if (eventsEl) {
+    eventsEl.textContent = zmq.eventsTotal !== null ? intFmt.format(zmq.eventsTotal) : '-';
+  }
+
+  const lastEventEl = document.getElementById('zmq_last_event');
+  if (lastEventEl) {
+    const parts = [];
+    const topicLabel = formatZmqTopic(zmq.lastTopic);
+    if (topicLabel) {
+      parts.push(topicLabel);
+    }
+    const when = formatUnixTimestamp(zmq.lastEventTimestamp);
+    if (when) {
+      parts.push(when);
+    }
+    lastEventEl.textContent = parts.length > 0 ? parts.join(' - ') : '-';
+  }
+}
+
 function applyStats(data) {
+  const modeNormalized = normalizeMode(data.mode);
+  const zmq = readZmqState(data);
+  const modeInfo = buildModeInfo(data.mode, modeNormalized, zmq);
+  updateModeBanner(modeInfo);
+  updateCardVisibility(modeNormalized, zmq.enabled);
+
   const hashrateEl = document.getElementById('hashrate');
   if (hashrateEl) {
     const avg = formatHashrate(Number(data.hashrate_avg ?? data.hashrate));
@@ -163,8 +378,7 @@ function applyStats(data) {
 
   const modeEl = document.getElementById('mode');
   if (modeEl) {
-    const mode = typeof data.mode === 'string' ? data.mode : '-';
-    modeEl.textContent = mode !== '-' ? mode.charAt(0).toUpperCase() + mode.slice(1) : '-';
+    modeEl.textContent = modeInfo.shortLabel || '-';
   }
 
   const tlsEl = document.getElementById('tls');
@@ -232,6 +446,8 @@ function applyStats(data) {
     }
   }
 
+  updateZmqCards(zmq);
+  updateZmqTerminal(zmq);
   updateFooter(data);
 }
 

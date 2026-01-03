@@ -476,6 +476,32 @@ pub async fn run_http_api(
                             let blocks_submitted = s.blocks_submitted.load(Ordering::Relaxed);
                             let blocks_accepted = s.blocks_accepted.load(Ordering::Relaxed);
                             let blocks_rejected = s.blocks_rejected.load(Ordering::Relaxed);
+                            let solo_zmq_enabled = s.solo_zmq_enabled;
+                            let solo_zmq_connected = s.solo_zmq_connected.load(Ordering::Relaxed);
+                            let solo_zmq_events_total =
+                                s.solo_zmq_events_total.load(Ordering::Relaxed);
+                            let solo_zmq_last_event_timestamp =
+                                s.solo_zmq_last_event_timestamp.load(Ordering::Relaxed);
+                            let solo_zmq_last_topic = s
+                                .solo_zmq_last_topic
+                                .lock()
+                                .ok()
+                                .and_then(|guard| guard.clone());
+                            let solo_zmq_recent = if solo_zmq_enabled {
+                                s.zmq_recent_snapshot()
+                            } else {
+                                Vec::new()
+                            };
+                            let solo_zmq_recent_json = solo_zmq_recent
+                                .into_iter()
+                                .map(|entry| {
+                                    json!({
+                                        "ts": entry.ts,
+                                        "topic": entry.topic,
+                                        "summary": entry.summary,
+                                    })
+                                })
+                                .collect::<Vec<_>>();
                             let last_submit = s
                                 .last_submit
                                 .lock()
@@ -521,6 +547,11 @@ pub async fn run_http_api(
                                     "dev_accepted": dev_acc,
                                     "dev_rejected": dev_rej,
                                 },
+                                "solo_zmq_enabled": solo_zmq_enabled,
+                                "solo_zmq_connected": solo_zmq_connected,
+                                "solo_zmq_events_total": solo_zmq_events_total,
+                                "solo_zmq_last_event_timestamp": solo_zmq_last_event_timestamp,
+                                "solo_zmq_last_topic": solo_zmq_last_topic,
                                 "solo": {
                                     "node_height": node_height,
                                     "template_height": template_height,
@@ -531,6 +562,14 @@ pub async fn run_http_api(
                                         "rejected": blocks_rejected,
                                     },
                                     "last_submit": last_submit,
+                                    "zmq": {
+                                        "enabled": solo_zmq_enabled,
+                                        "connected": solo_zmq_connected,
+                                        "events_total": solo_zmq_events_total,
+                                        "last_event_timestamp": solo_zmq_last_event_timestamp,
+                                        "last_topic": solo_zmq_last_topic,
+                                        "recent": solo_zmq_recent_json,
+                                    }
                                 },
                                 "timing": {
                                     "mining_time_seconds": mining_duration.as_secs(),

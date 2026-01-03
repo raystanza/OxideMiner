@@ -1,9 +1,56 @@
 // OxideMiner/crates/oxide-miner/src/stats.rs
 
 use crate::args::{LoadedConfigFile, MiningMode};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+const ZMQ_FEED_MAX_ENTRIES: usize = 120;
+const ZMQ_FEED_MAX_BYTES: usize = 16 * 1024;
+
+#[derive(Clone, Debug)]
+pub struct ZmqFeedEntry {
+    pub ts: u64,
+    pub topic: String,
+    pub summary: String,
+}
+
+#[derive(Debug)]
+struct ZmqFeedBuffer {
+    entries: VecDeque<ZmqFeedEntry>,
+    bytes: usize,
+}
+
+impl ZmqFeedBuffer {
+    fn new() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            bytes: 0,
+        }
+    }
+
+    fn entry_size(entry: &ZmqFeedEntry) -> usize {
+        entry.topic.len() + entry.summary.len() + 24
+    }
+
+    fn push(&mut self, entry: ZmqFeedEntry) {
+        self.bytes = self.bytes.saturating_add(Self::entry_size(&entry));
+        self.entries.push_back(entry);
+
+        while self.entries.len() > ZMQ_FEED_MAX_ENTRIES || self.bytes > ZMQ_FEED_MAX_BYTES {
+            if let Some(front) = self.entries.pop_front() {
+                self.bytes = self.bytes.saturating_sub(Self::entry_size(&front));
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn snapshot(&self) -> Vec<ZmqFeedEntry> {
+        self.entries.iter().cloned().collect()
+    }
+}
 
 /// Shared miner statistics updated across tasks and exposed via the HTTP API.
 pub struct Stats {
@@ -31,6 +78,7 @@ pub struct Stats {
     pub solo_zmq_events_total: AtomicU64,
     pub solo_zmq_last_event_timestamp: AtomicU64,
     pub solo_zmq_last_topic: Mutex<Option<String>>,
+    solo_zmq_feed: Mutex<ZmqFeedBuffer>,
     hashrate_sample: Mutex<HashrateSample>,
 }
 
@@ -66,6 +114,7 @@ impl Stats {
             solo_zmq_events_total: AtomicU64::new(0),
             solo_zmq_last_event_timestamp: AtomicU64::new(0),
             solo_zmq_last_topic: Mutex::new(None),
+            solo_zmq_feed: Mutex::new(ZmqFeedBuffer::new()),
             hashrate_sample: Mutex::new(HashrateSample::new()),
         }
     }
@@ -117,6 +166,19 @@ impl Stats {
             .unwrap_or_default()
             .as_secs();
         Some(now.saturating_sub(ts))
+    }
+
+    pub fn push_zmq_feed_entry(&self, entry: ZmqFeedEntry) {
+        if let Ok(mut guard) = self.solo_zmq_feed.try_lock() {
+            guard.push(entry);
+        }
+    }
+
+    pub fn zmq_recent_snapshot(&self) -> Vec<ZmqFeedEntry> {
+        self.solo_zmq_feed
+            .lock()
+            .map(|guard| guard.snapshot())
+            .unwrap_or_default()
     }
 }
 
@@ -181,6 +243,8 @@ impl SubmitRecord {
 mod tests {
     use super::{HashrateSample, Stats};
     use crate::args::MiningMode;
+    use crate::stats::ZmqFeedBuffer;
+
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -233,6 +297,7 @@ mod tests {
             solo_zmq_events_total: AtomicU64::new(0),
             solo_zmq_last_event_timestamp: AtomicU64::new(0),
             solo_zmq_last_topic: Mutex::new(None),
+            solo_zmq_feed: Mutex::new(ZmqFeedBuffer::new()),
             hashrate_sample: Mutex::new(HashrateSample::new()),
         };
         assert_eq!(manual.hashrate_avg(), 0.0);
