@@ -337,7 +337,7 @@ The repository ships with [`config.toml.example`](config.toml.example). Copy it 
 ```toml
 # Save as config.toml next to the oxide-miner binary
 mode = "pool"
-pool = "pool.supportxmr.com:5555"
+pool = "xmr.kryptex.network:7029"
 wallet = "<YOUR_WALLET_ADDRESS>"
 pass = "rig001"
 threads = 8             # omit to auto-tune

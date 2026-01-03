@@ -39,7 +39,7 @@ pub struct Args {
     #[arg(long = "mode", value_enum, default_value_t = MiningMode::Pool)]
     pub mode: MiningMode,
 
-    /// pool like "pool.supportxmr.com:5555"
+    /// pool like "xmr.kryptex.network:7029"
     #[arg(short = 'o', long = "url")]
     pub pool: Option<String>,
 
