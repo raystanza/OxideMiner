@@ -1496,6 +1496,7 @@ async fn run_solo_loop(
         reserve_size,
         "solo mining enabled; polling monerod templates"
     );
+    let credentials_configured = endpoint.has_credentials();
 
     let mut current_template: Option<SoloTemplate> = None;
     let mut seen_nonces: HashSet<u32> = HashSet::new();
@@ -1504,6 +1505,8 @@ async fn run_solo_loop(
     let mut next_refresh = Instant::now();
     let mut dev_scheduler = DevFeeScheduler::new();
     let mut last_sync_warn = Instant::now() - Duration::from_secs(60);
+    let mut auth_failures: u32 = 0;
+    let mut auth_logged = false;
 
     loop {
         let now = Instant::now();
@@ -1579,6 +1582,7 @@ async fn run_solo_loop(
                             "solo block submission result"
                         );
                         stats.pool_connected.store(true, Ordering::Relaxed);
+                        reset_auth_failures(&mut auth_failures, &mut auth_logged);
                         next_refresh = Instant::now();
                     }
                     Err(err) => {
@@ -1589,7 +1593,17 @@ async fn run_solo_loop(
                         if let Ok(mut guard) = stats.last_submit.lock() {
                             *guard = Some(SubmitRecord::new(SubmitOutcome::Error, err.to_string()));
                         }
-                        log_solo_rpc_error(&endpoint, &err, "submit_block");
+                        if is_auth_error(&err) {
+                            handle_auth_error(
+                                &endpoint,
+                                "submit_block",
+                                credentials_configured,
+                                &mut auth_failures,
+                                &mut auth_logged,
+                            );
+                        } else {
+                            log_solo_rpc_error(&endpoint, &err, "submit_block");
+                        }
                         stats.pool_connected.store(false, Ordering::Relaxed);
                         next_refresh = Instant::now();
                     }
@@ -1607,9 +1621,20 @@ async fn run_solo_loop(
                             );
                             last_sync_warn = Instant::now();
                         }
+                        reset_auth_failures(&mut auth_failures, &mut auth_logged);
                     }
                     Err(err) => {
-                        log_solo_rpc_error(&endpoint, &err, "get_info");
+                        if is_auth_error(&err) {
+                            handle_auth_error(
+                                &endpoint,
+                                "get_info",
+                                credentials_configured,
+                                &mut auth_failures,
+                                &mut auth_logged,
+                            );
+                        } else {
+                            log_solo_rpc_error(&endpoint, &err, "get_info");
+                        }
                     }
                 }
 
@@ -1619,6 +1644,7 @@ async fn run_solo_loop(
                     Ok(template) => {
                         stats.pool_connected.store(true, Ordering::Relaxed);
                         backoff_ms = 1_000;
+                        reset_auth_failures(&mut auth_failures, &mut auth_logged);
 
                         let job_id = format!("solo-{}-{}", template.height, job_seq);
                         job_seq = job_seq.wrapping_add(1);
@@ -1674,7 +1700,17 @@ async fn run_solo_loop(
                     Err(err) => {
                         stats.pool_connected.store(false, Ordering::Relaxed);
                         dev_scheduler.revert_last_job();
-                        log_solo_rpc_error(&endpoint, &err, "get_block_template");
+                        if is_auth_error(&err) {
+                            handle_auth_error(
+                                &endpoint,
+                                "get_block_template",
+                                credentials_configured,
+                                &mut auth_failures,
+                                &mut auth_logged,
+                            );
+                        } else {
+                            log_solo_rpc_error(&endpoint, &err, "get_block_template");
+                        }
                         next_refresh = Instant::now() + Duration::from_millis(backoff_ms);
                         backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
                     }
@@ -1711,4 +1747,38 @@ fn log_solo_rpc_error(endpoint: &RpcEndpoint, err: &SoloRpcError, context: &str)
             tracing::warn!(rpc = %endpoint.redacted(), error = %err, "{context}: RPC error");
         }
     }
+}
+
+fn is_auth_error(err: &SoloRpcError) -> bool {
+    matches!(err, SoloRpcError::Unauthorized | SoloRpcError::Auth(_))
+}
+
+fn handle_auth_error(
+    endpoint: &RpcEndpoint,
+    context: &str,
+    credentials_configured: bool,
+    failures: &mut u32,
+    logged: &mut bool,
+) {
+    const AUTH_WARN_THRESHOLD: u32 = 3;
+    *failures = failures.saturating_add(1);
+    if *failures >= AUTH_WARN_THRESHOLD && !*logged {
+        tracing::warn!(
+            rpc = %endpoint.redacted(),
+            credentials_configured,
+            "{context}: RPC auth failed (401). Ensure monerod is started with --rpc-login user:pass and OxideMiner credentials match. Note: monerod uses HTTP Digest auth."
+        );
+        *logged = true;
+    } else {
+        tracing::debug!(
+            rpc = %endpoint.redacted(),
+            credentials_configured,
+            "{context}: RPC auth failed; retrying"
+        );
+    }
+}
+
+fn reset_auth_failures(failures: &mut u32, logged: &mut bool) {
+    *failures = 0;
+    *logged = false;
 }

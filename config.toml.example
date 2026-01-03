@@ -22,21 +22,6 @@
 # Optional password / miner name
 #pass = "x"
 
-# --- Solo mining (local monerod) ---
-#
-# Requires a fully-synced monerod with RPC enabled (default http://127.0.0.1:18081).
-# Just point it at the parent of your 'lmdb' folder.
-# Example:
-# monerod --data-dir "~/xmr" --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081 --rpc-login user:pass
-
-#[solo]
-#rpc_url = "http://127.0.0.1:18081"
-#rpc_user = "user"
-#rpc_pass = "pass"
-#wallet = "<YOUR_XMR_ADDRESS>"
-#reserve_size = 60
-#zmq = "tcp://127.0.0.1:18083"
-
 # Route pool traffic through a SOCKS5 proxy (useful for Tor/VPN privacy)
 #proxy = "socks5://127.0.0.1:9050"
 
@@ -90,3 +75,25 @@ no_yield = false
 # Enable verbose debug logs. When enabled, logs are also written to ./logs/
 # with daily rotation.
 debug = false
+
+# --- Solo mining (local monerod) ---
+#
+# Please keep the [solo] table at the bottom of this file.
+# Requires a fully-synced monerod with RPC enabled (default http://127.0.0.1:18081).
+# Just point it at the parent of your 'lmdb' folder.
+#
+# Example:
+# monerod.exe --data-dir "C:\ProgramData\bitmonero" --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081 --rpc-login user:pass
+# monerod.exe --data-dir "C:\xmr" --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081 --rpc-login user:pass
+# monerod --data-dir /var/lib/monero --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081 --rpc-login user:pass
+# monerod --data-dir "~/xmr" --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081 --rpc-login user:pass
+#
+# NOTE: In order to use solo mining mode, you must uncomment the '[solo]' line as well as the other values below.
+#
+#[solo]
+#node_rpc_url = "http://127.0.0.1:18081"
+#node_rpc_user = "user"
+#node_rpc_pass = "pass"
+#wallet = "<YOUR_XMR_ADDRESS>"
+#reserve_size = 60
+#solo_zmq = "tcp://127.0.0.1:18083"

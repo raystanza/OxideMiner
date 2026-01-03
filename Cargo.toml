@@ -46,6 +46,7 @@ ring = "0.17"
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 rustls_webpki = { package = "rustls-webpki", version = "0.101" }
 base64 = "0.22"
+md5 = "0.7"
 
 [profile.release]
 lto = true

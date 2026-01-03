@@ -324,8 +324,8 @@ Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all o
 | `--config <PATH>`         | Load defaults from a TOML file (defaults to `./config.toml`).                              |
 | `--benchmark`             | Run the RandomX benchmark and exit (no pool connection).                                   |
 | `--node-rpc-url <URL>`    | Monerod JSON-RPC endpoint for solo mining (default `http://127.0.0.1:18081`).              |
-| `--node-rpc-user <USER>`  | Monerod JSON-RPC username (HTTP basic auth).                                               |
-| `--node-rpc-pass <PASS>`  | Monerod JSON-RPC password (HTTP basic auth).                                               |
+| `--node-rpc-user <USER>`  | Monerod JSON-RPC username (HTTP digest auth).                                              |
+| `--node-rpc-pass <PASS>`  | Monerod JSON-RPC password (HTTP digest auth).                                              |
 | `--solo-wallet <ADDRESS>` | Wallet address for solo mining (`get_block_template`).                                     |
 | `--solo-reserve-size <N>` | Reserve size in bytes for solo templates (default 60).                                     |
 | `--solo-zmq <URL>`        | Optional ZMQ endpoint for new-block notifications (polling fallback).                      |
@@ -345,10 +345,14 @@ api_port = 8080         # enable HTTP dashboard
 api_bind = "127.0.0.1"  # address to bind the dashboard/API (default 127.0.0.1, only used with api_port)
 huge_pages = true       # request HugeTLB / large pages if OS allows it
 
+# NOTE: TOML tables do not end; keep [solo] at the bottom unless you start a new table.
 [solo]
-rpc_url = "http://127.0.0.1:18081"
+node_rpc_url = "http://127.0.0.1:18081"
+node_rpc_user = "user"
+node_rpc_pass = "pass"
 wallet = "<YOUR_WALLET_ADDRESS>"
 reserve_size = 60
+solo_zmq = "tcp://127.0.0.1:18083"
 ```
 
 ### Configuration warnings
@@ -378,6 +382,7 @@ Run `--benchmark` to skip pool connectivity and measure local RandomX throughput
 ### Solo mining (monerod)
 
 Solo mode mines directly against a local, fully-synced `monerod` via JSON-RPC. OxideMiner does **not** store the blockchain itself.
+When `--rpc-login` is enabled, monerod uses HTTP Digest authentication; set `--node-rpc-user` and `--node-rpc-pass` to match.
 
 Run `monerod` with RPC enabled (localhost only recommended):
 

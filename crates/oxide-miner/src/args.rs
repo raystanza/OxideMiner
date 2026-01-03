@@ -140,11 +140,11 @@ pub struct Args {
     )]
     pub node_rpc_url: String,
 
-    /// Monerod JSON-RPC username (HTTP basic auth)
+    /// Monerod JSON-RPC username (HTTP digest auth)
     #[arg(long = "node-rpc-user", value_name = "USER")]
     pub node_rpc_user: Option<String>,
 
-    /// Monerod JSON-RPC password (HTTP basic auth)
+    /// Monerod JSON-RPC password (HTTP digest auth)
     #[arg(long = "node-rpc-pass", value_name = "PASS")]
     pub node_rpc_pass: Option<String>,
 
@@ -406,6 +406,7 @@ fn load_config_file(
             ));
         }
     }
+    check_solo_table_keys(&value, path)?;
 
     let mut values: ConfigFile = value.try_into().map_err(|err: toml::de::Error| {
         config_error(
@@ -420,6 +421,47 @@ fn load_config_file(
         values,
         applied: ConfigApplied::default(),
     }))
+}
+
+fn check_solo_table_keys(value: &toml::Value, path: &Path) -> Result<(), clap::Error> {
+    let Some(table) = value.as_table() else {
+        return Ok(());
+    };
+
+    let Some(solo) = table.get("solo") else {
+        return Ok(());
+    };
+
+    let Some(solo_table) = solo.as_table() else {
+        return Ok(());
+    };
+
+    for key in solo_table.keys() {
+        if SOLO_CONFIG_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+
+        if VALID_CONFIG_KEYS.contains(&key.as_str()) {
+            return Err(config_error(
+                Args::command(),
+                format!(
+                    "It looks like '{key}' is under [solo] in {}. TOML tables do not end; move '{key}' above [solo], move [solo] to the bottom of the file, or start a new table for other settings.",
+                    path.display()
+                ),
+            ));
+        }
+
+        return Err(config_error(
+            Args::command(),
+            format!(
+                "unrecognized key '{key}' under [solo] in config file {}. Valid [solo] keys: {}",
+                path.display(),
+                SOLO_CONFIG_KEYS.join(", "),
+            ),
+        ));
+    }
+
+    Ok(())
 }
 
 fn normalize_solo_config(values: &mut ConfigFile, warnings: &mut Vec<ConfigWarning>) {
@@ -496,7 +538,7 @@ fn normalize_solo_config(values: &mut ConfigFile, warnings: &mut Vec<ConfigWarni
 
     if legacy_present || used_legacy {
         warnings.push(ConfigWarning::new(
-            "solo config keys found at top level; move them under [solo] for clarity".to_string(),
+            "solo configuration appears at the top level or the [solo] table is uncommented/missing; move solo-related keys under [solo] for clarity".to_string(),
             false,
         ));
     }
@@ -812,6 +854,31 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "solo-zmq",
 ];
 
+const SOLO_CONFIG_KEYS: &[&str] = &[
+    "rpc_url",
+    "rpc-url",
+    "rpc_user",
+    "rpc-user",
+    "rpc_pass",
+    "rpc-pass",
+    "node_rpc_url",
+    "node-rpc-url",
+    "node_rpc_user",
+    "node-rpc-user",
+    "node_rpc_pass",
+    "node-rpc-pass",
+    "wallet",
+    "solo_wallet",
+    "solo-wallet",
+    "reserve_size",
+    "reserve-size",
+    "solo_reserve_size",
+    "solo-reserve-size",
+    "zmq",
+    "solo_zmq",
+    "solo-zmq",
+];
+
 fn config_error(mut cmd: clap::Command, msg: String) -> clap::Error {
     let mut err = clap::Error::raw(ErrorKind::InvalidValue, msg);
     err.insert(
@@ -1017,6 +1084,32 @@ zmq = "tcp://127.0.0.1:18083"
         ])
         .unwrap();
         assert!(validate_args(&args).is_err());
+    }
+
+    #[test]
+    fn config_rejects_top_level_key_under_solo_table() {
+        let config = NamedTempFile::new().unwrap();
+        fs::write(
+            config.path(),
+            r#"
+mode = "solo"
+[solo]
+rpc_url = "http://127.0.0.1:18081"
+affinity = true
+"#,
+        )
+        .unwrap();
+
+        let args = vec![
+            OsString::from("test"),
+            OsString::from("--config"),
+            config.path().as_os_str().to_os_string(),
+        ];
+
+        let err = parse_with_config_from(args).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("under [solo]"));
+        assert!(message.contains("affinity"));
     }
 
     #[test]
