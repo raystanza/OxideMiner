@@ -25,8 +25,9 @@
 # --- Solo mining (local monerod) ---
 #
 # Requires a fully-synced monerod with RPC enabled (default http://127.0.0.1:18081).
+# Just point it at the parent of your 'lmdb' folder.
 # Example:
-# monerod --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081 --rpc-login user:pass
+# monerod --data-dir "~/xmr" --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081 --rpc-login user:pass
 
 #[solo]
 #rpc_url = "http://127.0.0.1:18081"

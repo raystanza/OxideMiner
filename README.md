@@ -304,9 +304,9 @@ Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all o
 
 | Flag                      | Purpose                                                                                    |
 | ------------------------- | ------------------------------------------------------------------------------------------ |
-| `--mode <pool|solo>`      | Mining backend selection (default `pool`).                                                 |
+| `--mode <pool\|solo>`     | Mining backend selection (default `pool`).                                                 |
 | `-o, --url <HOST:PORT>`   | Mining pool endpoint (pool mode only).                                                     |
-| `-u, --user <ADDRESS>`    | Primary Monero wallet or subaddress (pool mode only).                                       |
+| `-u, --user <ADDRESS>`    | Primary Monero wallet or subaddress (pool mode only).                                      |
 | `-p, --pass <STRING>`     | Pool password/rig identifier (default `x`).                                                |
 | `-t, --threads <N>`       | Override auto-selected worker threads.                                                     |
 | `--batch-size <N>`        | Manual hashes per batch (default auto recommendation).                                     |
@@ -383,6 +383,7 @@ Run `monerod` with RPC enabled (localhost only recommended):
 
 ```bash
 monerod \
+  --data-dir "~/xmr/" # Wherever the parent folder of lmdb is.
   --rpc-bind-ip 127.0.0.1 \
   --rpc-bind-port 18081 \
   --rpc-login user:pass \

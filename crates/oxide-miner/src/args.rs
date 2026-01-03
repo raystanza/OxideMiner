@@ -197,6 +197,39 @@ pub struct ConfigFile {
     pub proxy: Option<String>,
     pub mode: Option<MiningMode>,
     pub solo: Option<SoloConfigFile>,
+    #[serde(
+        alias = "rpc-url",
+        alias = "rpc_url",
+        alias = "node-rpc-url",
+        alias = "node_rpc_url"
+    )]
+    pub solo_rpc_url: Option<String>,
+    #[serde(
+        alias = "rpc-user",
+        alias = "rpc_user",
+        alias = "node-rpc-user",
+        alias = "node_rpc_user"
+    )]
+    pub solo_rpc_user: Option<String>,
+    #[serde(
+        alias = "rpc-pass",
+        alias = "rpc_pass",
+        alias = "node-rpc-pass",
+        alias = "node_rpc_pass",
+        skip_serializing
+    )]
+    pub solo_rpc_pass: Option<String>,
+    #[serde(alias = "solo-wallet", alias = "solo_wallet")]
+    pub solo_wallet: Option<String>,
+    #[serde(
+        alias = "reserve-size",
+        alias = "reserve_size",
+        alias = "solo-reserve-size",
+        alias = "solo_reserve_size"
+    )]
+    pub solo_reserve_size: Option<u32>,
+    #[serde(alias = "solo-zmq", alias = "solo_zmq", alias = "zmq")]
+    pub solo_zmq: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -215,9 +248,14 @@ pub struct SoloConfigFile {
     pub rpc_pass: Option<String>,
     #[serde(alias = "solo-wallet", alias = "solo_wallet")]
     pub wallet: Option<String>,
-    #[serde(alias = "reserve-size", alias = "reserve_size")]
+    #[serde(
+        alias = "reserve-size",
+        alias = "reserve_size",
+        alias = "solo-reserve-size",
+        alias = "solo_reserve_size"
+    )]
     pub reserve_size: Option<u32>,
-    #[serde(alias = "solo-zmq", alias = "zmq")]
+    #[serde(alias = "solo-zmq", alias = "solo_zmq", alias = "zmq")]
     pub zmq: Option<String>,
 }
 
@@ -369,18 +407,107 @@ fn load_config_file(
         }
     }
 
-    let values: ConfigFile = value.try_into().map_err(|err: toml::de::Error| {
+    let mut values: ConfigFile = value.try_into().map_err(|err: toml::de::Error| {
         config_error(
             Args::command(),
             format_toml_error(path, &err.to_string(), None),
         )
     })?;
+    normalize_solo_config(&mut values, warnings);
 
     Ok(Some(LoadedConfigFile {
         path: path.to_path_buf(),
         values,
         applied: ConfigApplied::default(),
     }))
+}
+
+fn normalize_solo_config(values: &mut ConfigFile, warnings: &mut Vec<ConfigWarning>) {
+    let legacy_present = values.solo_rpc_url.is_some()
+        || values.solo_rpc_user.is_some()
+        || values.solo_rpc_pass.is_some()
+        || values.solo_wallet.is_some()
+        || values.solo_reserve_size.is_some()
+        || values.solo_zmq.is_some();
+
+    let mut solo = values.solo.take().unwrap_or_default();
+    let mut used_legacy = false;
+    let mut used_wallet_fallback = false;
+
+    if solo.rpc_url.is_none() {
+        if let Some(url) = values.solo_rpc_url.take() {
+            solo.rpc_url = Some(url);
+            used_legacy = true;
+        }
+    }
+
+    if solo.rpc_user.is_none() {
+        if let Some(user) = values.solo_rpc_user.take() {
+            solo.rpc_user = Some(user);
+            used_legacy = true;
+        }
+    }
+
+    if solo.rpc_pass.is_none() {
+        if let Some(pass) = values.solo_rpc_pass.take() {
+            solo.rpc_pass = Some(pass);
+            used_legacy = true;
+        }
+    }
+
+    if solo.wallet.is_none() {
+        if let Some(wallet) = values.solo_wallet.take() {
+            solo.wallet = Some(wallet);
+            used_legacy = true;
+        } else if values.mode == Some(MiningMode::Solo) {
+            if let Some(wallet) = values.wallet.as_ref() {
+                solo.wallet = Some(wallet.clone());
+                used_wallet_fallback = true;
+            }
+        }
+    }
+
+    if solo.reserve_size.is_none() {
+        if let Some(reserve_size) = values.solo_reserve_size.take() {
+            solo.reserve_size = Some(reserve_size);
+            used_legacy = true;
+        }
+    }
+
+    if solo.zmq.is_none() {
+        if let Some(zmq) = values.solo_zmq.take() {
+            solo.zmq = Some(zmq);
+            used_legacy = true;
+        }
+    }
+
+    let solo_has_values = solo.rpc_url.is_some()
+        || solo.rpc_user.is_some()
+        || solo.rpc_pass.is_some()
+        || solo.wallet.is_some()
+        || solo.reserve_size.is_some()
+        || solo.zmq.is_some();
+
+    if solo_has_values {
+        values.solo = Some(solo);
+    } else {
+        values.solo = None;
+    }
+
+    if legacy_present || used_legacy {
+        warnings.push(ConfigWarning::new(
+            "solo config keys found at top level; move them under [solo] for clarity".to_string(),
+            false,
+        ));
+    }
+
+    if used_wallet_fallback {
+        warnings.push(ConfigWarning::new(
+            "using top-level wallet for solo mining; set [solo].wallet to silence this warning"
+                .to_string(),
+            false,
+        ));
+    }
 }
 
 fn apply_config_defaults(
@@ -662,6 +789,27 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "proxy",
     "mode",
     "solo",
+    "rpc_url",
+    "rpc-url",
+    "rpc_user",
+    "rpc-user",
+    "rpc_pass",
+    "rpc-pass",
+    "node_rpc_url",
+    "node-rpc-url",
+    "node_rpc_user",
+    "node-rpc-user",
+    "node_rpc_pass",
+    "node-rpc-pass",
+    "solo_wallet",
+    "solo-wallet",
+    "reserve_size",
+    "reserve-size",
+    "solo_reserve_size",
+    "solo-reserve-size",
+    "zmq",
+    "solo_zmq",
+    "solo-zmq",
 ];
 
 fn config_error(mut cmd: clap::Command, msg: String) -> clap::Error {
@@ -818,6 +966,42 @@ reserve_size = 64
         assert_eq!(parsed.args.solo_wallet.as_deref(), Some("solo-wallet"));
         assert_eq!(parsed.args.node_rpc_url.as_str(), "http://127.0.0.1:18081");
         assert_eq!(parsed.args.solo_reserve_size, 64);
+    }
+
+    #[test]
+    fn config_file_accepts_top_level_solo_keys() {
+        let config = NamedTempFile::new().unwrap();
+        fs::write(
+            config.path(),
+            r#"
+mode = "solo"
+wallet = "solo-wallet"
+rpc_url = "http://127.0.0.1:18081"
+rpc_user = "user"
+rpc_pass = "pass"
+reserve_size = 64
+zmq = "tcp://127.0.0.1:18083"
+"#,
+        )
+        .unwrap();
+
+        let args = vec![
+            OsString::from("test"),
+            OsString::from("--config"),
+            config.path().as_os_str().to_os_string(),
+        ];
+
+        let parsed = parse_with_config_from(args).unwrap();
+        assert_eq!(parsed.args.mode, MiningMode::Solo);
+        assert_eq!(parsed.args.solo_wallet.as_deref(), Some("solo-wallet"));
+        assert_eq!(parsed.args.node_rpc_url.as_str(), "http://127.0.0.1:18081");
+        assert_eq!(parsed.args.node_rpc_user.as_deref(), Some("user"));
+        assert_eq!(parsed.args.node_rpc_pass.as_deref(), Some("pass"));
+        assert_eq!(parsed.args.solo_reserve_size, 64);
+        assert_eq!(
+            parsed.args.solo_zmq.as_deref(),
+            Some("tcp://127.0.0.1:18083")
+        );
     }
 
     #[test]

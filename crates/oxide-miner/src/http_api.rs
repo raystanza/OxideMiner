@@ -303,7 +303,8 @@ pub async fn run_http_api(
                             writeln!(body, "oxide_node_height {}", node_height).ok();
                             writeln!(body, "oxide_template_height {}", template_height).ok();
                             writeln!(body, "oxide_template_age_seconds {}", template_age).ok();
-                            writeln!(body, "oxide_blocks_submitted_total {}", blocks_submitted).ok();
+                            writeln!(body, "oxide_blocks_submitted_total {}", blocks_submitted)
+                                .ok();
                             writeln!(body, "oxide_blocks_accepted_total {}", blocks_accepted).ok();
                             writeln!(body, "oxide_blocks_rejected_total {}", blocks_rejected).ok();
                             writeln!(body, "oxide_last_submit_success {}", last_success).ok();
