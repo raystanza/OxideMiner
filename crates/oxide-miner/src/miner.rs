@@ -936,16 +936,17 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         tracing::info!("dev fee enabled at {} bps (1%)", DEV_FEE_BASIS_POINTS);
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let mut solo_handle = tokio::spawn(run_solo_loop(
+        let solo_context = SoloLoopContext {
             endpoint,
             wallet,
             reserve_size,
-            jobs_tx.clone(),
+            jobs_tx: jobs_tx.clone(),
             shares_rx,
-            stats.clone(),
-            solo_zmq_endpoint,
-            shutdown_rx,
-        ));
+            stats: stats.clone(),
+            solo_zmq: solo_zmq_endpoint,
+            shutdown: shutdown_rx,
+        };
+        let mut solo_handle = tokio::spawn(run_solo_loop(solo_context));
 
         tokio::select! {
             res = &mut solo_handle => {
@@ -1495,19 +1496,32 @@ async fn connect_with_retries(
     Err(last_err.unwrap_or_else(|| anyhow!("all {} connection attempts failed", purpose)))
 }
 
-async fn run_solo_loop(
+struct SoloLoopContext {
     endpoint: RpcEndpoint,
     wallet: String,
     reserve_size: u32,
     jobs_tx: tokio::sync::broadcast::Sender<WorkItem>,
-    mut shares_rx: UnboundedReceiver<Share>,
+    shares_rx: UnboundedReceiver<Share>,
     stats: Arc<Stats>,
     solo_zmq: Option<String>,
-    mut shutdown: watch::Receiver<bool>,
-) -> Result<()> {
+    shutdown: watch::Receiver<bool>,
+}
+
+async fn run_solo_loop(context: SoloLoopContext) -> Result<()> {
     const MAX_BACKOFF_MS: u64 = 60_000;
     const INFO_MIN_INTERVAL: Duration = Duration::from_secs(10);
     const ZMQ_DEBOUNCE: Duration = Duration::from_millis(250);
+
+    let SoloLoopContext {
+        endpoint,
+        wallet,
+        reserve_size,
+        jobs_tx,
+        mut shares_rx,
+        stats,
+        solo_zmq,
+        mut shutdown,
+    } = context;
 
     let client = SoloRpcClient::new(endpoint.clone());
     let zmq_endpoint = solo_zmq

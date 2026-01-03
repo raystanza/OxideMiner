@@ -717,7 +717,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None, false));
+        let stats = Arc::new(Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+        ));
         stats.accepted.store(5, Ordering::Relaxed);
         stats.rejected.store(2, Ordering::Relaxed);
         stats.dev_accepted.store(1, Ordering::Relaxed);
@@ -762,7 +768,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None, false));
+        let stats = Arc::new(Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+        ));
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("img")).unwrap();
@@ -813,7 +825,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None, false));
+        let stats = Arc::new(Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+        ));
         let server = tokio::spawn(run_http_api(LOCALHOST, port, stats, None, None));
         sleep(Duration::from_millis(50)).await;
 
@@ -839,7 +857,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None, false));
+        let stats = Arc::new(Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+        ));
 
         let dir = tempfile::tempdir().unwrap();
         let theme_dir = dir.path().join("blue");
@@ -892,7 +916,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None, false));
+        let stats = Arc::new(Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+        ));
 
         let dash_dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -948,7 +978,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None, false));
+        let stats = Arc::new(Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+        ));
 
         let dir = tempfile::tempdir().unwrap();
         let theme_dir = dir.path().join("blue");
