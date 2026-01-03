@@ -28,7 +28,7 @@ webpki-roots = "0.25"
 tokio-socks = "0.5"
 url = "2"
 core_affinity = "0.5"
-hyper-util = { version = "0.1", features = ["server", "tokio"] }
+hyper-util = { version = "0.1", features = ["server", "client-legacy", "http1", "tokio"] }
 http-body-util = "0.1"
 sysinfo = "0.30"
 raw-cpuid = "11"
