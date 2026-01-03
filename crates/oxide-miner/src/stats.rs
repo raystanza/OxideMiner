@@ -26,6 +26,11 @@ pub struct Stats {
     pub blocks_accepted: AtomicU64,
     pub blocks_rejected: AtomicU64,
     pub last_submit: Mutex<Option<SubmitRecord>>,
+    pub solo_zmq_enabled: bool,
+    pub solo_zmq_connected: AtomicBool,
+    pub solo_zmq_events_total: AtomicU64,
+    pub solo_zmq_last_event_timestamp: AtomicU64,
+    pub solo_zmq_last_topic: Mutex<Option<String>>,
     hashrate_sample: Mutex<HashrateSample>,
 }
 
@@ -35,6 +40,7 @@ impl Stats {
         pool: String,
         tls: bool,
         config: Option<LoadedConfigFile>,
+        solo_zmq_enabled: bool,
     ) -> Self {
         Self {
             start: Instant::now(),
@@ -55,6 +61,11 @@ impl Stats {
             blocks_accepted: AtomicU64::new(0),
             blocks_rejected: AtomicU64::new(0),
             last_submit: Mutex::new(None),
+            solo_zmq_enabled,
+            solo_zmq_connected: AtomicBool::new(false),
+            solo_zmq_events_total: AtomicU64::new(0),
+            solo_zmq_last_event_timestamp: AtomicU64::new(0),
+            solo_zmq_last_topic: Mutex::new(None),
             hashrate_sample: Mutex::new(HashrateSample::new()),
         }
     }
@@ -176,7 +187,7 @@ mod tests {
 
     #[test]
     fn stats_initializes_counters() {
-        let stats = Stats::new(MiningMode::Pool, "pool".into(), true, None);
+        let stats = Stats::new(MiningMode::Pool, "pool".into(), true, None, false);
         assert_eq!(stats.accepted.load(Ordering::Relaxed), 0);
         assert_eq!(stats.rejected.load(Ordering::Relaxed), 0);
         assert_eq!(stats.dev_accepted.load(Ordering::Relaxed), 0);
@@ -188,7 +199,7 @@ mod tests {
 
     #[test]
     fn hashrate_avg_uses_elapsed_time() {
-        let stats = Stats::new(MiningMode::Pool, "pool".into(), false, None);
+        let stats = Stats::new(MiningMode::Pool, "pool".into(), false, None, false);
         // Replace hashes with a pre-filled counter for deterministic check
         stats.hashes.store(1000, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
@@ -217,6 +228,11 @@ mod tests {
             blocks_accepted: AtomicU64::new(0),
             blocks_rejected: AtomicU64::new(0),
             last_submit: Mutex::new(None),
+            solo_zmq_enabled: false,
+            solo_zmq_connected: AtomicBool::new(false),
+            solo_zmq_events_total: AtomicU64::new(0),
+            solo_zmq_last_event_timestamp: AtomicU64::new(0),
+            solo_zmq_last_topic: Mutex::new(None),
             hashrate_sample: Mutex::new(HashrateSample::new()),
         };
         assert_eq!(manual.hashrate_avg(), 0.0);
@@ -224,7 +240,7 @@ mod tests {
 
     #[test]
     fn instant_hashrate_tracks_recent_progress() {
-        let stats = Stats::new(MiningMode::Pool, "pool".into(), false, None);
+        let stats = Stats::new(MiningMode::Pool, "pool".into(), false, None, false);
         stats.hashes.store(0, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
         stats.hashes.store(1000, Ordering::Relaxed);
@@ -240,7 +256,7 @@ mod tests {
 
     #[test]
     fn mining_duration_tracks_elapsed_time() {
-        let stats = Stats::new(MiningMode::Pool, "pool".into(), false, None);
+        let stats = Stats::new(MiningMode::Pool, "pool".into(), false, None, false);
         std::thread::sleep(Duration::from_millis(5));
         let elapsed = stats.mining_duration();
         assert!(elapsed >= Duration::from_millis(5));

@@ -2,6 +2,7 @@
 
 use crate::args::{Args, LoadedConfigFile, MiningMode};
 use crate::http_api::run_http_api;
+use crate::solo::zmq::{self, ZmqEvent, ZmqEventKind};
 use crate::solo::{unix_timestamp_seconds, RpcEndpoint, SoloRpcClient, SoloRpcError, SoloTemplate};
 use crate::stats::{Stats, SubmitOutcome, SubmitRecord};
 use crate::util::tiny_jitter_ms;
@@ -16,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{atomic::Ordering, Arc};
 use std::time::Instant;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::{mpsc::UnboundedReceiver, watch};
 use tokio::time::{sleep, Duration};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use url::Url;
@@ -274,15 +275,15 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
     } else {
         None
     };
-
-    if matches!(mode, MiningMode::Solo) {
-        if let Some(zmq) = args.solo_zmq.as_ref() {
-            tracing::warn!(
-                zmq = %zmq,
-                "solo ZMQ configured but not supported; polling RPC instead"
-            );
-        }
-    }
+    let solo_zmq_endpoint = if matches!(mode, MiningMode::Solo) {
+        args.solo_zmq
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+    } else {
+        None
+    };
 
     // Take snapshot to log how auto-tune decided thread count and batch recommendation.
     let snap = autotune_snapshot();
@@ -420,7 +421,14 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             .unwrap_or_else(|| "<rpc>".to_string()),
     };
     let stats_tls = matches!(mode, MiningMode::Pool) && args.tls;
-    let stats = Arc::new(Stats::new(mode, stats_endpoint, stats_tls, stats_config));
+    let solo_zmq_enabled = solo_zmq_endpoint.is_some();
+    let stats = Arc::new(Stats::new(
+        mode,
+        stats_endpoint,
+        stats_tls,
+        stats_config,
+        solo_zmq_enabled,
+    ));
 
     let _workers = spawn_workers(
         n_workers,
@@ -927,26 +935,34 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
 
         tracing::info!("dev fee enabled at {} bps (1%)", DEV_FEE_BASIS_POINTS);
 
-        let solo_handle = tokio::spawn(run_solo_loop(
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mut solo_handle = tokio::spawn(run_solo_loop(
             endpoint,
             wallet,
             reserve_size,
             jobs_tx.clone(),
             shares_rx,
             stats.clone(),
+            solo_zmq_endpoint,
+            shutdown_rx,
         ));
 
         tokio::select! {
-            res = solo_handle => {
+            res = &mut solo_handle => {
                 if let Ok(Err(e)) = res {
                     tracing::error!("solo task ended with error: {e}");
                 } else if let Err(e) = res {
                     tracing::error!("solo task ended unexpectedly: {e}");
                 }
+                return Ok(());
             }
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("Ctrl+C received; shutting down.");
             }
+        }
+        let _ = shutdown_tx.send(true);
+        if let Err(e) = solo_handle.await {
+            tracing::error!("solo task ended unexpectedly: {e}");
         }
     }
 
@@ -1486,16 +1502,45 @@ async fn run_solo_loop(
     jobs_tx: tokio::sync::broadcast::Sender<WorkItem>,
     mut shares_rx: UnboundedReceiver<Share>,
     stats: Arc<Stats>,
+    solo_zmq: Option<String>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    const BASE_POLL: Duration = Duration::from_secs(15);
     const MAX_BACKOFF_MS: u64 = 60_000;
+    const INFO_MIN_INTERVAL: Duration = Duration::from_secs(10);
+    const ZMQ_DEBOUNCE: Duration = Duration::from_millis(250);
 
     let client = SoloRpcClient::new(endpoint.clone());
+    let zmq_endpoint = solo_zmq
+        .as_deref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    let base_poll = if zmq_endpoint.is_some() {
+        Duration::from_secs(45)
+    } else {
+        Duration::from_secs(15)
+    };
     tracing::info!(
         rpc = %endpoint.redacted(),
         reserve_size,
+        poll_seconds = base_poll.as_secs(),
         "solo mining enabled; polling monerod templates"
     );
+    let mut zmq_rx = if let Some(zmq) = zmq_endpoint {
+        let topics = zmq::default_topics();
+        tracing::info!(
+            zmq = %zmq,
+            topics = ?topics,
+            "solo ZMQ enabled; subscribing to monerod events"
+        );
+        Some(zmq::spawn_zmq_watcher(
+            zmq.to_string(),
+            topics,
+            stats.clone(),
+            shutdown.clone(),
+        ))
+    } else {
+        None
+    };
     let credentials_configured = endpoint.has_credentials();
 
     let mut current_template: Option<SoloTemplate> = None;
@@ -1503,20 +1548,42 @@ async fn run_solo_loop(
     let mut job_seq: u64 = 0;
     let mut backoff_ms = 1_000u64;
     let mut next_refresh = Instant::now();
+    let mut cooldown_until = Instant::now();
     let mut dev_scheduler = DevFeeScheduler::new();
     let mut last_sync_warn = Instant::now() - Duration::from_secs(60);
     let mut auth_failures: u32 = 0;
     let mut auth_logged = false;
+    let mut pending_chain_event = true;
+    let mut pending_txpool_event = true;
+    let mut last_info_at = Instant::now()
+        .checked_sub(INFO_MIN_INTERVAL)
+        .unwrap_or_else(Instant::now);
 
     loop {
+        if next_refresh < cooldown_until {
+            next_refresh = cooldown_until;
+        }
         let now = Instant::now();
         let delay = if now >= next_refresh {
             Duration::from_millis(0)
         } else {
             next_refresh - now
         };
+        let zmq_event = async {
+            match zmq_rx.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending::<Option<ZmqEvent>>().await,
+            }
+        };
 
         tokio::select! {
+            biased;
+            res = shutdown.changed() => {
+                if res.is_err() || *shutdown.borrow() {
+                    tracing::info!("solo shutdown requested");
+                    return Ok(());
+                }
+            }
             maybe_share = shares_rx.recv() => {
                 let Some(share) = maybe_share else {
                     tracing::warn!("shares channel closed; stopping solo task");
@@ -1583,7 +1650,6 @@ async fn run_solo_loop(
                         );
                         stats.pool_connected.store(true, Ordering::Relaxed);
                         reset_auth_failures(&mut auth_failures, &mut auth_logged);
-                        next_refresh = Instant::now();
                     }
                     Err(err) => {
                         stats.blocks_rejected.fetch_add(1, Ordering::Relaxed);
@@ -1605,35 +1671,47 @@ async fn run_solo_loop(
                             log_solo_rpc_error(&endpoint, &err, "submit_block");
                         }
                         stats.pool_connected.store(false, Ordering::Relaxed);
-                        next_refresh = Instant::now();
                     }
                 }
+                pending_chain_event = true;
+                pending_txpool_event = true;
+                next_refresh = zmq::coalesce_refresh_deadline(
+                    next_refresh,
+                    Instant::now(),
+                    cooldown_until,
+                    Duration::from_millis(0),
+                );
             }
             _ = sleep(delay) => {
-                match client.get_info().await {
-                    Ok(info) => {
-                        stats.node_height.store(info.height, Ordering::Relaxed);
-                        if !info.is_synced() && last_sync_warn.elapsed() > Duration::from_secs(60) {
-                            tracing::warn!(
-                                height = info.height,
-                                target_height = info.target_height.unwrap_or(info.height),
-                                "monerod is not yet synced; solo mining templates may be stale"
-                            );
-                            last_sync_warn = Instant::now();
+                let should_refresh_info =
+                    pending_chain_event || last_info_at.elapsed() >= INFO_MIN_INTERVAL;
+                if should_refresh_info {
+                    match client.get_info().await {
+                        Ok(info) => {
+                            stats.node_height.store(info.height, Ordering::Relaxed);
+                            if !info.is_synced() && last_sync_warn.elapsed() > Duration::from_secs(60) {
+                                tracing::warn!(
+                                    height = info.height,
+                                    target_height = info.target_height.unwrap_or(info.height),
+                                    "monerod is not yet synced; solo mining templates may be stale"
+                                );
+                                last_sync_warn = Instant::now();
+                            }
+                            reset_auth_failures(&mut auth_failures, &mut auth_logged);
+                            last_info_at = Instant::now();
                         }
-                        reset_auth_failures(&mut auth_failures, &mut auth_logged);
-                    }
-                    Err(err) => {
-                        if is_auth_error(&err) {
-                            handle_auth_error(
-                                &endpoint,
-                                "get_info",
-                                credentials_configured,
-                                &mut auth_failures,
-                                &mut auth_logged,
-                            );
-                        } else {
-                            log_solo_rpc_error(&endpoint, &err, "get_info");
+                        Err(err) => {
+                            if is_auth_error(&err) {
+                                handle_auth_error(
+                                    &endpoint,
+                                    "get_info",
+                                    credentials_configured,
+                                    &mut auth_failures,
+                                    &mut auth_logged,
+                                );
+                            } else {
+                                log_solo_rpc_error(&endpoint, &err, "get_info");
+                            }
                         }
                     }
                 }
@@ -1644,6 +1722,7 @@ async fn run_solo_loop(
                     Ok(template) => {
                         stats.pool_connected.store(true, Ordering::Relaxed);
                         backoff_ms = 1_000;
+                        cooldown_until = Instant::now();
                         reset_auth_failures(&mut auth_failures, &mut auth_logged);
 
                         let job_id = format!("solo-{}-{}", template.height, job_seq);
@@ -1685,17 +1764,20 @@ async fn run_solo_loop(
                                     }
                                     current_template = Some(template);
                                 }
+                                pending_chain_event = false;
+                                pending_txpool_event = false;
                             }
                             Err(err) => {
                                 stats.pool_connected.store(false, Ordering::Relaxed);
                                 dev_scheduler.revert_last_job();
                                 log_solo_rpc_error(&endpoint, &err, "template decode");
                                 next_refresh = Instant::now() + Duration::from_millis(backoff_ms);
+                                cooldown_until = next_refresh;
                                 backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
                                 continue;
                             }
                         }
-                        next_refresh = Instant::now() + BASE_POLL;
+                        next_refresh = Instant::now() + base_poll;
                     }
                     Err(err) => {
                         stats.pool_connected.store(false, Ordering::Relaxed);
@@ -1712,11 +1794,48 @@ async fn run_solo_loop(
                             log_solo_rpc_error(&endpoint, &err, "get_block_template");
                         }
                         next_refresh = Instant::now() + Duration::from_millis(backoff_ms);
+                        cooldown_until = next_refresh;
                         backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
                     }
                 }
             }
+            maybe_event = zmq_event => {
+                match maybe_event {
+                    Some(event) => {
+                        apply_zmq_event(event, &mut pending_chain_event, &mut pending_txpool_event);
+                        next_refresh = zmq::coalesce_refresh_deadline(
+                            next_refresh,
+                            Instant::now(),
+                            cooldown_until,
+                            ZMQ_DEBOUNCE,
+                        );
+                    }
+                    None => {
+                        if zmq_rx.is_some() {
+                            tracing::warn!("solo ZMQ channel closed; continuing with polling");
+                            zmq_rx = None;
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+fn apply_zmq_event(
+    event: ZmqEvent,
+    pending_chain_event: &mut bool,
+    pending_txpool_event: &mut bool,
+) {
+    match event.kind {
+        ZmqEventKind::ChainMain => {
+            *pending_chain_event = true;
+            *pending_txpool_event = true;
+        }
+        ZmqEventKind::TxpoolAdd => {
+            *pending_txpool_event = true;
+        }
+        ZmqEventKind::MinerData | ZmqEventKind::Unknown => {}
     }
 }
 

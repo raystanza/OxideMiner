@@ -96,4 +96,5 @@ debug = false
 #node_rpc_pass = "pass"
 #wallet = "<YOUR_XMR_ADDRESS>"
 #reserve_size = 60
+# ZMQ pub/sub for near real-time template updates (monerod --zmq-pub tcp://127.0.0.1:18083)
 #solo_zmq = "tcp://127.0.0.1:18083"

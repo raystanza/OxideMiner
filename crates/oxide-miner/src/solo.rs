@@ -1,5 +1,7 @@
 // OxideMiner/crates/oxide-miner/src/solo.rs
 
+pub mod zmq;
+
 use base64::Engine;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};

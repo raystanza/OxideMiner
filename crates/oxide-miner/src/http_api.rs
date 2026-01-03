@@ -263,6 +263,20 @@ pub async fn run_http_api(
                             let blocks_submitted = s.blocks_submitted.load(Ordering::Relaxed);
                             let blocks_accepted = s.blocks_accepted.load(Ordering::Relaxed);
                             let blocks_rejected = s.blocks_rejected.load(Ordering::Relaxed);
+                            let zmq_enabled = if s.solo_zmq_enabled { 1 } else { 0 };
+                            let zmq_connected = if s.solo_zmq_connected.load(Ordering::Relaxed) {
+                                1
+                            } else {
+                                0
+                            };
+                            let zmq_events = s.solo_zmq_events_total.load(Ordering::Relaxed);
+                            let zmq_last_ts =
+                                s.solo_zmq_last_event_timestamp.load(Ordering::Relaxed);
+                            let zmq_last_topic = s
+                                .solo_zmq_last_topic
+                                .lock()
+                                .ok()
+                                .and_then(|guard| guard.clone());
                             let (last_status, last_success, last_ts) = s
                                 .last_submit
                                 .lock()
@@ -307,6 +321,23 @@ pub async fn run_http_api(
                                 .ok();
                             writeln!(body, "oxide_blocks_accepted_total {}", blocks_accepted).ok();
                             writeln!(body, "oxide_blocks_rejected_total {}", blocks_rejected).ok();
+                            writeln!(body, "oxide_solo_zmq_enabled {}", zmq_enabled).ok();
+                            writeln!(body, "oxide_solo_zmq_connected {}", zmq_connected).ok();
+                            writeln!(body, "oxide_solo_zmq_events_total {}", zmq_events).ok();
+                            writeln!(
+                                body,
+                                "oxide_solo_zmq_last_event_timestamp_seconds {}",
+                                zmq_last_ts
+                            )
+                            .ok();
+                            if let Some(topic) = zmq_last_topic {
+                                writeln!(
+                                    body,
+                                    "oxide_solo_zmq_last_topic{{topic=\"{}\"}} 1",
+                                    escape_label_value(&topic)
+                                )
+                                .ok();
+                            }
                             writeln!(body, "oxide_last_submit_success {}", last_success).ok();
                             writeln!(body, "oxide_last_submit_timestamp_seconds {}", last_ts).ok();
                             writeln!(
@@ -686,7 +717,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None));
+        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None, false));
         stats.accepted.store(5, Ordering::Relaxed);
         stats.rejected.store(2, Ordering::Relaxed);
         stats.dev_accepted.store(1, Ordering::Relaxed);
@@ -731,7 +762,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None));
+        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None, false));
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("img")).unwrap();
@@ -782,7 +813,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None));
+        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None, false));
         let server = tokio::spawn(run_http_api(LOCALHOST, port, stats, None, None));
         sleep(Duration::from_millis(50)).await;
 
@@ -808,7 +839,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None));
+        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None, false));
 
         let dir = tempfile::tempdir().unwrap();
         let theme_dir = dir.path().join("blue");
@@ -861,7 +892,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None));
+        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None, false));
 
         let dash_dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -917,7 +948,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None));
+        let stats = Arc::new(Stats::new(MiningMode::Pool, "pool".into(), false, None, false));
 
         let dir = tempfile::tempdir().unwrap();
         let theme_dir = dir.path().join("blue");

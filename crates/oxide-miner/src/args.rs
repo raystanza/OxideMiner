@@ -161,7 +161,7 @@ pub struct Args {
     )]
     pub solo_reserve_size: u32,
 
-    /// ZMQ endpoint for monerod new-block notifications (optional)
+    /// ZMQ endpoint for monerod chain/txpool notifications (optional)
     #[arg(long = "solo-zmq", value_name = "URL", value_hint = ValueHint::Url)]
     pub solo_zmq: Option<String>,
 }
@@ -317,6 +317,12 @@ where
     if should_warn_unused_api_bind(&args, &original_args, config.as_ref()) {
         warnings.push(ConfigWarning::new(
             "api_bind is set but api_port is not set; HTTP API will not start".to_string(),
+            false,
+        ));
+    }
+    if args.mode != MiningMode::Solo && args.solo_zmq.is_some() {
+        warnings.push(ConfigWarning::new(
+            "solo zmq configured but mode != solo; ignoring".to_string(),
             false,
         ));
     }

@@ -328,7 +328,7 @@ Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all o
 | `--node-rpc-pass <PASS>`  | Monerod JSON-RPC password (HTTP digest auth).                                              |
 | `--solo-wallet <ADDRESS>` | Wallet address for solo mining (`get_block_template`).                                     |
 | `--solo-reserve-size <N>` | Reserve size in bytes for solo templates (default 60).                                     |
-| `--solo-zmq <URL>`        | Optional ZMQ endpoint for new-block notifications (polling fallback).                      |
+| `--solo-zmq <URL>`        | Optional ZMQ endpoint for monerod events (template refresh on chain/txpool updates).        |
 
 ### Sample `config.toml`
 
@@ -406,7 +406,7 @@ oxide-miner \
   --node-rpc-pass pass
 ```
 
-ZMQ notifications are optional; OxideMiner currently uses polling with backoff and will log if a ZMQ endpoint is provided.
+ZMQ notifications are optional; when configured, OxideMiner subscribes to monerod's ZMQ events and refreshes templates immediately, with a low-frequency safety poll as fallback.
 
 If the node is still syncing, OxideMiner logs a clear warning and keeps polling until templates are available.
 
@@ -458,6 +458,11 @@ oxide_blocks_rejected_total <u64>
 oxide_last_submit_success <0|1>
 oxide_last_submit_timestamp_seconds <u64>
 oxide_last_submit_status{status} 1
+oxide_solo_zmq_enabled <0|1>
+oxide_solo_zmq_connected <0|1>
+oxide_solo_zmq_events_total <u64>
+oxide_solo_zmq_last_event_timestamp_seconds <u64>
+oxide_solo_zmq_last_topic{topic} 1
 oxide_pool_connected <0|1>
 oxide_tls_enabled <0|1>
 version <string>
