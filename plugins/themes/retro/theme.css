@@ -6,6 +6,15 @@ body[data-theme="retro"] {
   --retro-text: #9cffad;
   --retro-muted: #6bbf7e;
   --retro-accent: #b7ff9c;
+  --bg: var(--retro-bg);
+  --card: var(--retro-surface);
+  --text: var(--retro-text);
+  --label: var(--retro-muted);
+  --accent: var(--retro-accent);
+  --terminal-bg: #040b06;
+  --terminal-fg: var(--retro-text);
+  --terminal-dim: var(--retro-muted);
+  --terminal-accent: var(--retro-accent);
   color: var(--retro-text);
   background: radial-gradient(circle at 20% 20%, rgba(156, 255, 173, 0.08), transparent 40%),
     radial-gradient(circle at 80% 0%, rgba(124, 255, 183, 0.1), transparent 40%),
@@ -49,6 +58,7 @@ body[data-theme="retro"] .toolbar{
 
 body[data-theme="retro"] .footer,
 body[data-theme="retro"] .card,
+body[data-theme="retro"] .mode-banner,
 body[data-theme="retro"] .menu,
 body[data-theme="retro"] .theme-card {
   background: var(--retro-surface);
