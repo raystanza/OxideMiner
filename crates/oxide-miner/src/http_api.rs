@@ -390,36 +390,15 @@ pub async fn run_http_api(
                                     values.huge_pages.unwrap_or(false),
                                     values.tls.unwrap_or(false),
                                     escape_label_value(&values.api_port.map(|v| v.to_string()).unwrap_or_default()),
-                                    escape_label_value(
-                                        &values
-                                            .api_bind
-                                            .map(|v| v.to_string())
-                                            .unwrap_or_default()
-                                    ),
+                                    escape_label_value(&values.api_bind.map(|v| v.to_string()).unwrap_or_default()),
                                     escape_label_value(values.proxy.as_deref().unwrap_or("")),
-                                    escape_label_value(
-                                        &values
-                                            .dashboard_dir
-                                            .as_ref()
-                                            .map(|p| p.display().to_string())
-                                            .unwrap_or_default(),
-                                    ),
+                                    escape_label_value(&values.dashboard_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),),
                                     values.no_yield.unwrap_or(false),
                                     values.debug.unwrap_or(false),
-                                    escape_label_value(
-                                        &redact_url_userinfo(
-                                            solo.and_then(|s| s.rpc_url.as_deref()).unwrap_or("")
-                                        )
-                                    ),
-                                    escape_label_value(
-                                        solo.and_then(|s| s.wallet.as_deref()).unwrap_or("")
-                                    ),
-                                    escape_label_value(
-                                        &solo.and_then(|s| s.reserve_size).map(|v| v.to_string()).unwrap_or_default()
-                                    ),
-                                    escape_label_value(
-                                        solo.and_then(|s| s.zmq.as_deref()).unwrap_or("")
-                                    ),
+                                    escape_label_value(&redact_url_userinfo(solo.and_then(|s| s.rpc_url.as_deref()).unwrap_or(""))),
+                                    escape_label_value(solo.and_then(|s| s.wallet.as_deref()).unwrap_or("")),
+                                    escape_label_value(&solo.and_then(|s| s.reserve_size).map(|v| v.to_string()).unwrap_or_default()),
+                                    escape_label_value(solo.and_then(|s| s.zmq.as_deref()).unwrap_or("")),
                                     solo.and_then(|s| s.rpc_user.as_ref()).is_some(),
                                     solo.and_then(|s| s.rpc_pass.as_ref()).is_some(),
                                 );

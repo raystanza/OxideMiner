@@ -322,6 +322,10 @@ h1 {
   margin-bottom: 8px;
 }
 
+.terminal-card {
+  grid-column: 1 / -1;
+}
+
 .terminal {
   margin: 0;
   background: var(--terminal-bg);
@@ -332,7 +336,7 @@ h1 {
   padding: 12px;
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--terminal-bg) 70%, var(--terminal-dim));
-  max-height: 280px;
+  max-height: clamp(220px, 32vh, 360px);
   overflow-y: auto;
   white-space: pre-wrap;
   scrollbar-color: color-mix(in srgb, var(--terminal-accent) 60%, transparent) transparent;

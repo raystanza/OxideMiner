@@ -92,9 +92,19 @@ loading.updateAttempt(1, 20);
 
 function formatHashrate(hps) {
   if (!Number.isFinite(hps)) return '-';
-  if (hps >= 1e9) { return (hps / 1e9).toFixed(3) + ' GH/s'; }
-  if (hps >= 1e3) { return (hps / 1e3).toFixed(3) + ' KH/s'; }
-  return hps.toFixed(2) + ' H/s';
+  if (hps < 0) return '-';
+
+  const units = ['H/s', 'KH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s', 'ZH/s', 'YH/s'];
+  let value = hps;
+  let idx = 0;
+
+  while (value >= 1000 && idx < units.length - 1) {
+    value /= 1000;
+    idx++;
+  }
+
+  const decimals = idx === 0 ? 2 : 3;
+  return `${value.toFixed(decimals)} ${units[idx]}`;
 }
 
 const intFmt = new Intl.NumberFormat('en-US');
@@ -226,11 +236,15 @@ function formatZmqTopic(topic) {
     .trim();
 }
 
-function buildModeInfo(rawMode, normalizedMode, zmq) {
+function buildModeInfo(rawMode, normalizedMode, zmq, stats) {
   if (normalizedMode === 'pool') {
+    const poolFromTop = stats && typeof stats.pool === 'string' && stats.pool ? stats.pool : null;
+    const poolFromConfig = stats && stats.config && stats.config.values && stats.config.values.pool ? stats.config.values.pool : null;
+    const pool = poolFromTop || poolFromConfig || null;
+    const connected = Boolean(stats && typeof stats.connected === 'boolean' ? stats.connected : false);
     return {
       title: 'Pool mining',
-      subtitle: 'Solo metrics hidden in pool mode.',
+      subtitle: `Mining on ${pool || '-'}; ${connected ? 'Connected' : 'Disconnected'}.`,
       shortLabel: 'Pool',
     };
   }
@@ -238,7 +252,7 @@ function buildModeInfo(rawMode, normalizedMode, zmq) {
   if (normalizedMode === 'solo') {
     if (zmq.enabled) {
       const status = zmq.connected
-        ? 'ZMQ connected; events drive refresh.'
+        ? 'ZMQ connected; See ZMQ Feed below.'
         : 'ZMQ enabled; waiting for events.';
       return {
         title: 'Solo mining (ZMQ)',
@@ -248,7 +262,7 @@ function buildModeInfo(rawMode, normalizedMode, zmq) {
     }
     return {
       title: 'Solo mining (polling)',
-      subtitle: 'Polling for templates (ZMQ disabled).',
+      subtitle: 'Using polling mode for solo mining stats.',
       shortLabel: 'Solo (polling)',
     };
   }
@@ -334,7 +348,8 @@ function updateZmqCards(zmq) {
 function applyStats(data) {
   const modeNormalized = normalizeMode(data.mode);
   const zmq = readZmqState(data);
-  const modeInfo = buildModeInfo(data.mode, modeNormalized, zmq);
+  const rawMode = typeof data.mode === 'string' ? data.mode : (data.config && data.config.values && data.config.values.mode) || null;
+  const modeInfo = buildModeInfo(rawMode, modeNormalized, zmq, data);
   updateModeBanner(modeInfo);
   updateCardVisibility(modeNormalized, zmq.enabled);
 
