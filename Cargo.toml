@@ -28,7 +28,7 @@ webpki-roots = "0.25"
 tokio-socks = "0.5"
 url = "2"
 core_affinity = "0.5"
-hyper-util = { version = "0.1", features = ["server", "tokio"] }
+hyper-util = { version = "0.1", features = ["server", "client-legacy", "http1", "tokio"] }
 http-body-util = "0.1"
 sysinfo = "0.30"
 raw-cpuid = "11"
@@ -45,6 +45,8 @@ rustls-pemfile = "1"
 ring = "0.17"
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 rustls_webpki = { package = "rustls-webpki", version = "0.101" }
+base64 = "0.22"
+md5 = "0.7"
 
 [profile.release]
 lto = true

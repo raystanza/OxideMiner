@@ -7,6 +7,10 @@ body[data-theme="aurora"] {
   --text: #d9e8ff;
   --label: #89a6ff;
   --accent: #7cfeff;
+  --terminal-bg: #090f1d;
+  --terminal-fg: #d9e8ff;
+  --terminal-dim: #9fb3ff;
+  --terminal-accent: #7cfeff;
 }
 
 body[data-theme="aurora"] {
@@ -26,6 +30,7 @@ body[data-theme="aurora"] .toolbar{
 }
 
 body[data-theme="aurora"] .card,
+body[data-theme="aurora"] .mode-banner,
 body[data-theme="aurora"] .footer {
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);

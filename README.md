@@ -40,6 +40,7 @@ We ship a **command-line miner** with automatic CPU tuning, an **optional embedd
 - [Operating the miner](#operating-the-miner)
   - [Benchmark mode](#benchmark-mode)
   - [Pool connectivity](#pool-connectivity)
+  - [Solo mining (monerod)](#solo-mining-monerod)
   - [Huge pages & affinity](#huge-pages--affinity)
   - [HTTP dashboard & API](#http-dashboard--api)
   - [Metrics reference](#metrics-reference)
@@ -68,7 +69,7 @@ We ship a **command-line miner** with automatic CPU tuning, an **optional embedd
 
 - 💎 **Transparent dev fee:** A fixed 1% developer fee, clearly logged and accounted for in metrics. No stealth mining, no surprises, just honesty.
 
-- 📊 **Built-in dashboard (with themes!):** A modern, static web UI (HTML/CSS/JS fully embedded in the binary) shows hashrate, shares, uptime, connection state, and build metadata.
+- 📊 **Built-in dashboard (with themes!):** A modern, static web UI (HTML/CSS/JS fully embedded in the binary) shows hashrate, shares, uptime, connection state, build metadata, and a live ZMQ feed when solo ZMQ is enabled.
 
 ![Screenshot1](oxideminer_themes_screenshot.png)
 
@@ -96,6 +97,7 @@ _By default OxideMiner will look for a 'config.toml' file in the same directory 
 
 - Rust toolchain via [rustup](https://rustup.rs/) (stable channel). The workspace targets _Rust 2021 edition_.
 - A Monero-compatible mining pool endpoint and wallet address.
+- For solo mining: a fully-synced local `monerod` with JSON-RPC enabled.
 - Optional: elevated privileges for huge/large page support (see below).
 
 ### Build and install
@@ -174,6 +176,8 @@ oxide-miner \
 ```
 
 Use `--api-bind <ADDR>` (for example `--api-bind 0.0.0.0`) if you need the dashboard reachable beyond `127.0.0.1`.
+
+For solo mining against a local `monerod`, use `--mode solo` (see the Solo mining section below).
 
 Expected startup log flow:
 
@@ -300,8 +304,9 @@ Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all o
 
 | Flag                      | Purpose                                                                                    |
 | ------------------------- | ------------------------------------------------------------------------------------------ |
-| `-o, --url <HOST:PORT>`   | Mining pool endpoint (required unless `--benchmark`).                                      |
-| `-u, --user <ADDRESS>`    | Primary Monero wallet or subaddress.                                                       |
+| `--mode <pool\|solo>`     | Mining backend selection (default `pool`).                                                 |
+| `-o, --url <HOST:PORT>`   | Mining pool endpoint (pool mode only).                                                     |
+| `-u, --user <ADDRESS>`    | Primary Monero wallet or subaddress (pool mode only).                                      |
 | `-p, --pass <STRING>`     | Pool password/rig identifier (default `x`).                                                |
 | `-t, --threads <N>`       | Override auto-selected worker threads.                                                     |
 | `--batch-size <N>`        | Manual hashes per batch (default auto recommendation).                                     |
@@ -318,6 +323,12 @@ Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all o
 | `--debug`                 | Increase log verbosity and tee output to rotating files in `./logs/`.                      |
 | `--config <PATH>`         | Load defaults from a TOML file (defaults to `./config.toml`).                              |
 | `--benchmark`             | Run the RandomX benchmark and exit (no pool connection).                                   |
+| `--node-rpc-url <URL>`    | Monerod JSON-RPC endpoint for solo mining (default `http://127.0.0.1:18081`).              |
+| `--node-rpc-user <USER>`  | Monerod JSON-RPC username (HTTP digest auth).                                              |
+| `--node-rpc-pass <PASS>`  | Monerod JSON-RPC password (HTTP digest auth).                                              |
+| `--solo-wallet <ADDRESS>` | Wallet address for solo mining (`get_block_template`).                                     |
+| `--solo-reserve-size <N>` | Reserve size in bytes for solo templates (default 60).                                     |
+| `--solo-zmq <URL>`        | Optional ZMQ endpoint for monerod events (template refresh on chain/txpool updates).       |
 
 ### Sample `config.toml`
 
@@ -325,13 +336,23 @@ The repository ships with [`config.toml.example`](config.toml.example). Copy it 
 
 ```toml
 # Save as config.toml next to the oxide-miner binary
-pool = "pool.supportxmr.com:5555"
+mode = "pool"
+pool = "xmr.kryptex.network:7029"
 wallet = "<YOUR_WALLET_ADDRESS>"
 pass = "rig001"
 threads = 8             # omit to auto-tune
 api_port = 8080         # enable HTTP dashboard
 api_bind = "127.0.0.1"  # address to bind the dashboard/API (default 127.0.0.1, only used with api_port)
 huge_pages = true       # request HugeTLB / large pages if OS allows it
+
+# NOTE: TOML tables do not end; keep [solo] at the bottom unless you start a new table.
+[solo]
+node_rpc_url = "http://127.0.0.1:18081"
+node_rpc_user = "user"
+node_rpc_pass = "pass"
+wallet = "<YOUR_WALLET_ADDRESS>"
+reserve_size = 60
+solo_zmq = "tcp://127.0.0.1:18083"
 ```
 
 ### Configuration warnings
@@ -357,6 +378,37 @@ Run `--benchmark` to skip pool connectivity and measure local RandomX throughput
 - Route pool traffic through a SOCKS5 proxy with `--proxy socks5://[user:pass@]host:port` when you need Tor/VPN privacy or to bypass network restrictions.
 - Developer fee shares (1%) are scheduled deterministically and use the hard-coded donation wallet. Their acceptance/rejection counts are tracked separately in logs, metrics, and the dashboard.
 - Reconnection logic backs off exponentially between attempts. Watch for log lines prefixed with `reconnect` if the pool is unavailable.
+
+### Solo mining (monerod)
+
+Solo mode mines directly against a local, fully-synced `monerod` via JSON-RPC. OxideMiner does **not** store the blockchain itself.
+When `--rpc-login` is enabled, monerod uses HTTP Digest authentication; set `--node-rpc-user` and `--node-rpc-pass` to match.
+
+Run `monerod` with RPC enabled (localhost only recommended):
+
+```bash
+monerod \
+  --data-dir "~/xmr/" # Wherever the parent folder of lmdb is.
+  --rpc-bind-ip 127.0.0.1 \
+  --rpc-bind-port 18081 \
+  --rpc-login user:pass \
+  --zmq-pub tcp://127.0.0.1:18083
+```
+
+Then start OxideMiner in solo mode:
+
+```bash
+oxide-miner \
+  --mode solo \
+  --solo-wallet <YOUR_MONERO_WALLET> \
+  --node-rpc-url http://127.0.0.1:18081 \
+  --node-rpc-user user \
+  --node-rpc-pass pass
+```
+
+ZMQ notifications are optional; when configured, OxideMiner subscribes to monerod's ZMQ events and refreshes templates immediately, with a low-frequency safety poll as fallback.
+
+If the node is still syncing, OxideMiner logs a clear warning and keeps polling until templates are available.
 
 ### Huge pages & affinity
 
@@ -396,6 +448,21 @@ oxide_shares_accepted_total <u64>
 oxide_shares_rejected_total <u64>
 oxide_devfee_shares_accepted_total <u64>
 oxide_devfee_shares_rejected_total <u64>
+oxide_backend_info{mode,endpoint} 1
+oxide_node_height <u64>
+oxide_template_height <u64>
+oxide_template_age_seconds <u64>
+oxide_blocks_submitted_total <u64>
+oxide_blocks_accepted_total <u64>
+oxide_blocks_rejected_total <u64>
+oxide_last_submit_success <0|1>
+oxide_last_submit_timestamp_seconds <u64>
+oxide_last_submit_status{status} 1
+oxide_solo_zmq_enabled <0|1>
+oxide_solo_zmq_connected <0|1>
+oxide_solo_zmq_events_total <u64>
+oxide_solo_zmq_last_event_timestamp_seconds <u64>
+oxide_solo_zmq_last_topic{topic} 1
 oxide_pool_connected <0|1>
 oxide_tls_enabled <0|1>
 version <string>
@@ -453,6 +520,11 @@ cargo clippy --all-targets -- -D warnings
 
 # Run the full test suite (unit + async tests)
 cargo test --all
+
+# Run solo RPC integration tests (requires a local monerod)
+OXIDE_MONEROD_RPC=http://127.0.0.1:18081 \
+OXIDE_SOLO_WALLET=<YOUR_WALLET_ADDRESS> \
+cargo test -p oxide-miner --features integration-tests
 
 # Launch the miner in debug mode with verbose logging
 cargo run -p oxide-miner -- --debug --benchmark

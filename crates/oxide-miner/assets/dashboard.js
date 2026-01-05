@@ -7,6 +7,11 @@ window.__OXIDE_DASHBOARD_BOOTED__ = true;
 
 const controlElements = Array.from(document.querySelectorAll('.toolbar select'));
 const themeSelect = document.getElementById('theme-select');
+const cardElements = Array.from(document.querySelectorAll('.card'));
+const modeBannerTitleEl = document.getElementById('mode-banner-title');
+const modeBannerSubtitleEl = document.getElementById('mode-banner-subtitle');
+const zmqTerminalEl = document.getElementById('zmq_terminal');
+let lastZmqFeedText = '';
 
 function setControlsDisabled(disabled) {
   controlElements.forEach((el) => {
@@ -87,9 +92,19 @@ loading.updateAttempt(1, 20);
 
 function formatHashrate(hps) {
   if (!Number.isFinite(hps)) return '-';
-  if (hps >= 1e9) { return (hps / 1e9).toFixed(3) + ' GH/s'; }
-  if (hps >= 1e3) { return (hps / 1e3).toFixed(3) + ' KH/s'; }
-  return hps.toFixed(2) + ' H/s';
+  if (hps < 0) return '-';
+
+  const units = ['H/s', 'KH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s', 'ZH/s', 'YH/s'];
+  let value = hps;
+  let idx = 0;
+
+  while (value >= 1000 && idx < units.length - 1) {
+    value /= 1000;
+    idx++;
+  }
+
+  const decimals = idx === 0 ? 2 : 3;
+  return `${value.toFixed(decimals)} ${units[idx]}`;
 }
 
 const intFmt = new Intl.NumberFormat('en-US');
@@ -116,7 +131,228 @@ function formatIsoLocal(iso) {
   return Number.isNaN(d.getTime()) ? null : d.toLocaleString();
 }
 
+function formatUnixTimestamp(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  const d = new Date(seconds * 1000);
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleString();
+}
+
+function formatTimeShort(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  const d = new Date(seconds * 1000);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+
+function isNearBottom(el) {
+  const threshold = 24;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+}
+
+function formatZmqLine(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const when = formatTimeShort(Number(entry.ts)) || '--:--:--';
+  const summary = typeof entry.summary === 'string' && entry.summary ? entry.summary : '';
+  const topic = typeof entry.topic === 'string' && entry.topic ? entry.topic : '';
+  const text = summary || topic || 'event';
+  return `[${when}] ${text}`;
+}
+
+function updateZmqTerminal(zmq) {
+  if (!zmqTerminalEl) return;
+  const entries = Array.isArray(zmq.recent) ? zmq.recent : [];
+  let lines = [];
+  if (entries.length === 0) {
+    if (zmq.enabled) {
+      lines = ['Waiting for ZMQ events...'];
+    } else {
+      lines = ['ZMQ disabled.'];
+    }
+  } else {
+    lines = entries.map(formatZmqLine).filter(Boolean);
+  }
+
+  const text = lines.join('\n');
+  if (text === lastZmqFeedText) return;
+
+  const shouldScroll = isNearBottom(zmqTerminalEl);
+  zmqTerminalEl.textContent = text;
+  lastZmqFeedText = text;
+  if (shouldScroll) {
+    zmqTerminalEl.scrollTop = zmqTerminalEl.scrollHeight;
+  }
+}
+
+function normalizeMode(value) {
+  if (typeof value !== 'string') return null;
+  const mode = value.trim().toLowerCase();
+  if (!mode) return null;
+  return mode;
+}
+
+function readZmqState(data) {
+  const solo = data && typeof data === 'object' ? data.solo || {} : {};
+  const soloZmq = solo && typeof solo === 'object' ? solo.zmq || {} : {};
+
+  const enabled = typeof data.solo_zmq_enabled === 'boolean'
+    ? data.solo_zmq_enabled
+    : (typeof soloZmq.enabled === 'boolean' ? soloZmq.enabled : false);
+  const connected = typeof data.solo_zmq_connected === 'boolean'
+    ? data.solo_zmq_connected
+    : (typeof soloZmq.connected === 'boolean' ? soloZmq.connected : false);
+
+  const eventsRaw = data.solo_zmq_events_total ?? soloZmq.events_total;
+  const eventsTotal = Number.isFinite(Number(eventsRaw)) ? Number(eventsRaw) : null;
+
+  const lastEventRaw = data.solo_zmq_last_event_timestamp ?? soloZmq.last_event_timestamp;
+  const lastEventTimestamp = Number.isFinite(Number(lastEventRaw)) ? Number(lastEventRaw) : null;
+
+  const lastTopicRaw = data.solo_zmq_last_topic ?? soloZmq.last_topic;
+  const lastTopic = typeof lastTopicRaw === 'string' && lastTopicRaw ? lastTopicRaw : null;
+
+  const recentRaw = Array.isArray(soloZmq.recent)
+    ? soloZmq.recent
+    : (Array.isArray(data.solo_zmq_recent) ? data.solo_zmq_recent : []);
+
+  return {
+    enabled: Boolean(enabled),
+    connected: Boolean(connected),
+    eventsTotal,
+    lastEventTimestamp,
+    lastTopic,
+    recent: recentRaw,
+  };
+}
+
+function formatZmqTopic(topic) {
+  if (!topic) return null;
+  const parts = String(topic).split('-');
+  const last = parts[parts.length - 1];
+  if (!last) return topic;
+  return last
+    .split('_')
+    .map((part) => part ? part[0].toUpperCase() + part.slice(1) : '')
+    .join(' ')
+    .trim();
+}
+
+function buildModeInfo(rawMode, normalizedMode, zmq, stats) {
+  if (normalizedMode === 'pool') {
+    const poolFromTop = stats && typeof stats.pool === 'string' && stats.pool ? stats.pool : null;
+    const poolFromConfig = stats && stats.config && stats.config.values && stats.config.values.pool ? stats.config.values.pool : null;
+    const pool = poolFromTop || poolFromConfig || null;
+    const connected = Boolean(stats && typeof stats.connected === 'boolean' ? stats.connected : false);
+    return {
+      title: 'Pool mining',
+      subtitle: `Mining on ${pool || '-'}; ${connected ? 'Connected' : 'Disconnected'}.`,
+      shortLabel: 'Pool',
+    };
+  }
+
+  if (normalizedMode === 'solo') {
+    if (zmq.enabled) {
+      const status = zmq.connected
+        ? 'ZMQ connected; See ZMQ Feed below.'
+        : 'ZMQ enabled; waiting for events.';
+      return {
+        title: 'Solo mining (ZMQ)',
+        subtitle: status,
+        shortLabel: 'Solo (ZMQ)',
+      };
+    }
+    return {
+      title: 'Solo mining (polling)',
+      subtitle: 'Using polling mode for solo mining stats.',
+      shortLabel: 'Solo (polling)',
+    };
+  }
+
+  const raw = typeof rawMode === 'string' && rawMode ? rawMode : 'Unknown';
+  const pretty = raw.charAt(0).toUpperCase() + raw.slice(1);
+  return {
+    title: `Mode: ${pretty}`,
+    subtitle: '',
+    shortLabel: pretty,
+  };
+}
+
+function updateModeBanner(modeInfo) {
+  if (modeBannerTitleEl) {
+    modeBannerTitleEl.textContent = modeInfo.title;
+  }
+  if (modeBannerSubtitleEl) {
+    if (modeInfo.subtitle) {
+      modeBannerSubtitleEl.textContent = modeInfo.subtitle;
+      modeBannerSubtitleEl.hidden = false;
+    } else {
+      modeBannerSubtitleEl.textContent = '';
+      modeBannerSubtitleEl.hidden = true;
+    }
+  }
+}
+
+function updateCardVisibility(mode, zmqEnabled) {
+  const normalized = mode === 'pool' || mode === 'solo' ? mode : null;
+  cardElements.forEach((card) => {
+    let visible = true;
+    const modeAttr = card.getAttribute('data-mode');
+    if (modeAttr) {
+      if (!normalized) {
+        visible = true;
+      } else {
+        const allowed = modeAttr
+          .split(',')
+          .map((entry) => entry.trim().toLowerCase())
+          .filter(Boolean);
+        visible = allowed.includes(normalized);
+      }
+    }
+
+    const requires = card.getAttribute('data-requires');
+    if (visible && requires) {
+      if (requires === 'zmq') {
+        visible = Boolean(zmqEnabled);
+      }
+    }
+
+    card.hidden = !visible;
+  });
+}
+
+function updateZmqCards(zmq) {
+  const connectedEl = document.getElementById('zmq_connected');
+  if (connectedEl) {
+    connectedEl.textContent = zmq.connected ? 'Yes' : 'No';
+  }
+
+  const eventsEl = document.getElementById('zmq_events');
+  if (eventsEl) {
+    eventsEl.textContent = zmq.eventsTotal !== null ? intFmt.format(zmq.eventsTotal) : '-';
+  }
+
+  const lastEventEl = document.getElementById('zmq_last_event');
+  if (lastEventEl) {
+    const parts = [];
+    const topicLabel = formatZmqTopic(zmq.lastTopic);
+    if (topicLabel) {
+      parts.push(topicLabel);
+    }
+    const when = formatUnixTimestamp(zmq.lastEventTimestamp);
+    if (when) {
+      parts.push(when);
+    }
+    lastEventEl.textContent = parts.length > 0 ? parts.join(' - ') : '-';
+  }
+}
+
 function applyStats(data) {
+  const modeNormalized = normalizeMode(data.mode);
+  const zmq = readZmqState(data);
+  const rawMode = typeof data.mode === 'string' ? data.mode : (data.config && data.config.values && data.config.values.mode) || null;
+  const modeInfo = buildModeInfo(rawMode, modeNormalized, zmq, data);
+  updateModeBanner(modeInfo);
+  updateCardVisibility(modeNormalized, zmq.enabled);
+
   const hashrateEl = document.getElementById('hashrate');
   if (hashrateEl) {
     const avg = formatHashrate(Number(data.hashrate_avg ?? data.hashrate));
@@ -155,6 +391,11 @@ function applyStats(data) {
     connectedEl.textContent = data.connected ? 'Yes' : 'No';
   }
 
+  const modeEl = document.getElementById('mode');
+  if (modeEl) {
+    modeEl.textContent = modeInfo.shortLabel || '-';
+  }
+
   const tlsEl = document.getElementById('tls');
   if (tlsEl) {
     tlsEl.textContent = data.tls ? 'Yes' : 'No';
@@ -170,6 +411,58 @@ function applyStats(data) {
     miningTimeEl.textContent = formatDuration(Number(timing.mining_time_seconds));
   }
 
+  const solo = data.solo || {};
+  const nodeHeightEl = document.getElementById('node_height');
+  if (nodeHeightEl) {
+    const height = Number(solo.node_height);
+    nodeHeightEl.textContent = Number.isFinite(height) ? intFmt.format(height) : '-';
+  }
+
+  const templateHeightEl = document.getElementById('template_height');
+  if (templateHeightEl) {
+    const height = Number(solo.template_height);
+    templateHeightEl.textContent = Number.isFinite(height) ? intFmt.format(height) : '-';
+  }
+
+  const templateAgeEl = document.getElementById('template_age');
+  if (templateAgeEl) {
+    const ageValue = solo.template_age_seconds;
+    const age = Number(ageValue);
+    const valid = ageValue !== null && ageValue !== undefined && Number.isFinite(age);
+    templateAgeEl.textContent = valid ? formatDuration(age) : '-';
+  }
+
+  const blocks = solo.blocks || {};
+  const soloBlocksEl = document.getElementById('solo_blocks');
+  if (soloBlocksEl) {
+    const accepted = Number.isFinite(Number(blocks.accepted)) ? blocks.accepted : '-';
+    const rejected = Number.isFinite(Number(blocks.rejected)) ? blocks.rejected : '-';
+    const submitted = Number.isFinite(Number(blocks.submitted)) ? blocks.submitted : '-';
+    soloBlocksEl.textContent = `${accepted} / ${rejected} (${submitted})`;
+  }
+
+  const lastSubmitEl = document.getElementById('last_submit');
+  if (lastSubmitEl) {
+    const last = solo.last_submit;
+    if (last && typeof last === 'object') {
+      const outcome = typeof last.outcome === 'string' ? last.outcome : 'unknown';
+      const detail = typeof last.detail === 'string' ? last.detail : '';
+      const when = formatUnixTimestamp(Number(last.timestamp));
+      let text = outcome;
+      if (detail) {
+        text += `: ${detail}`;
+      }
+      if (when) {
+        text += ` (${when})`;
+      }
+      lastSubmitEl.textContent = text;
+    } else {
+      lastSubmitEl.textContent = '-';
+    }
+  }
+
+  updateZmqCards(zmq);
+  updateZmqTerminal(zmq);
   updateFooter(data);
 }
 

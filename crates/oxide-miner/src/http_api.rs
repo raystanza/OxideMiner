@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{atomic::Ordering, Arc};
 use sysinfo::System;
 use tokio::{fs, net::TcpListener};
+use url::Url;
 
 // Embed the dashboard assets at compile time so the binary is self-contained.
 const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
@@ -137,6 +138,17 @@ fn escape_label_value(value: &str) -> String {
         .replace('\n', "\\n")
 }
 
+fn redact_url_userinfo(raw: &str) -> String {
+    match Url::parse(raw) {
+        Ok(mut url) => {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.to_string()
+        }
+        Err(_) => raw.to_string(),
+    }
+}
+
 fn parse_theme_cookie(req: &Request<Incoming>) -> Option<String> {
     let cookies = req.headers().get_all(header::COOKIE);
     for val in cookies.iter() {
@@ -245,6 +257,39 @@ pub async fn run_http_api(
                             let rejected = s.rejected.load(Ordering::Relaxed);
                             let dev_acc = s.dev_accepted.load(Ordering::Relaxed);
                             let dev_rej = s.dev_rejected.load(Ordering::Relaxed);
+                            let node_height = s.node_height.load(Ordering::Relaxed);
+                            let template_height = s.template_height.load(Ordering::Relaxed);
+                            let template_age = s.template_age_seconds().unwrap_or(0);
+                            let blocks_submitted = s.blocks_submitted.load(Ordering::Relaxed);
+                            let blocks_accepted = s.blocks_accepted.load(Ordering::Relaxed);
+                            let blocks_rejected = s.blocks_rejected.load(Ordering::Relaxed);
+                            let zmq_enabled = if s.solo_zmq_enabled { 1 } else { 0 };
+                            let zmq_connected = if s.solo_zmq_connected.load(Ordering::Relaxed) {
+                                1
+                            } else {
+                                0
+                            };
+                            let zmq_events = s.solo_zmq_events_total.load(Ordering::Relaxed);
+                            let zmq_last_ts =
+                                s.solo_zmq_last_event_timestamp.load(Ordering::Relaxed);
+                            let zmq_last_topic = s
+                                .solo_zmq_last_topic
+                                .lock()
+                                .ok()
+                                .and_then(|guard| guard.clone());
+                            let (last_status, last_success, last_ts) = s
+                                .last_submit
+                                .lock()
+                                .ok()
+                                .and_then(|guard| guard.clone())
+                                .map(|record| {
+                                    (
+                                        record.outcome.as_str().to_string(),
+                                        if record.outcome.is_success() { 1 } else { 0 },
+                                        record.timestamp,
+                                    )
+                                })
+                                .unwrap_or_else(|| ("none".to_string(), 0, 0));
                             let hashes = s.hashes.load(Ordering::Relaxed);
                             let hashrate_avg = s.hashrate_avg();
                             let instant_hashrate = s.instant_hashrate();
@@ -262,6 +307,45 @@ pub async fn run_http_api(
                             writeln!(body, "oxide_shares_rejected_total {}", rejected).ok();
                             writeln!(body, "oxide_devfee_shares_accepted_total {}", dev_acc).ok();
                             writeln!(body, "oxide_devfee_shares_rejected_total {}", dev_rej).ok();
+                            writeln!(
+                                body,
+                                "oxide_backend_info{{mode=\"{}\",endpoint=\"{}\"}} 1",
+                                s.mode.as_str(),
+                                escape_label_value(&s.pool)
+                            )
+                            .ok();
+                            writeln!(body, "oxide_node_height {}", node_height).ok();
+                            writeln!(body, "oxide_template_height {}", template_height).ok();
+                            writeln!(body, "oxide_template_age_seconds {}", template_age).ok();
+                            writeln!(body, "oxide_blocks_submitted_total {}", blocks_submitted)
+                                .ok();
+                            writeln!(body, "oxide_blocks_accepted_total {}", blocks_accepted).ok();
+                            writeln!(body, "oxide_blocks_rejected_total {}", blocks_rejected).ok();
+                            writeln!(body, "oxide_solo_zmq_enabled {}", zmq_enabled).ok();
+                            writeln!(body, "oxide_solo_zmq_connected {}", zmq_connected).ok();
+                            writeln!(body, "oxide_solo_zmq_events_total {}", zmq_events).ok();
+                            writeln!(
+                                body,
+                                "oxide_solo_zmq_last_event_timestamp_seconds {}",
+                                zmq_last_ts
+                            )
+                            .ok();
+                            if let Some(topic) = zmq_last_topic {
+                                writeln!(
+                                    body,
+                                    "oxide_solo_zmq_last_topic{{topic=\"{}\"}} 1",
+                                    escape_label_value(&topic)
+                                )
+                                .ok();
+                            }
+                            writeln!(body, "oxide_last_submit_success {}", last_success).ok();
+                            writeln!(body, "oxide_last_submit_timestamp_seconds {}", last_ts).ok();
+                            writeln!(
+                                body,
+                                "oxide_last_submit_status{{status=\"{}\"}} 1",
+                                escape_label_value(&last_status)
+                            )
+                            .ok();
                             writeln!(body, "oxide_pool_connected {}", connected).ok();
                             writeln!(body, "oxide_tls_enabled {}", tls).ok();
                             writeln!(body, "version {}", env!("CARGO_PKG_VERSION")).ok();
@@ -292,9 +376,11 @@ pub async fn run_http_api(
                             if let Some(cfg) = &s.config {
                                 let values = &cfg.values;
                                 let applied = &cfg.applied;
+                                let solo = values.solo.as_ref();
                                 let info_labels = format!(
-                                    "path=\"{}\",pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",batch_size=\"{}\",affinity=\"{}\",huge_pages=\"{}\",tls=\"{}\",api_port=\"{}\",api_bind=\"{}\",proxy=\"{}\",dashboard_dir=\"{}\",no_yield=\"{}\",debug=\"{}\"",
+                                    "path=\"{}\",mode=\"{}\",pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",batch_size=\"{}\",affinity=\"{}\",huge_pages=\"{}\",tls=\"{}\",api_port=\"{}\",api_bind=\"{}\",proxy=\"{}\",dashboard_dir=\"{}\",no_yield=\"{}\",debug=\"{}\",solo_rpc_url=\"{}\",solo_wallet=\"{}\",solo_reserve_size=\"{}\",solo_zmq=\"{}\",solo_rpc_user_set=\"{}\",solo_rpc_pass_set=\"{}\"",
                                     escape_label_value(&cfg.path.display().to_string()),
+                                    escape_label_value(values.mode.map(|m| m.as_str()).unwrap_or("")),
                                     escape_label_value(values.pool.as_deref().unwrap_or("")),
                                     escape_label_value(values.wallet.as_deref().unwrap_or("")),
                                     escape_label_value(values.pass.as_deref().unwrap_or("")),
@@ -304,27 +390,23 @@ pub async fn run_http_api(
                                     values.huge_pages.unwrap_or(false),
                                     values.tls.unwrap_or(false),
                                     escape_label_value(&values.api_port.map(|v| v.to_string()).unwrap_or_default()),
-                                    escape_label_value(
-                                        &values
-                                            .api_bind
-                                            .map(|v| v.to_string())
-                                            .unwrap_or_default()
-                                    ),
+                                    escape_label_value(&values.api_bind.map(|v| v.to_string()).unwrap_or_default()),
                                     escape_label_value(values.proxy.as_deref().unwrap_or("")),
-                                    escape_label_value(
-                                        &values
-                                            .dashboard_dir
-                                            .as_ref()
-                                            .map(|p| p.display().to_string())
-                                            .unwrap_or_default(),
-                                    ),
+                                    escape_label_value(&values.dashboard_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),),
                                     values.no_yield.unwrap_or(false),
                                     values.debug.unwrap_or(false),
+                                    escape_label_value(&redact_url_userinfo(solo.and_then(|s| s.rpc_url.as_deref()).unwrap_or(""))),
+                                    escape_label_value(solo.and_then(|s| s.wallet.as_deref()).unwrap_or("")),
+                                    escape_label_value(&solo.and_then(|s| s.reserve_size).map(|v| v.to_string()).unwrap_or_default()),
+                                    escape_label_value(solo.and_then(|s| s.zmq.as_deref()).unwrap_or("")),
+                                    solo.and_then(|s| s.rpc_user.as_ref()).is_some(),
+                                    solo.and_then(|s| s.rpc_pass.as_ref()).is_some(),
                                 );
                                 writeln!(body, "oxide_config_info{{{}}} 1", info_labels).ok();
 
                                 let applied_labels = format!(
-                                    "pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",tls=\"{}\",tls_ca_cert=\"{}\",tls_cert_sha256=\"{}\",api_port=\"{}\",api_bind=\"{}\",dashboard_dir=\"{}\",affinity=\"{}\",huge_pages=\"{}\",batch_size=\"{}\",no_yield=\"{}\",debug=\"{}\",proxy=\"{}\"",
+                                    "mode=\"{}\",pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",tls=\"{}\",tls_ca_cert=\"{}\",tls_cert_sha256=\"{}\",api_port=\"{}\",api_bind=\"{}\",dashboard_dir=\"{}\",affinity=\"{}\",huge_pages=\"{}\",batch_size=\"{}\",no_yield=\"{}\",debug=\"{}\",proxy=\"{}\",solo_rpc_url=\"{}\",solo_rpc_user=\"{}\",solo_rpc_pass=\"{}\",solo_wallet=\"{}\",solo_reserve_size=\"{}\",solo_zmq=\"{}\"",
+                                    applied.mode,
                                     applied.pool,
                                     applied.wallet,
                                     applied.pass,
@@ -341,6 +423,12 @@ pub async fn run_http_api(
                                     applied.no_yield,
                                     applied.debug,
                                     applied.proxy,
+                                    applied.solo_rpc_url,
+                                    applied.solo_rpc_user,
+                                    applied.solo_rpc_pass,
+                                    applied.solo_wallet,
+                                    applied.solo_reserve_size,
+                                    applied.solo_zmq,
                                 );
                                 writeln!(body, "oxide_config_applied{{{}}} 1", applied_labels).ok();
                             }
@@ -361,6 +449,50 @@ pub async fn run_http_api(
                             let instant_hashrate = s.instant_hashrate();
                             let mining_duration = s.mining_duration();
                             let system_uptime = system_uptime_seconds();
+                            let node_height = s.node_height.load(Ordering::Relaxed);
+                            let template_height = s.template_height.load(Ordering::Relaxed);
+                            let template_age = s.template_age_seconds();
+                            let blocks_submitted = s.blocks_submitted.load(Ordering::Relaxed);
+                            let blocks_accepted = s.blocks_accepted.load(Ordering::Relaxed);
+                            let blocks_rejected = s.blocks_rejected.load(Ordering::Relaxed);
+                            let solo_zmq_enabled = s.solo_zmq_enabled;
+                            let solo_zmq_connected = s.solo_zmq_connected.load(Ordering::Relaxed);
+                            let solo_zmq_events_total =
+                                s.solo_zmq_events_total.load(Ordering::Relaxed);
+                            let solo_zmq_last_event_timestamp =
+                                s.solo_zmq_last_event_timestamp.load(Ordering::Relaxed);
+                            let solo_zmq_last_topic = s
+                                .solo_zmq_last_topic
+                                .lock()
+                                .ok()
+                                .and_then(|guard| guard.clone());
+                            let solo_zmq_recent = if solo_zmq_enabled {
+                                s.zmq_recent_snapshot()
+                            } else {
+                                Vec::new()
+                            };
+                            let solo_zmq_recent_json = solo_zmq_recent
+                                .into_iter()
+                                .map(|entry| {
+                                    json!({
+                                        "ts": entry.ts,
+                                        "topic": entry.topic,
+                                        "summary": entry.summary,
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            let last_submit = s
+                                .last_submit
+                                .lock()
+                                .ok()
+                                .and_then(|guard| guard.clone())
+                                .map(|record| {
+                                    json!({
+                                        "outcome": record.outcome.as_str(),
+                                        "detail": record.detail,
+                                        "timestamp": record.timestamp,
+                                    })
+                                });
                             let config = s.config.as_ref().map(|cfg| {
                                 json!({
                                     "path": cfg.path,
@@ -377,6 +509,7 @@ pub async fn run_http_api(
                             });
 
                             let resp_body = json!({
+                                "mode": s.mode.as_str(),
                                 "hashrate": hashrate_avg,
                                 "hashrate_avg": hashrate_avg,
                                 "instant_hashrate": instant_hashrate,
@@ -392,6 +525,30 @@ pub async fn run_http_api(
                                     "rejected": rejected,
                                     "dev_accepted": dev_acc,
                                     "dev_rejected": dev_rej,
+                                },
+                                "solo_zmq_enabled": solo_zmq_enabled,
+                                "solo_zmq_connected": solo_zmq_connected,
+                                "solo_zmq_events_total": solo_zmq_events_total,
+                                "solo_zmq_last_event_timestamp": solo_zmq_last_event_timestamp,
+                                "solo_zmq_last_topic": solo_zmq_last_topic,
+                                "solo": {
+                                    "node_height": node_height,
+                                    "template_height": template_height,
+                                    "template_age_seconds": template_age,
+                                    "blocks": {
+                                        "submitted": blocks_submitted,
+                                        "accepted": blocks_accepted,
+                                        "rejected": blocks_rejected,
+                                    },
+                                    "last_submit": last_submit,
+                                    "zmq": {
+                                        "enabled": solo_zmq_enabled,
+                                        "connected": solo_zmq_connected,
+                                        "events_total": solo_zmq_events_total,
+                                        "last_event_timestamp": solo_zmq_last_event_timestamp,
+                                        "last_topic": solo_zmq_last_topic,
+                                        "recent": solo_zmq_recent_json,
+                                    }
                                 },
                                 "timing": {
                                     "mining_time_seconds": mining_duration.as_secs(),
@@ -548,6 +705,7 @@ pub async fn run_http_api(
 #[cfg(test)]
 mod tests {
     use super::{api_socket_addr, run_http_api};
+    use crate::args::MiningMode;
     use crate::stats::Stats;
     use hyper::header;
     use reqwest::Client;
@@ -577,7 +735,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false, None));
+        let stats = Arc::new(Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+        ));
         stats.accepted.store(5, Ordering::Relaxed);
         stats.rejected.store(2, Ordering::Relaxed);
         stats.dev_accepted.store(1, Ordering::Relaxed);
@@ -622,7 +786,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false, None));
+        let stats = Arc::new(Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+        ));
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("img")).unwrap();
@@ -673,7 +843,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false, None));
+        let stats = Arc::new(Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+        ));
         let server = tokio::spawn(run_http_api(LOCALHOST, port, stats, None, None));
         sleep(Duration::from_millis(50)).await;
 
@@ -699,7 +875,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false, None));
+        let stats = Arc::new(Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+        ));
 
         let dir = tempfile::tempdir().unwrap();
         let theme_dir = dir.path().join("blue");
@@ -752,7 +934,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false, None));
+        let stats = Arc::new(Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+        ));
 
         let dash_dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -808,7 +996,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let stats = Arc::new(Stats::new("pool".into(), false, None));
+        let stats = Arc::new(Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+        ));
 
         let dir = tempfile::tempdir().unwrap();
         let theme_dir = dir.path().join("blue");

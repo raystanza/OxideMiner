@@ -34,3 +34,6 @@ Thumbs.db
 # Build directories
 ox-build/
 ox-build/target/
+
+# AI Agent files
+AGENTS.md

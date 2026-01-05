@@ -3,14 +3,18 @@
 # Any CLI flag can still override these values. Omit a key to use the built-in default / auto behavior.
 #
 # Minimal example (uncomment & edit the next 3 lines to get started):
-# pool = "pool.supportxmr.com:5555"    # Your pool host:port
+# mode = "pool"                        # "pool" (default) or "solo"
+# pool = "xmr.kryptex.network:7029"    # Your pool host:port
 # wallet = "<YOUR_XMR_ADDRESS>"        # Your primary XMR wallet address
 # pass = "x"                           # Pool password / miner name (many pools accept 'x')
 
 # --- Connection ---
 
+# Mining backend mode. Use "solo" to mine against a local monerod (see [solo] below).
+#mode = "pool"
+
 # Replace with the mining pool of your choice (host:port)
-#pool = "pool.supportxmr.com:3333"
+#pool = "xmr.kryptex.network:7029"
 
 # Replace with your Monero wallet address (primary)
 #wallet = "48z8R1GxSL6QRmGKv3x78JSMeBYvPVK2g9tSFoiwH4u88KPSLjnZUe6VXHKf5vrrG52uaaVYMpBBd2QQUiTY84qaSXJYVPS"
@@ -71,3 +75,26 @@ no_yield = false
 # Enable verbose debug logs. When enabled, logs are also written to ./logs/
 # with daily rotation.
 debug = false
+
+# --- Solo mining (local monerod) ---
+#
+# Please keep the [solo] table at the bottom of this file.
+# Requires a fully-synced monerod with RPC enabled (default http://127.0.0.1:18081).
+# Just point it at the parent of your 'lmdb' folder.
+#
+# Example:
+# monerod.exe --data-dir "C:\ProgramData\bitmonero" --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081 --rpc-login user:pass
+# monerod.exe --data-dir "C:\xmr" --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081 --rpc-login user:pass
+# monerod --data-dir /var/lib/monero --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081 --rpc-login user:pass
+# monerod --data-dir "~/xmr" --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081 --rpc-login user:pass
+#
+# NOTE: In order to use solo mining mode, you must uncomment the '[solo]' line as well as the other values below.
+#
+#[solo]
+#node_rpc_url = "http://127.0.0.1:18081"
+#node_rpc_user = "user"
+#node_rpc_pass = "pass"
+#wallet = "<YOUR_XMR_ADDRESS>"
+#reserve_size = 60
+# ZMQ pub/sub for near real-time template updates (monerod --zmq-pub tcp://127.0.0.1:18083)
+#solo_zmq = "tcp://127.0.0.1:18083"
