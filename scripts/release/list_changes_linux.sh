@@ -87,6 +87,10 @@ else
   fi
 fi
 
+# Ensure output directory exists (dev/ is gitignored in clean CI checkouts).
+output_dir=$(dirname "$OUTPUT_FILE")
+mkdir -p "$output_dir"
+
 # Truncate output file
 : > "$OUTPUT_FILE"
 
