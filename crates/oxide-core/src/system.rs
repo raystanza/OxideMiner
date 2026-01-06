@@ -1206,6 +1206,58 @@ fn parse_numa_nodes(spec: &str) -> Option<usize> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn parse_numa_node_ids(spec: &str) -> Option<Vec<usize>> {
+    let mut nodes = Vec::new();
+    let mut saw_entry = false;
+    for part in spec.trim().split(',') {
+        let token = part.trim();
+        if token.is_empty() {
+            continue;
+        }
+        saw_entry = true;
+        if let Some((start, end)) = token.split_once('-') {
+            let start: usize = start.parse().ok()?;
+            let end: usize = end.parse().ok()?;
+            if end < start {
+                return None;
+            }
+            nodes.extend(start..=end);
+        } else {
+            let node: usize = token.parse().ok()?;
+            nodes.push(node);
+        }
+    }
+
+    if !saw_entry {
+        return None;
+    }
+    nodes.sort_unstable();
+    nodes.dedup();
+    Some(nodes)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_numa_node_cpulists() -> Option<Vec<(usize, Vec<usize>)>> {
+    let online = std::fs::read_to_string("/sys/devices/system/node/online").ok()?;
+    let nodes = parse_numa_node_ids(&online)?;
+
+    let mut out = Vec::new();
+    for node in nodes {
+        let path = format!("/sys/devices/system/node/node{}/cpulist", node);
+        let cpus = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| parse_shared_cpu_list(&s))
+            .unwrap_or_default();
+        out.push((node, cpus));
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AutoTuneSnapshot {
     pub physical_cores: usize,
@@ -1219,6 +1271,45 @@ pub struct AutoTuneSnapshot {
     pub numa_nodes: Option<usize>,
     pub suggested_threads: usize,
     pub recommended_batch_size: usize,
+}
+
+impl AutoTuneSnapshot {
+    /// Number of distinct L3 cache domains detected on this host.
+    pub fn l3_domain_count(&self) -> usize {
+        if self.cache.l3_instances.is_empty() {
+            1
+        } else {
+            self.cache.l3_instances.len().max(1)
+        }
+    }
+
+    /// Best-effort summary of NUMA node CPU assignments (Linux only).
+    /// Example: `node0: CPUs 0-31, node1: CPUs 32-63`.
+    pub fn numa_cpu_list_summary(&self) -> Option<String> {
+        #[cfg(target_os = "linux")]
+        {
+            let lists = linux_numa_node_cpulists()?;
+            let mut parts = Vec::new();
+            for (node, cpus) in lists {
+                if cpus.is_empty() {
+                    parts.push(format!("node{}: CPUs unknown", node));
+                } else {
+                    parts.push(format!("node{}: CPUs {}", node, format_cpu_list(&cpus)));
+                }
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(", "))
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = self;
+            None
+        }
+    }
 }
 
 /// Compute a snapshot of system resources and the suggested mining thread count.
@@ -1453,6 +1544,17 @@ mod tests {
         assert_eq!(parse_numa_nodes("0-1"), Some(2));
         assert_eq!(parse_numa_nodes("0,2,4"), Some(3));
         assert!(parse_numa_nodes("2-1").is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_numa_node_id_lists() {
+        assert_eq!(parse_numa_node_ids("0"), Some(vec![0]));
+        assert_eq!(parse_numa_node_ids("0-1"), Some(vec![0, 1]));
+        assert_eq!(parse_numa_node_ids("0,2,4"), Some(vec![0, 2, 4]));
+        assert_eq!(parse_numa_node_ids("1-1"), Some(vec![1]));
+        assert!(parse_numa_node_ids("").is_none());
+        assert!(parse_numa_node_ids("2-1").is_none());
     }
 
     #[test]
