@@ -194,7 +194,7 @@ GPG signatures (`.asc`). Always verify downloads before running them to protect 
 
 ### 1. Download the official artifacts
 
-1. Visit the [Releases](https://github.com/raystanza/OxideMiner/releases) page and choose the tag you want (for example, `v0.3.7`).
+1. Visit the [Releases](https://github.com/raystanza/OxideMiner/releases) page and choose the tag you want (for example, `v0.4.0`).
 2. Download the archive for your operating system and the accompanying checksum (`.sha256`). Download the `.asc` signature files as well.
 
 ### 2. Verify SHA-256 checksums
@@ -205,7 +205,7 @@ Validating checksums ensures that the file you downloaded matches what the relea
 
 ```bash
 # Replace the filenames with the release assets you downloaded
-sha256sum -c oxide-miner-v0.3.7-x86_64-ubuntu-linux-gnu.sha256
+sha256sum -c oxide-miner-v0.4.0-x86_64-ubuntu24-linux-gnu.sha256
 ```
 
 The command reports `OK` when the archive’s digest matches the expected value. If it fails, delete the file immediately and
@@ -215,16 +215,16 @@ re-download it from the official release page.
 
 ```cmd
 :: Replace the file names with the versions you downloaded
-certutil -hashfile oxide-miner-v0.3.7-x86_64-pc-windows-msvc.zip SHA256
+certutil -hashfile oxide-miner-v0.4.0-x86_64-pc-windows-msvc.zip SHA256
 ```
 
-Compare the printed hash with the value inside `oxide-miner-v0.3.7-x86_64-pc-windows-msvc.zip.sha256`. The values must match exactly.
+Compare the printed hash with the value inside `oxide-miner-v0.4.0-x86_64-pc-windows-msvc.zip.sha256`. The values must match exactly.
 
 #### Windows 10/11 (PowerShell)
 
 ```powershell
 # Replace the file names with the versions you downloaded
-Get-FileHash .\oxide-miner-v0.3.7-x86_64-pc-windows-msvc.zip -Algorithm SHA256
+Get-FileHash .\oxide-miner-v0.4.0-x86_64-pc-windows-msvc.zip -Algorithm SHA256
 ```
 
 Compare the `Hash` field in the output with the value in the `.sha256` file. If they differ, do not run the binary.
@@ -251,15 +251,15 @@ gpg --keyserver hkps://keys.openpgp.org --recv-keys FDA06CAE264DAC0D29B03F5195ED
 Debian / Ubuntu Linux
 
 ```bash
-gpg --verify oxide-miner-v0.3.7-x86_64-ubuntu-linux-gnu.tar.gz.asc oxide-miner-v0.3.7-x86_64-ubuntu-linux-gnu.tar.gz
-gpg --verify oxide-miner-v0.3.7-x86_64-ubuntu-linux-gnu.sha256.asc oxide-miner-v0.3.7-x86_64-ubuntu-linux-gnu.sha256
+gpg --verify oxide-miner-v0.4.0-x86_64-ubuntu24-linux-gnu.tar.gz.asc oxide-miner-v0.4.0-x86_64-ubuntu24-linux-gnu.tar.gz
+gpg --verify oxide-miner-v0.4.0-x86_64-ubuntu24-linux-gnu.sha256.asc oxide-miner-v0.4.0-x86_64-ubuntu24-linux-gnu.sha256
 ```
 
 On Windows PowerShell, use the same commands inside `gpg` (installed with Git for Windows or Gpg4win):
 
 ```powershell
-gpg --verify oxide-miner-v0.3.7-x86_64-pc-windows-msvc.zip.asc oxide-miner-v0.3.7-x86_64-pc-windows-msvc.zip
-gpg --verify oxide-miner-v0.3.7-x86_64-pc-windows-msvc.sha256.asc oxide-miner-v0.3.7-x86_64-pc-windows-msvc.sha256
+gpg --verify oxide-miner-v0.4.0-x86_64-pc-windows-msvc.zip.asc oxide-miner-v0.4.0-x86_64-pc-windows-msvc.zip
+gpg --verify oxide-miner-v0.4.0-x86_64-pc-windows-msvc.sha256.asc oxide-miner-v0.4.0-x86_64-pc-windows-msvc.sha256
 ```
 
 ### 3. Confirm the signing key’s fingerprint matches the fingerprint published by the project maintainer ([@raystanza](https://github.com/raystanza/))

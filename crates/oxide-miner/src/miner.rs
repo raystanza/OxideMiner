@@ -179,6 +179,10 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             .cache
             .l3_summary()
             .unwrap_or_else(|| "unknown".to_string());
+        let l3_domains = snap.l3_domain_count();
+        let numa_topology = snap
+            .numa_cpu_list_summary()
+            .unwrap_or_else(|| "unknown".to_string());
         let avail_mib = snap.available_bytes / (1024 * 1024);
         let numa_known = snap.numa_nodes.is_some();
         let numa_nodes = snap.numa_nodes.unwrap_or(1);
@@ -194,6 +198,7 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             l1i_kib = l1i_kib.unwrap_or(0),
             l2_kib = l2_kib.unwrap_or(0),
             l3_mib = l3_mib.unwrap_or(0),
+            l3_domains,
             mem_avail_mib = avail_mib,
             aes = features.aes_ni,
             ssse3 = features.ssse3,
@@ -202,6 +207,7 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             prefetch = features.prefetch_sse,
             numa_nodes,
             numa_known,
+            numa_topology = %numa_topology,
             large_pages,
             batch_size,
             batch_mode,
@@ -215,8 +221,8 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             • Threads: {} ({}). Auto chooses ~L3-capacity-per-thread to avoid cache thrash.\n\
             • Batch size: {} hashes ({}; recommended {}). Larger batches cut per-share overhead but can increase latency and memory pressure.\n\
             • CPU features: AES-NI={}, SSSE3={}, AVX2={}, AVX-512F={}, Prefetch={}.\n\
-            • Cache (per core unless noted): L1d={} KiB, L1i={} KiB, L2={} KiB, L3={}. RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
-            • NUMA nodes: {} (known={}). On multi-socket systems, keeping threads/data local to a node reduces remote memory penalties.\n\
+            • Cache (per core unless noted): L1d={} KiB, L1i={} KiB, L2={} KiB, L3={} (domains={}). RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
+            • NUMA nodes: {} (known={}; topology: {}). On multi-socket systems, keeping threads/data local to a node reduces remote memory penalties.\n\
             • Large pages: {}.\n\
             • Yield between batches: {}.\n\
             \n\n--- structured fields for tooling below ---\n",
@@ -224,8 +230,8 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             n_workers, thread_mode,
             batch_size, batch_mode, snap.recommended_batch_size,
             features.aes_ni, features.ssse3, features.avx2, features.avx512f, features.prefetch_sse,
-            l1_kib.unwrap_or(0), l1i_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_summary,
-            numa_nodes, numa_known,
+            l1_kib.unwrap_or(0), l1i_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_summary, l3_domains,
+            numa_nodes, numa_known, numa_topology.as_str(),
             large_pages,
             yield_between_batches
         );
@@ -236,10 +242,11 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         for warning in &snap.cache.warnings {
             tracing::warn!("cache_topology_warning" = %warning);
         }
-        if !args.affinity && !snap.cache.l3_instances.is_empty() {
+        if !args.affinity && l3_domains > 1 {
             tracing::info!(
-                l3_domains = snap.cache.l3_instances.len(),
-                "detected multiple L3 cache domains; consider --affinity to pin workers per domain"
+                l3_domains,
+                numa_nodes,
+                "multiple L3 cache domains detected (cache-sharing groups, often CCD/CCX)."
             );
         }
 
@@ -304,6 +311,10 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         .cache
         .l3_summary()
         .unwrap_or_else(|| "unknown".to_string());
+    let l3_domains = snap.l3_domain_count();
+    let numa_topology = snap
+        .numa_cpu_list_summary()
+        .unwrap_or_else(|| "unknown".to_string());
     let avail_mib = snap.available_bytes / (1024 * 1024);
     let aes = features.aes_ni;
     let ssse3 = features.ssse3;
@@ -348,6 +359,7 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         l1i_kib = l1i_kib.unwrap_or(0),
         l2_kib = l2_kib.unwrap_or(0),
         l3_mib = l3_mib.unwrap_or(0),
+        l3_domains,
         mem_avail_mib = avail_mib,
         aes,
         ssse3,
@@ -356,6 +368,7 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         prefetch,
         numa_nodes,
         numa_known,
+        numa_topology = %numa_topology,
         large_pages,
         batch_size,
         batch_mode,
@@ -368,16 +381,16 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         • Threads: {} ({}). Auto chooses ~L3-capacity-per-thread to avoid cache thrash.\n\
         • Batch size: {} hashes ({}; recommended {}). Larger batches cut per-share overhead but can increase latency and memory pressure.\n\
         • CPU features: AES-NI={}, SSSE3={}, AVX2={}, AVX-512F={}, Prefetch={}.\n\
-        • Cache (per core unless noted): L1d={} KiB, L1i={} KiB, L2={} KiB, L3={}. RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
-        • NUMA nodes: {} (known={}). On multi-socket systems, keeping threads/data local to a node reduces remote memory penalties.\n\
+        • Cache (per core unless noted): L1d={} KiB, L1i={} KiB, L2={} KiB, L3={} (domains={}). RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
+        • NUMA nodes: {} (known={}; topology: {}). NUMA describes memory locality; L3 cache domains are cache-sharing groups and may differ on chiplet CPUs.\n\
         • Large pages: {}. Reduces TLB misses for the RandomX dataset and can improve throughput when the dataset fits.\n\
         • Yield between batches: {}. Keeps the miner friendly on shared machines.\n\
         \n\n--- structured fields for tooling below ---\n",
         n_workers, thread_mode,
         batch_size, batch_mode, snap.recommended_batch_size,
         aes, ssse3, avx2, avx512f, prefetch,
-        l1_kib.unwrap_or(0), l1i_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_summary,
-        numa_nodes, numa_known,
+        l1_kib.unwrap_or(0), l1i_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_summary, l3_domains,
+        numa_nodes, numa_known, numa_topology.as_str(),
         large_pages,
         yield_between_batches
     );
@@ -388,10 +401,11 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
     for warning in &snap.cache.warnings {
         tracing::warn!("cache_topology_warning" = %warning);
     }
-    if !args.affinity && !snap.cache.l3_instances.is_empty() {
+    if !args.affinity && l3_domains > 1 {
         tracing::info!(
-            l3_domains = snap.cache.l3_instances.len(),
-            "detected multiple L3 cache domains; consider --affinity to pin workers per domain"
+            l3_domains,
+            numa_nodes,
+            "multiple L3 cache domains detected (cache-sharing groups, often CCD/CCX)."
         );
     }
 
