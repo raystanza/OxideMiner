@@ -11,6 +11,9 @@
 It’s built to squeeze every cycle from your CPU while keeping your system secure and predictable.
 No hidden payloads, no opaque binaries...just verifiable, auditable performance.
 
+📢 **BETA TESTERS WANTED** 🧪  
+Please visit [oxide-randomx-public-beta](https://github.com/raystanza/oxide-randomx-public-beta) to help provide crucial data related to the upcomming release of Oxide Miner's custom RandomX implementation.  `oxide-randomx` will be the crate that adds a much needed performance boost to Oxide Miner.  You can see the update I posted in the [Discussions](https://github.com/raystanza/OxideMiner/discussions/128).
+
 We ship a **command-line miner** with automatic CPU tuning, an **optional embedded dashboard**, and hardened controls for TLS, logging, and system friendliness. Every byte of it compiles from the code you see here.
 
 **Performance meets integrity.** OxideMiner is what happens when modern Rust engineering meets Monero’s RandomX algorithm. Optimized for real-world rigs and safe for production hosts.
