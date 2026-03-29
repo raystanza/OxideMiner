@@ -104,7 +104,7 @@ _By default OxideMiner will look for a 'config.toml' file in the same directory 
 - A Monero-compatible mining pool endpoint and wallet address.
 - For solo mining: a fully-synced local `monerod` with JSON-RPC enabled.
 - Optional: elevated privileges for huge/large page support (see below).
-- Current v10 source integration: keep `OxideMiner/` and `oxide-randomx/` as sibling directories in the same parent folder. The current workspace build consumes the sibling `oxide-randomx` checkout directly while the handoff revision is being finalized upstream.
+- Current v10 source integration pulls the pinned `oxide-randomx` handoff revision directly from GitHub.
 
 ### Build and install
 
@@ -112,11 +112,10 @@ _By default OxideMiner will look for a 'config.toml' file in the same directory 
 
 ```bash
 git clone https://github.com/raystanza/OxideMiner.git
-git clone https://github.com/raystanza/oxide-randomx.git
 cd OxideMiner
 ```
 
-The current v10 integration expects this layout:
+OxideMiner now fetches the pinned `oxide-randomx` dependency from upstream during the build. If you are actively working on both repos together, this optional layout remains convenient:
 
 ```text
 <parent>/
@@ -124,7 +123,7 @@ The current v10 integration expects this layout:
   oxide-randomx/
 ```
 
-This is a workspace-local integration choice for the current handoff cycle, not a promise that both repos stay version-locked forever.
+This optional shared-workspace layout is for local cross-repo development convenience, not a promise that both repos stay version-locked forever.
 
 #### Pick your compile method
 

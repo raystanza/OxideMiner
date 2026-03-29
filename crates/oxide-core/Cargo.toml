@@ -19,10 +19,10 @@ tracing = { workspace = true }
 hex = { workspace = true }
 num_cpus = { workspace = true }
 once_cell = { workspace = true }
-# v10 cross-repo integration currently consumes the sibling oxide-randomx repo
-# in the shared VS Code workspace until the pinned handoff revision is
-# published upstream.
-oxide-randomx = { path = "../../../oxide-randomx", optional = true, features = ["jit", "jit-fastregs"] }
+# v10 cross-repo integration consumes the upstream-published oxide-randomx
+# handoff revision directly. Keep this pinned until a tagged release supersedes
+# the contract revision below.
+oxide-randomx = { git = "https://github.com/raystanza/oxide-randomx.git", rev = "1c82af086072a943e523494ddb30ed18111885c7", optional = true, features = ["jit", "jit-fastregs"] }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
 core_affinity = { workspace = true }
