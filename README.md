@@ -12,7 +12,7 @@ It’s built to squeeze every cycle from your CPU while keeping your system secu
 No hidden payloads, no opaque binaries...just verifiable, auditable performance.
 
 📢 **BETA TESTERS WANTED** 🧪  
-Please visit [oxide-randomx-public-beta](https://github.com/raystanza/oxide-randomx-public-beta) to help provide crucial data related to the upcomming release of Oxide Miner's custom RandomX implementation.  `oxide-randomx` will be the crate that adds a much needed performance boost to Oxide Miner.  You can see the update I posted in the [Discussions](https://github.com/raystanza/OxideMiner/discussions/128).
+Please visit [oxide-randomx-public-beta](https://github.com/raystanza/oxide-randomx-public-beta) to help provide crucial data related to the upcomming release of Oxide Miner's custom RandomX implementation. `oxide-randomx` now lives inside this repository under `crates/oxide-randomx` as a proprietary internal component of OxideMiner. You can see the update I posted in the [Discussions](https://github.com/raystanza/OxideMiner/discussions/128).
 
 We ship a **command-line miner** with automatic CPU tuning, an **optional embedded dashboard**, and hardened controls for TLS, logging, and system friendliness. Every byte of it compiles from the code you see here.
 
@@ -104,7 +104,7 @@ _By default OxideMiner will look for a 'config.toml' file in the same directory 
 - A Monero-compatible mining pool endpoint and wallet address.
 - For solo mining: a fully-synced local `monerod` with JSON-RPC enabled.
 - Optional: elevated privileges for huge/large page support (see below).
-- Current v10 source integration pulls the pinned `oxide-randomx` handoff revision directly from GitHub.
+- `oxide-randomx` is built as an internal workspace member under `crates/oxide-randomx`.
 
 ### Build and install
 
@@ -115,15 +115,8 @@ git clone https://github.com/raystanza/OxideMiner.git
 cd OxideMiner
 ```
 
-OxideMiner now fetches the pinned `oxide-randomx` dependency from upstream during the build. If you are actively working on both repos together, this optional layout remains convenient:
-
-```text
-<parent>/
-  OxideMiner/
-  oxide-randomx/
-```
-
-This optional shared-workspace layout is for local cross-repo development convenience, not a promise that both repos stay version-locked forever.
+OxideMiner includes `oxide-randomx` directly in this workspace, so cloning the
+single repository is sufficient for builds and tests.
 
 #### Pick your compile method
 
@@ -542,6 +535,7 @@ Rust crates are separated into logical domains (`oxide-core` for the engine, `ox
 crates/
   oxide-core/        # Mining engine, stratum client, benchmark logic
   oxide-miner/       # CLI binary, HTTP API, configuration parsing, stats
+  oxide-randomx/     # Internal RandomX engine crate used by OxideMiner
 config.toml.example  # Reference configuration
 scripts/             # Huge/large page setup helpers for Linux & Windows
 plugins/

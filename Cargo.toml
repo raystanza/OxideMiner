@@ -1,7 +1,7 @@
 # OxideMiner/Cargo.toml
 
 [workspace]
-members = ["crates/oxide-core", "crates/oxide-miner"]
+members = ["crates/oxide-core", "crates/oxide-miner", "crates/oxide-randomx"]
 resolver = "2"
 
 [workspace.package]

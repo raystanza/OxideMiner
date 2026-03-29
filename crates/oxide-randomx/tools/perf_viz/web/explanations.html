@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>perf_viz Explanations</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <aside class="panel sidebar">
+      <h1>Explanations</h1>
+      <div class="muted">Narrative interpretation of current dataset results</div>
+
+      <section class="panel-mini">
+        <h2>Navigation</h2>
+        <div class="row">
+          <a class="nav-link-btn" href="/">Back To Dashboard</a>
+        </div>
+      </section>
+
+      <section class="panel-mini">
+        <h2>Display</h2>
+        <div class="ctrl"><label>Theme Preset</label><select id="themePreset"></select></div>
+        <div class="ctrl"><label>Host</label><select id="exHost"></select></div>
+        <div class="ctrl"><label>Mode</label><select id="exMode"></select></div>
+        <div class="ctrl"><label>JIT</label><select id="exJit"></select></div>
+        <div class="ctrl"><label>Scenario</label><select id="exScenario"></select></div>
+        <div class="row">
+          <button id="refreshExplain">Apply Filters</button>
+          <button id="resetExplain" class="secondary">Reset</button>
+        </div>
+        <div id="explainMsg" class="muted" style="margin-top: 8px;"></div>
+      </section>
+
+      <section class="panel-mini">
+        <h2>How To Read</h2>
+        <ul class="findings-list muted">
+          <li>Lower <span class="mono">ns_per_hash</span> is typically better.</li>
+          <li>Correlations are directional associations, not causation.</li>
+          <li>Large drift hotspots indicate run-order instability.</li>
+        </ul>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section class="panel section">
+        <h2>Result Summary</h2>
+        <div id="explainCards" class="stats"></div>
+      </section>
+
+      <section class="panel section">
+        <h2>Key Findings</h2>
+        <ol id="findingsList" class="findings-list"></ol>
+      </section>
+
+      <section class="panel section">
+        <h2>Auto vs Fixed Insight</h2>
+        <div id="autoFixedBox" class="panel-mini"></div>
+      </section>
+
+      <section class="panel section">
+        <div class="chart-grid">
+          <div class="chart-card"><div id="hostChart" class="chart-box"></div></div>
+          <div class="chart-card"><div id="scenarioChart" class="chart-box"></div></div>
+          <div class="chart-card full"><div id="driftChart" class="chart-box"></div></div>
+        </div>
+      </section>
+
+      <section class="panel section">
+        <div class="chart-grid">
+          <div class="panel-mini">
+            <h3>Top Perf Correlations vs ns_per_hash</h3>
+            <table>
+              <thead><tr><th>Metric</th><th>r</th><th>Pairs</th></tr></thead>
+              <tbody id="perfCorrTable"></tbody>
+            </table>
+          </div>
+          <div class="panel-mini">
+            <h3>Top Manifest Correlations vs ns_per_hash</h3>
+            <table>
+              <thead><tr><th>Metric</th><th>r</th><th>Pairs</th></tr></thead>
+              <tbody id="manifestCorrTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/explanations.js"></script>
+</body>
+</html>

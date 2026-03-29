@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>oxide-randomx perf_viz</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <aside class="panel sidebar">
+      <h1>perf_viz Studio</h1>
+      <div class="muted">High-fidelity dashboard for large perf datasets</div>
+
+      <div class="tabs" style="margin-top: 12px;">
+        <button id="tabPrefetch" class="tab-btn active">Prefetch Explorer</button>
+        <button id="tabCorr" class="tab-btn">Correlation Studio</button>
+        <button id="tabAtlas" class="tab-btn">Analytics Atlas</button>
+      </div>
+
+      <section class="panel-mini">
+        <h2>Workspace</h2>
+        <div class="row" style="margin-bottom: 8px;">
+          <a class="nav-link-btn" href="/explanations">Open Explanations Page</a>
+        </div>
+        <div class="ctrl">
+          <label>Theme Preset</label>
+          <select id="themePreset"></select>
+        </div>
+        <div class="ctrl">
+          <label>Layout Name</label>
+          <input id="layoutName" type="text" placeholder="e.g. Intel Drift Focus" />
+        </div>
+        <div class="ctrl">
+          <label>Saved Layouts</label>
+          <select id="layoutSelect"></select>
+        </div>
+        <div class="muted" style="margin-bottom: 8px;">Built-in examples ship by default. Custom layouts are saved locally.</div>
+        <div class="row">
+          <button id="saveLayout">Save Layout</button>
+          <button id="loadLayout" class="secondary">Load Layout</button>
+        </div>
+        <div class="row" style="margin-top: 8px;">
+          <button id="deleteLayout" class="secondary">Delete Layout</button>
+          <button id="saveSession" class="secondary">Save Session</button>
+        </div>
+        <div id="layoutMsg" class="muted" style="margin-top: 8px;"></div>
+      </section>
+
+      <section id="prefetchControls" class="panel-mini">
+        <h2>Prefetch Filters</h2>
+        <div class="ctrl"><label>Host</label><select id="pfHost"></select></div>
+        <div class="ctrl"><label>Scenario</label><select id="pfScenario"></select></div>
+        <div class="ctrl"><label>Mode</label><select id="pfMode"></select></div>
+        <div class="ctrl"><label>JIT</label><select id="pfJit"></select></div>
+        <div class="ctrl row">
+          <input id="pfOnlyNs" type="checkbox" style="width: auto;" />
+          <label for="pfOnlyNs" style="margin: 0;">Only rows with ns_per_hash</label>
+        </div>
+        <div class="row">
+          <button id="refreshPrefetch">Refresh Prefetch Charts</button>
+        </div>
+      </section>
+
+      <section id="corrControls" class="panel-mini hidden">
+        <h2>Correlation Controls</h2>
+        <div class="ctrl"><label>Dataset</label><select id="corrDataset"></select></div>
+        <div class="ctrl"><label>X Metric</label><select id="corrX"></select></div>
+        <div class="ctrl"><label>Y Metric</label><select id="corrY"></select></div>
+        <div class="ctrl"><label>Color By</label><select id="corrColor"></select></div>
+        <div class="ctrl"><label>Host</label><select id="corrHost"></select></div>
+        <div class="ctrl"><label>Mode</label><select id="corrMode"></select></div>
+        <div class="ctrl"><label>JIT</label><select id="corrJit"></select></div>
+        <div class="ctrl" id="corrScenarioWrap"><label>Scenario</label><select id="corrScenario"></select></div>
+        <div class="ctrl"><label>Max Render Points</label><input id="corrMaxPoints" type="number" value="8000" min="500" max="30000" step="500" /></div>
+        <div class="ctrl"><label>Matrix Metrics</label><input id="corrMaxMetrics" type="number" value="18" min="4" max="40" step="1" /></div>
+        <div class="row">
+          <button id="refreshCorr">Run Correlation Studio</button>
+          <button id="swapAxes" class="secondary">Swap X/Y</button>
+        </div>
+        <div class="row" style="margin-top: 8px;">
+          <button id="exportPointsCsv" class="secondary">Export Points CSV</button>
+          <button id="exportTopCsv" class="secondary">Export TopCorr CSV</button>
+        </div>
+        <div class="row" style="margin-top: 8px;">
+          <button id="exportScatterPng" class="secondary">Export Scatter PNG</button>
+          <button id="exportMatrixPng" class="secondary">Export Matrix PNG</button>
+        </div>
+        <div id="exportMsg" class="muted" style="margin-top: 8px;"></div>
+      </section>
+
+      <section id="atlasControls" class="panel-mini hidden">
+        <h2>Atlas Filters</h2>
+        <div class="ctrl"><label>Host</label><select id="atlasHost"></select></div>
+        <div class="ctrl"><label>Mode</label><select id="atlasMode"></select></div>
+        <div class="ctrl"><label>JIT</label><select id="atlasJit"></select></div>
+        <div class="ctrl"><label>Scenario</label><select id="atlasScenario"></select></div>
+        <div class="ctrl"><label>Max Anomalies</label><input id="atlasMaxAnomalies" type="number" value="120" min="20" max="400" step="10" /></div>
+        <div class="ctrl"><label>Timeline Points</label><input id="atlasMaxTimeline" type="number" value="180" min="24" max="720" step="12" /></div>
+        <div class="row">
+          <button id="refreshAtlas">Refresh Atlas</button>
+          <button id="resetAtlas" class="secondary">Reset Filters</button>
+        </div>
+        <div id="atlasMsg" class="muted" style="margin-top: 8px;"></div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section id="prefetchSection" class="panel section">
+        <h2>Prefetch Explorer</h2>
+        <div class="stats" id="prefetchStats"></div>
+        <div class="chart-grid">
+          <div class="chart-card"><div id="pfScatter" class="chart-box"></div></div>
+          <div class="chart-card"><div id="pfDrift" class="chart-box"></div></div>
+          <div class="chart-card full tall"><div id="pfHeatmap" class="chart-box"></div></div>
+        </div>
+      </section>
+
+      <section id="corrSection" class="panel section hidden">
+        <h2>Correlation Studio</h2>
+        <div class="stats" id="corrStats"></div>
+        <div class="chart-grid">
+          <div class="chart-card"><div id="corrScatter" class="chart-box"></div></div>
+          <div class="chart-card"><div id="corrDensity" class="chart-box"></div></div>
+          <div class="chart-card"><div id="corrHistX" class="chart-box"></div></div>
+          <div class="chart-card"><div id="corrHistY" class="chart-box"></div></div>
+          <div class="chart-card full"><div id="corrGroupBars" class="chart-box"></div></div>
+          <div class="chart-card full tall"><div id="corrMatrix" class="chart-box"></div></div>
+        </div>
+        <div class="panel-mini" style="margin-top: 12px;">
+          <h3>Top Correlations vs Y</h3>
+          <table>
+            <thead><tr><th>Metric</th><th>Pearson r</th><th>Pairs</th></tr></thead>
+            <tbody id="topCorrTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="atlasSection" class="panel section hidden">
+        <h2>Analytics Atlas</h2>
+        <div id="atlasScope" class="muted" style="margin-bottom: 10px;"></div>
+        <div class="stats" id="atlasKpis"></div>
+
+        <section class="panel-mini atlas-block">
+          <h3>1. Dataset Overview</h3>
+          <div id="atlasIngestHealth" class="stats"></div>
+          <div class="chart-grid">
+            <div class="chart-card"><div id="ovSnapshots" class="chart-box"></div></div>
+            <div class="chart-card"><div id="ovSchemaTotals" class="chart-box"></div></div>
+          </div>
+        </section>
+
+        <section class="panel-mini atlas-block">
+          <h3>2. Coverage Map</h3>
+          <div class="chart-grid">
+            <div class="chart-card"><div id="covHostMode" class="chart-box"></div></div>
+            <div class="chart-card"><div id="covHostModeMissing" class="chart-box"></div></div>
+            <div class="chart-card"><div id="covHostJit" class="chart-box"></div></div>
+            <div class="chart-card"><div id="covScenarioDistance" class="chart-box"></div></div>
+          </div>
+        </section>
+
+        <section class="panel-mini atlas-block">
+          <h3>3. Data Quality / Schema Drift</h3>
+          <div class="chart-grid">
+            <div class="chart-card"><div id="qualityParseErrors" class="chart-box"></div></div>
+            <div class="chart-card"><div id="qualitySchemaTime" class="chart-box"></div></div>
+            <div class="chart-card"><div id="qualityNullPerf" class="chart-box"></div></div>
+            <div class="chart-card"><div id="qualityNullManifest" class="chart-box"></div></div>
+          </div>
+        </section>
+
+        <section class="panel-mini atlas-block">
+          <h3>4. Stability Lab</h3>
+          <div class="chart-grid">
+            <div class="chart-card"><div id="stabilityCvHist" class="chart-box"></div></div>
+            <div class="chart-card"><div id="stabilityDriftControl" class="chart-box"></div></div>
+            <div class="chart-card full"><div id="stabilityRepeatability" class="chart-box"></div></div>
+          </div>
+          <div class="chart-grid" style="margin-top: 10px;">
+            <div class="panel-mini table-wrap">
+              <h3>Most Stable</h3>
+              <table>
+                <thead><tr><th>Scenario</th><th>Setting</th><th>Score</th><th>Rows</th></tr></thead>
+                <tbody id="stableTopTable"></tbody>
+              </table>
+            </div>
+            <div class="panel-mini table-wrap">
+              <h3>Least Stable</h3>
+              <table>
+                <thead><tr><th>Scenario</th><th>Setting</th><th>Score</th><th>Rows</th></tr></thead>
+                <tbody id="unstableTopTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel-mini atlas-block">
+          <h3>5. Host Benchmark Arena</h3>
+          <div class="chart-grid">
+            <div class="chart-card"><div id="benchNsNorm" class="chart-box"></div></div>
+            <div class="chart-card"><div id="benchHpsNorm" class="chart-box"></div></div>
+            <div class="chart-card full"><div id="benchPairwiseDelta" class="chart-box"></div></div>
+          </div>
+          <div class="panel-mini table-wrap" style="margin-top: 10px;">
+            <h3>Host Benchmark Groups</h3>
+            <table>
+              <thead><tr><th>Host</th><th>Mode</th><th>JIT</th><th>Rows</th><th>Mean ns/hash</th><th>Mean H/s</th></tr></thead>
+              <tbody id="benchGroupTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel-mini atlas-block">
+          <h3>6. Pareto Frontier (Performance vs Stability)</h3>
+          <div class="chart-grid">
+            <div class="chart-card full"><div id="paretoScatter" class="chart-box"></div></div>
+          </div>
+          <div class="panel-mini table-wrap" style="margin-top: 10px;">
+            <h3>Pareto Candidates</h3>
+            <table>
+              <thead><tr><th>Scenario</th><th>Setting</th><th>Distance</th><th>Rows</th><th>Mean ns/hash</th><th>CV %</th></tr></thead>
+              <tbody id="paretoTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel-mini atlas-block">
+          <h3>7. Outlier &amp; Anomaly Forensics</h3>
+          <div class="chart-grid">
+            <div class="chart-card"><div id="anomalyScatter" class="chart-box"></div></div>
+            <div class="chart-card"><div id="anomalyReasonBars" class="chart-box"></div></div>
+            <div class="chart-card"><div id="anomalySeries" class="chart-box"></div></div>
+            <div class="panel-mini detail-box">
+              <h3>Anomaly Detail</h3>
+              <pre id="anomalyDetail" class="mono detail-pre">Select an anomaly row to inspect details.</pre>
+            </div>
+          </div>
+          <div class="panel-mini table-wrap" style="margin-top: 10px;">
+            <h3>Anomaly List</h3>
+            <table>
+              <thead><tr><th>ID</th><th>Host</th><th>Scenario</th><th>Setting</th><th>ns/hash</th><th>z</th><th>Reason</th></tr></thead>
+              <tbody id="anomalyTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel-mini atlas-block">
+          <h3>8. Timeline / Regression Watch</h3>
+          <div class="chart-grid">
+            <div class="chart-card"><div id="timelineTrend" class="chart-box"></div></div>
+            <div class="chart-card"><div id="timelineRows" class="chart-box"></div></div>
+          </div>
+          <div class="panel-mini table-wrap" style="margin-top: 10px;">
+            <h3>Detected Change Points</h3>
+            <table>
+              <thead><tr><th>Bucket</th><th>Metric</th><th>Change %</th><th>From</th><th>To</th></tr></thead>
+              <tbody id="timelineChangeTable"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

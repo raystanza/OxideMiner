@@ -1,0 +1,9 @@
+# Current v9 supported-path CI gate set:
+# - Light interpreter fallback
+# - Light conservative JIT fallback
+# - Fast JIT fast-regs default throughput path
+# - CI guardrail only; not AMD/Intel lab authority
+# scenario_id|baseline_csv|threshold_pct|candidate_repeats|mode|jit|jit_fast_regs|iters|warmup
+light_interp|perf_baselines/ci/light_interp.csv|15.0|2|light|off|off|10|2
+light_jit|perf_baselines/ci/light_jit.csv|15.0|2|light|on|off|10|2
+fast_jit_fastregs|perf_baselines/ci/fast_jit_fastregs.csv|20.0|2|fast|on|on|10|2

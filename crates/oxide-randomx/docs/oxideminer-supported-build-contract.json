@@ -1,0 +1,184 @@
+{
+  "contract_name": "oxideminer-supported-build-contract",
+  "schema_version": 1,
+  "contract_revision": "2026-03-29",
+  "intended_consumer": "OxideMiner workspace crates",
+  "stability_note": "This is internal OxideMiner contract guidance for the current supported oxide-randomx path. It does not promise that oxide-randomx remains a stable standalone dependency boundary outside OxideMiner; coordinate changes through schema_version, contract_revision, and the owning OxideMiner revision.",
+  "crate_identity": {
+    "name": "oxide-randomx",
+    "version": "0.1.0",
+    "repository": "https://github.com/raystanza/OxideMiner.git"
+  },
+  "provenance": {
+    "authority_inputs": [
+      "README.md",
+      "docs/oxideminer-integration-profile.md",
+      "docs/oxideminer-integration-harness.md",
+      "examples/oxideminer_integration.rs"
+    ],
+    "public_reference_surfaces": [
+      "docs/oxideminer-supported-build-contract.md",
+      "docs/oxideminer-supported-build-contract.json"
+    ]
+  },
+  "supported_profiles": {
+    "production": {
+      "cargo_features": [
+        "jit",
+        "jit-fastregs"
+      ],
+      "supported_runtime_profile": "jit-fastregs",
+      "supported_modes": [
+        "light",
+        "fast"
+      ],
+      "purpose": "Supported shipping profile."
+    },
+    "validation": {
+      "cargo_features": [
+        "jit",
+        "jit-fastregs",
+        "bench-instrument"
+      ],
+      "supported_runtime_profile": "jit-fastregs",
+      "supported_modes": [
+        "light",
+        "fast"
+      ],
+      "purpose": "Supported CI, telemetry, perf-gate, and bring-up profile without changing the runtime path."
+    },
+    "runtime_fallbacks": [
+      {
+        "runtime_profile": "jit-conservative",
+        "required_cargo_features": [
+          "jit"
+        ],
+        "use_when": "JIT is available but fast-register mapping is intentionally disabled or unavailable."
+      },
+      {
+        "runtime_profile": "interpreter",
+        "required_cargo_features": [],
+        "use_when": "JIT is unavailable or intentionally disabled; this is the lowest-risk supported fallback."
+      }
+    ]
+  },
+  "supported_runtime_knobs": [
+    {
+      "name": "mode",
+      "values": [
+        "light",
+        "fast"
+      ],
+      "default_setting": "Prefer fast when dataset memory is acceptable; use light as the supported cache-only fallback.",
+      "notes": "Both light and fast are part of the supported contract."
+    },
+    {
+      "name": "runtime_profile",
+      "values": [
+        "interpreter",
+        "jit-conservative",
+        "jit-fastregs"
+      ],
+      "default_setting": "jit-fastregs",
+      "notes": "Maps the parent request onto the supported interpreter, conservative JIT, and fast-regs JIT runtime profiles."
+    },
+    {
+      "name": "large_pages",
+      "values": [
+        "off",
+        "on"
+      ],
+      "default_setting": "off",
+      "notes": "Explicit request knob for scratchpad and Fast-mode dataset backing; verify realized backing from emitted page_backing fields."
+    },
+    {
+      "name": "use_1gb_pages",
+      "values": [
+        "off",
+        "on"
+      ],
+      "default_setting": "off",
+      "notes": "Linux-only Fast-mode dataset request knob; implies large_pages and must be validated from emitted page_backing.dataset fields."
+    },
+    {
+      "name": "prefetch_calibration_path",
+      "values": [
+        "unset",
+        "path to persisted calibration csv"
+      ],
+      "default_setting": "unset",
+      "notes": "Optional host-local override applied through the public calibration helper; keep the fixed default mapping unless the parent intentionally opts in."
+    }
+  ],
+  "non_default_experimental_features": [
+    {
+      "name": "simd-blockio",
+      "status": "experimental",
+      "default_state": "off"
+    },
+    {
+      "name": "simd-xor-paths",
+      "status": "experimental follow-up",
+      "default_state": "off"
+    },
+    {
+      "name": "threaded-interp",
+      "status": "parked experimental closed negative result",
+      "default_state": "off"
+    },
+    {
+      "name": "superscalar-accel-proto",
+      "status": "parked experimental research lane",
+      "default_state": "off"
+    }
+  ],
+  "expected_parent_output": {
+    "emitted_by": "examples/oxideminer_integration.rs",
+    "report_version": "oxideminer-integration-v2",
+    "top_level_fields": [
+      "report_version",
+      "build_contract",
+      "requested_runtime_profile",
+      "requested_flags",
+      "sessions"
+    ],
+    "session_fields": [
+      "mode",
+      "lifecycle.requested_runtime_profile",
+      "lifecycle.effective_runtime_profile",
+      "lifecycle.fallback_reason",
+      "lifecycle.jit.requested",
+      "lifecycle.jit.requested_fast_regs",
+      "lifecycle.jit.compiled_jit_support",
+      "lifecycle.jit.compiled_fast_regs_support",
+      "lifecycle.jit.active",
+      "requested_flags",
+      "effective_flags",
+      "page_backing.scratchpad.request",
+      "page_backing.scratchpad.realized",
+      "page_backing.scratchpad.realization",
+      "page_backing.dataset.request",
+      "page_backing.dataset.realized",
+      "page_backing.dataset.realization",
+      "rekey.parity.matches",
+      "lifecycle.rekey_matches_rebuild"
+    ],
+    "telemetry_fields": [
+      "telemetry.instrumented",
+      "telemetry.hashes",
+      "telemetry.program_execs",
+      "telemetry.execute_program_ns_interpreter",
+      "telemetry.execute_program_ns_jit",
+      "telemetry.finish_iteration_ns",
+      "telemetry.dataset_item_loads",
+      "telemetry.scratchpad_read_bytes",
+      "telemetry.scratchpad_write_bytes",
+      "telemetry.jit_fastregs_prepare_ns",
+      "telemetry.jit_fastregs_finish_ns"
+    ]
+  },
+  "example_commands": {
+    "light_validation": "cargo run -p oxide-randomx --release --example oxideminer_integration --features \"jit jit-fastregs bench-instrument\" -- --mode light --runtime-profile jit-fastregs",
+    "fast_validation": "cargo run -p oxide-randomx --release --example oxideminer_integration --features \"jit jit-fastregs bench-instrument\" -- --mode fast --runtime-profile jit-fastregs"
+  }
+}

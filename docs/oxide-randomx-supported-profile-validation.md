@@ -15,15 +15,15 @@ The shared contract still stays one supported profile:
 ## Contract Inputs Used
 
 Run this from the `OxideMiner` repo root.
-When both repos are open in the same VS Code multi-root workspace, use the
-sibling `oxide-randomx` repo as the contract source of truth.
+Use the internal `crates/oxide-randomx` workspace member as the contract source
+of truth.
 
 This validation pass used:
 
-- `../oxide-randomx/docs/oxideminer-supported-build-contract.md`
-- `../oxide-randomx/docs/oxideminer-supported-build-contract.json`
-- `../oxide-randomx/docs/oxideminer-integration-harness.md`
-- upstream-pinned `oxide-randomx` dependency rev `1c82af086072a943e523494ddb30ed18111885c7`
+- `crates/oxide-randomx/docs/oxideminer-supported-build-contract.md`
+- `crates/oxide-randomx/docs/oxideminer-supported-build-contract.json`
+- `crates/oxide-randomx/docs/oxideminer-integration-harness.md`
+- internal workspace member `crates/oxide-randomx`
 
 ## Host Matrix
 
@@ -61,26 +61,27 @@ That targeted test validates the same supported integration shape and exercises
 the shared Fast-mode parent API without requiring a full-dataset benchmark on
 every host.
 
-### 2. Sibling harness observation
+### 2. Internal harness observation
 
-From the sibling `oxide-randomx` repo root, use the supported validation build
-to capture realized runtime facts on the same host:
+From the `OxideMiner` repo root, use the internal `oxide-randomx` workspace
+member and the supported validation build to capture realized runtime facts on
+the same host:
 
 ```bash
-cargo run --release --example oxideminer_integration --features "jit jit-fastregs bench-instrument" -- --mode light --runtime-profile jit-fastregs --warmup-rounds 0 --steady-rounds 1 --threads 1 --format json
+cargo run -p oxide-randomx --release --example oxideminer_integration --features "jit jit-fastregs bench-instrument" -- --mode light --runtime-profile jit-fastregs --warmup-rounds 0 --steady-rounds 1 --threads 1 --format json
 ```
 
 To capture requested versus realized large-page behavior on the same host:
 
 ```bash
-cargo run --release --example oxideminer_integration --features "jit jit-fastregs bench-instrument" -- --mode light --runtime-profile jit-fastregs --warmup-rounds 0 --steady-rounds 1 --threads 1 --large-pages on --format json
+cargo run -p oxide-randomx --release --example oxideminer_integration --features "jit jit-fastregs bench-instrument" -- --mode light --runtime-profile jit-fastregs --warmup-rounds 0 --steady-rounds 1 --threads 1 --large-pages on --format json
 ```
 
 If the host and time budget allow a full-dataset Fast run, use the same
 contract path unchanged:
 
 ```bash
-cargo run --release --example oxideminer_integration --features "jit jit-fastregs bench-instrument" -- --mode fast --runtime-profile jit-fastregs --warmup-rounds 0 --steady-rounds 1 --threads 1 --format json
+cargo run -p oxide-randomx --release --example oxideminer_integration --features "jit jit-fastregs bench-instrument" -- --mode fast --runtime-profile jit-fastregs --warmup-rounds 0 --steady-rounds 1 --threads 1 --format json
 ```
 
 ### 3. What to record
@@ -108,13 +109,13 @@ Observed results on this host:
 - `cargo test` passed in `OxideMiner`.
 - The parent Light smoke completed successfully with the supported profile.
 - The bounded parent Fast smoke passed through `randomx_supported_profile_smoke`.
-- The sibling harness in Light mode reported:
+- The internal `oxide-randomx` harness in Light mode reported:
   `effective_runtime_profile = jit-fastregs`,
   `lifecycle.jit.active = true`,
   `page_backing.scratchpad.realization = not_requested`,
   and `page_backing.scratchpad.realized.description = standard 4KB pages`
   when large pages were not requested.
-- The sibling harness in Light mode with `--large-pages on` reported:
+- The internal `oxide-randomx` harness in Light mode with `--large-pages on` reported:
   `page_backing.scratchpad.realization = realized_2mb_large_pages`
   and `page_backing.scratchpad.realized.huge_page_size = 2097152`.
 - `sessions[].rekey.parity.matches = true` in the Light harness observations.

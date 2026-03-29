@@ -1,0 +1,76 @@
+[package]
+name = "oxide-randomx"
+version = "0.1.0"
+edition = "2021"
+authors = ["raystanza"]
+license = "BSL-1.1"
+publish = false
+repository = "https://github.com/raystanza/OxideMiner.git"
+build = "build.rs"
+
+[dependencies]
+blake2 = "0.10"
+argon2 = "0.5"
+dynasmrt = { version = "4.0.2", optional = true }
+libc = { version = "0.2", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-sys = { version = "0.59", optional = true, features = ["Win32_System_Memory", "Win32_System_SystemInformation"] }
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
+
+[features]
+# v10 supported build contract:
+# - production: `--features "jit jit-fastregs"`
+# - validation: `--features "jit jit-fastregs bench-instrument"`
+# Supported runtime fallbacks remain conservative JIT and interpreter.
+# Experimental feature families below remain non-default and outside the shipped
+# contract unless policy authority changes.
+# `Intel` / `AMD` vendor-split release builds are not part of the supported
+# contract on current `HEAD`.
+default = ["fast-decode"]
+unsafe-config = []
+jit = ["dep:dynasmrt", "dep:libc", "dep:windows-sys"]
+jit-fastregs = ["jit"]
+bench-instrument = []
+# Experimental: AVX2 scratchpad block I/O, performance varies by CPU.
+simd-blockio = []
+# Experimental: AVX2 XOR-focused paths layered on top of existing VM behavior.
+simd-xor-paths = []
+# Experimental: compact superscalar op stream with precomputed IMulRcp reciprocals.
+superscalar-accel-proto = []
+fast-decode = []
+# Experimental (parked): subroutine-threaded dispatch currently regresses vs
+# match-based dispatch. Keep runtime-disabled unless explicitly investigating.
+threaded-interp = []
+
+[[bin]]
+name = "gen_conformance_cases"
+path = "tools/gen_conformance_cases.rs"
+
+[[bin]]
+name = "perf_compare"
+path = "tools/perf_compare.rs"
+
+[[bin]]
+name = "v7_10_amd_windows_capture"
+path = "tools/v7_10_amd_windows_capture.rs"
+
+[[bin]]
+name = "v8_01_amd_capture"
+path = "tools/v8_01_amd_capture.rs"
+
+[[bin]]
+name = "full_features_benchmark"
+path = "tools/full_features_benchmark.rs"
+
+[[bin]]
+name = "oxide-randomx-beta-capture"
+path = "tools/oxide_randomx_beta_capture.rs"
+
+[[bin]]
+name = "full_features_authority"
+path = "tools/full_features_authority.rs"
+
+[[bin]]
+name = "gen_oxideminer_supported_build_contract"
+path = "tools/gen_oxideminer_supported_build_contract.rs"

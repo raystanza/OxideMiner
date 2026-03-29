@@ -1243,7 +1243,6 @@ dependencies = [
 [[package]]
 name = "oxide-randomx"
 version = "0.1.0"
-source = "git+https://github.com/raystanza/oxide-randomx.git?rev=1c82af086072a943e523494ddb30ed18111885c7#1c82af086072a943e523494ddb30ed18111885c7"
 dependencies = [
  "argon2",
  "blake2",
