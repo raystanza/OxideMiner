@@ -299,6 +299,7 @@ pub async fn run_http_api(
                                 0
                             };
                             let tls = if s.tls { 1 } else { 0 };
+                            let randomx = s.randomx_snapshot();
                             use std::fmt::Write;
                             writeln!(body, "oxide_hashes_total {}", hashes).ok();
                             writeln!(body, "oxide_hashrate {}", hashrate_avg).ok();
@@ -348,6 +349,68 @@ pub async fn run_http_api(
                             .ok();
                             writeln!(body, "oxide_pool_connected {}", connected).ok();
                             writeln!(body, "oxide_tls_enabled {}", tls).ok();
+                            writeln!(
+                                body,
+                                "oxide_randomx_requested_info{{mode=\"{}\",runtime_profile=\"{}\",large_pages=\"{}\",use_1gb_pages=\"{}\",calibration_path=\"{}\"}} 1",
+                                randomx.requested.mode.as_str(),
+                                randomx.requested.runtime_profile.as_str(),
+                                randomx.requested.large_pages,
+                                randomx.requested.use_1gb_pages,
+                                escape_label_value(
+                                    randomx
+                                        .requested
+                                        .prefetch_calibration_path
+                                        .as_deref()
+                                        .unwrap_or("")
+                                )
+                            )
+                            .ok();
+                            if let Some(realized) = randomx.realized.as_ref() {
+                                writeln!(
+                                    body,
+                                    "oxide_randomx_runtime_info{{mode=\"{}\",requested_runtime_profile=\"{}\",effective_runtime_profile=\"{}\",jit_active=\"{}\",calibration_status=\"{}\"}} 1",
+                                    realized.mode.as_str(),
+                                    realized.requested_runtime_profile.as_str(),
+                                    realized.effective_runtime_profile.as_str(),
+                                    realized.jit_active,
+                                    escape_label_value(&realized.calibration_status)
+                                )
+                                .ok();
+                                writeln!(
+                                    body,
+                                    "oxide_randomx_scratchpad_large_pages {}",
+                                    if realized.scratchpad_large_pages {
+                                        1
+                                    } else {
+                                        0
+                                    }
+                                )
+                                .ok();
+                                if let Some(size) = realized.scratchpad_huge_page_size {
+                                    writeln!(
+                                        body,
+                                        "oxide_randomx_scratchpad_huge_page_size_bytes {}",
+                                        size
+                                    )
+                                    .ok();
+                                }
+                                if let Some(dataset_large_pages) = realized.dataset_large_pages {
+                                    writeln!(
+                                        body,
+                                        "oxide_randomx_dataset_large_pages {}",
+                                        if dataset_large_pages { 1 } else { 0 }
+                                    )
+                                    .ok();
+                                }
+                                if let Some(size) = realized.dataset_huge_page_size {
+                                    writeln!(
+                                        body,
+                                        "oxide_randomx_dataset_huge_page_size_bytes {}",
+                                        size
+                                    )
+                                    .ok();
+                                }
+                            }
                             writeln!(body, "version {}", env!("CARGO_PKG_VERSION")).ok();
                             writeln!(
                                 body,
@@ -378,7 +441,7 @@ pub async fn run_http_api(
                                 let applied = &cfg.applied;
                                 let solo = values.solo.as_ref();
                                 let info_labels = format!(
-                                    "path=\"{}\",mode=\"{}\",pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",batch_size=\"{}\",affinity=\"{}\",huge_pages=\"{}\",tls=\"{}\",api_port=\"{}\",api_bind=\"{}\",proxy=\"{}\",dashboard_dir=\"{}\",no_yield=\"{}\",debug=\"{}\",solo_rpc_url=\"{}\",solo_wallet=\"{}\",solo_reserve_size=\"{}\",solo_zmq=\"{}\",solo_rpc_user_set=\"{}\",solo_rpc_pass_set=\"{}\"",
+                                    "path=\"{}\",mode=\"{}\",pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",batch_size=\"{}\",affinity=\"{}\",huge_pages=\"{}\",randomx_mode=\"{}\",randomx_runtime_profile=\"{}\",use_1gb_pages=\"{}\",randomx_prefetch_calibration=\"{}\",tls=\"{}\",api_port=\"{}\",api_bind=\"{}\",proxy=\"{}\",dashboard_dir=\"{}\",no_yield=\"{}\",debug=\"{}\",solo_rpc_url=\"{}\",solo_wallet=\"{}\",solo_reserve_size=\"{}\",solo_zmq=\"{}\",solo_rpc_user_set=\"{}\",solo_rpc_pass_set=\"{}\"",
                                     escape_label_value(&cfg.path.display().to_string()),
                                     escape_label_value(values.mode.map(|m| m.as_str()).unwrap_or("")),
                                     escape_label_value(values.pool.as_deref().unwrap_or("")),
@@ -388,6 +451,10 @@ pub async fn run_http_api(
                                     escape_label_value(&values.batch_size.map(|v| v.to_string()).unwrap_or_default()),
                                     values.affinity.unwrap_or(false),
                                     values.huge_pages.unwrap_or(false),
+                                    escape_label_value(values.randomx_mode.map(|v| v.as_str()).unwrap_or("")),
+                                    escape_label_value(values.randomx_runtime_profile.map(|v| v.as_str()).unwrap_or("")),
+                                    values.use_1gb_pages.unwrap_or(false),
+                                    escape_label_value(&values.randomx_prefetch_calibration.as_ref().map(|p| p.display().to_string()).unwrap_or_default()),
                                     values.tls.unwrap_or(false),
                                     escape_label_value(&values.api_port.map(|v| v.to_string()).unwrap_or_default()),
                                     escape_label_value(&values.api_bind.map(|v| v.to_string()).unwrap_or_default()),
@@ -405,7 +472,7 @@ pub async fn run_http_api(
                                 writeln!(body, "oxide_config_info{{{}}} 1", info_labels).ok();
 
                                 let applied_labels = format!(
-                                    "mode=\"{}\",pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",tls=\"{}\",tls_ca_cert=\"{}\",tls_cert_sha256=\"{}\",api_port=\"{}\",api_bind=\"{}\",dashboard_dir=\"{}\",affinity=\"{}\",huge_pages=\"{}\",batch_size=\"{}\",no_yield=\"{}\",debug=\"{}\",proxy=\"{}\",solo_rpc_url=\"{}\",solo_rpc_user=\"{}\",solo_rpc_pass=\"{}\",solo_wallet=\"{}\",solo_reserve_size=\"{}\",solo_zmq=\"{}\"",
+                                    "mode=\"{}\",pool=\"{}\",wallet=\"{}\",pass=\"{}\",threads=\"{}\",tls=\"{}\",tls_ca_cert=\"{}\",tls_cert_sha256=\"{}\",api_port=\"{}\",api_bind=\"{}\",dashboard_dir=\"{}\",affinity=\"{}\",huge_pages=\"{}\",randomx_mode=\"{}\",randomx_runtime_profile=\"{}\",use_1gb_pages=\"{}\",randomx_prefetch_calibration=\"{}\",batch_size=\"{}\",no_yield=\"{}\",debug=\"{}\",proxy=\"{}\",solo_rpc_url=\"{}\",solo_rpc_user=\"{}\",solo_rpc_pass=\"{}\",solo_wallet=\"{}\",solo_reserve_size=\"{}\",solo_zmq=\"{}\"",
                                     applied.mode,
                                     applied.pool,
                                     applied.wallet,
@@ -419,6 +486,10 @@ pub async fn run_http_api(
                                     applied.dashboard_dir,
                                     applied.affinity,
                                     applied.huge_pages,
+                                    applied.randomx_mode,
+                                    applied.randomx_runtime_profile,
+                                    applied.use_1gb_pages,
+                                    applied.randomx_prefetch_calibration,
                                     applied.batch_size,
                                     applied.no_yield,
                                     applied.debug,
@@ -507,6 +578,7 @@ pub async fn run_http_api(
                                 "commit_timestamp": option_env!("OXIDE_GIT_COMMIT_TIMESTAMP"),
                                 "build_timestamp": option_env!("OXIDE_BUILD_TIMESTAMP"),
                             });
+                            let randomx = s.randomx_snapshot();
 
                             let resp_body = json!({
                                 "mode": s.mode.as_str(),
@@ -520,6 +592,7 @@ pub async fn run_http_api(
                                 "version": env!("CARGO_PKG_VERSION"),
                                 "build": build,
                                 "config": config,
+                                "randomx": randomx,
                                 "shares": {
                                     "accepted": accepted,
                                     "rejected": rejected,
@@ -708,6 +781,7 @@ mod tests {
     use crate::args::MiningMode;
     use crate::stats::Stats;
     use hyper::header;
+    use oxide_core::RandomXRuntimeConfig;
     use reqwest::Client;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::sync::atomic::Ordering;
@@ -741,6 +815,7 @@ mod tests {
             false,
             None,
             false,
+            RandomXRuntimeConfig::default(),
         ));
         stats.accepted.store(5, Ordering::Relaxed);
         stats.rejected.store(2, Ordering::Relaxed);
@@ -760,6 +835,11 @@ mod tests {
         assert_eq!(body["shares"]["accepted"], 5);
         assert_eq!(body["shares"]["rejected"], 2);
         assert_eq!(body["shares"]["dev_accepted"], 1);
+        assert_eq!(body["randomx"]["requested"]["mode"], "fast");
+        assert_eq!(
+            body["randomx"]["requested"]["runtime_profile"],
+            "jit-fastregs"
+        );
         assert!(body["timing"]["mining_time_seconds"].as_u64().is_some());
         assert!(body["timing"]["system_uptime_seconds"].as_u64().unwrap() > 0);
 
@@ -769,6 +849,7 @@ mod tests {
         let text = resp.text().await.unwrap();
         assert!(text.contains("oxide_shares_accepted_total 5"));
         assert!(text.contains("oxide_devfee_shares_accepted_total 1"));
+        assert!(text.contains("oxide_randomx_requested_info"));
 
         let url = format!("http://127.0.0.1:{}/", port);
         let resp = client.get(url).send().await.unwrap();
@@ -792,6 +873,7 @@ mod tests {
             false,
             None,
             false,
+            RandomXRuntimeConfig::default(),
         ));
 
         let dir = tempfile::tempdir().unwrap();
@@ -849,6 +931,7 @@ mod tests {
             false,
             None,
             false,
+            RandomXRuntimeConfig::default(),
         ));
         let server = tokio::spawn(run_http_api(LOCALHOST, port, stats, None, None));
         sleep(Duration::from_millis(50)).await;
@@ -881,6 +964,7 @@ mod tests {
             false,
             None,
             false,
+            RandomXRuntimeConfig::default(),
         ));
 
         let dir = tempfile::tempdir().unwrap();
@@ -940,6 +1024,7 @@ mod tests {
             false,
             None,
             false,
+            RandomXRuntimeConfig::default(),
         ));
 
         let dash_dir = tempfile::tempdir().unwrap();
@@ -1002,6 +1087,7 @@ mod tests {
             false,
             None,
             false,
+            RandomXRuntimeConfig::default(),
         ));
 
         let dir = tempfile::tempdir().unwrap();

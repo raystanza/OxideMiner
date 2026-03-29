@@ -1,6 +1,7 @@
 // OxideMiner/crates/oxide-miner/src/stats.rs
 
 use crate::args::{LoadedConfigFile, MiningMode};
+use oxide_core::{RandomXRuntimeConfig, RandomXRuntimeStatus};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -78,6 +79,7 @@ pub struct Stats {
     pub solo_zmq_events_total: AtomicU64,
     pub solo_zmq_last_event_timestamp: AtomicU64,
     pub solo_zmq_last_topic: Mutex<Option<String>>,
+    pub randomx: Arc<Mutex<RandomXRuntimeStatus>>,
     solo_zmq_feed: Mutex<ZmqFeedBuffer>,
     hashrate_sample: Mutex<HashrateSample>,
 }
@@ -89,6 +91,7 @@ impl Stats {
         tls: bool,
         config: Option<LoadedConfigFile>,
         solo_zmq_enabled: bool,
+        randomx_config: RandomXRuntimeConfig,
     ) -> Self {
         Self {
             start: Instant::now(),
@@ -114,6 +117,7 @@ impl Stats {
             solo_zmq_events_total: AtomicU64::new(0),
             solo_zmq_last_event_timestamp: AtomicU64::new(0),
             solo_zmq_last_topic: Mutex::new(None),
+            randomx: Arc::new(Mutex::new(RandomXRuntimeStatus::new(&randomx_config))),
             solo_zmq_feed: Mutex::new(ZmqFeedBuffer::new()),
             hashrate_sample: Mutex::new(HashrateSample::new()),
         }
@@ -180,6 +184,13 @@ impl Stats {
             .map(|guard| guard.snapshot())
             .unwrap_or_default()
     }
+
+    pub fn randomx_snapshot(&self) -> RandomXRuntimeStatus {
+        self.randomx
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -244,6 +255,7 @@ mod tests {
     use super::{HashrateSample, Stats};
     use crate::args::MiningMode;
     use crate::stats::ZmqFeedBuffer;
+    use oxide_core::{RandomXRuntimeConfig, RandomXRuntimeStatus};
 
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -251,7 +263,14 @@ mod tests {
 
     #[test]
     fn stats_initializes_counters() {
-        let stats = Stats::new(MiningMode::Pool, "pool".into(), true, None, false);
+        let stats = Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            true,
+            None,
+            false,
+            RandomXRuntimeConfig::default(),
+        );
         assert_eq!(stats.accepted.load(Ordering::Relaxed), 0);
         assert_eq!(stats.rejected.load(Ordering::Relaxed), 0);
         assert_eq!(stats.dev_accepted.load(Ordering::Relaxed), 0);
@@ -259,11 +278,19 @@ mod tests {
         assert!(stats.hashrate_avg() >= 0.0);
         assert!(stats.tls);
         assert_eq!(stats.pool, "pool");
+        assert_eq!(stats.randomx_snapshot().requested.mode.as_str(), "fast");
     }
 
     #[test]
     fn hashrate_avg_uses_elapsed_time() {
-        let stats = Stats::new(MiningMode::Pool, "pool".into(), false, None, false);
+        let stats = Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+            RandomXRuntimeConfig::default(),
+        );
         // Replace hashes with a pre-filled counter for deterministic check
         stats.hashes.store(1000, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
@@ -297,6 +324,9 @@ mod tests {
             solo_zmq_events_total: AtomicU64::new(0),
             solo_zmq_last_event_timestamp: AtomicU64::new(0),
             solo_zmq_last_topic: Mutex::new(None),
+            randomx: Arc::new(Mutex::new(RandomXRuntimeStatus::new(
+                &RandomXRuntimeConfig::default(),
+            ))),
             solo_zmq_feed: Mutex::new(ZmqFeedBuffer::new()),
             hashrate_sample: Mutex::new(HashrateSample::new()),
         };
@@ -305,7 +335,14 @@ mod tests {
 
     #[test]
     fn instant_hashrate_tracks_recent_progress() {
-        let stats = Stats::new(MiningMode::Pool, "pool".into(), false, None, false);
+        let stats = Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+            RandomXRuntimeConfig::default(),
+        );
         stats.hashes.store(0, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
         stats.hashes.store(1000, Ordering::Relaxed);
@@ -321,10 +358,44 @@ mod tests {
 
     #[test]
     fn mining_duration_tracks_elapsed_time() {
-        let stats = Stats::new(MiningMode::Pool, "pool".into(), false, None, false);
+        let stats = Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+            RandomXRuntimeConfig::default(),
+        );
         std::thread::sleep(Duration::from_millis(5));
         let elapsed = stats.mining_duration();
         assert!(elapsed >= Duration::from_millis(5));
         assert!(elapsed.as_secs_f64() >= 0.0);
+    }
+
+    #[test]
+    fn randomx_snapshot_returns_requested_runtime_config() {
+        let stats = Stats::new(
+            MiningMode::Pool,
+            "pool".into(),
+            false,
+            None,
+            false,
+            RandomXRuntimeConfig {
+                mode: oxide_core::RandomXMode::Light,
+                runtime_profile: oxide_core::RandomXRuntimeProfile::Interpreter,
+                large_pages: true,
+                use_1gb_pages: false,
+                prefetch_calibration_path: Some("prefetch.csv".into()),
+            },
+        );
+
+        let snapshot = stats.randomx_snapshot();
+        assert_eq!(snapshot.requested.mode.as_str(), "light");
+        assert_eq!(snapshot.requested.runtime_profile.as_str(), "interpreter");
+        assert!(snapshot.requested.large_pages);
+        assert_eq!(
+            snapshot.requested.prefetch_calibration_path.as_deref(),
+            Some("prefetch.csv")
+        );
     }
 }

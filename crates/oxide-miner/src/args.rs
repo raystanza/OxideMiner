@@ -3,6 +3,7 @@
 use clap::{
     builder::TypedValueParser, error::ErrorKind, CommandFactory, Parser, ValueEnum, ValueHint,
 };
+use oxide_core::{RandomXMode, RandomXRuntimeProfile};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -96,8 +97,32 @@ pub struct Args {
     pub affinity: bool,
 
     /// Request huge pages for RandomX dataset
-    #[arg(long = "huge-pages")]
+    #[arg(long = "huge-pages", visible_alias = "large-pages")]
     pub huge_pages: bool,
+
+    /// Select the supported RandomX mode (`fast` default, `light` fallback)
+    #[arg(long = "randomx-mode", value_enum, default_value_t = RandomXMode::Fast)]
+    pub randomx_mode: RandomXMode,
+
+    /// Select the supported RandomX runtime profile
+    #[arg(
+        long = "randomx-runtime-profile",
+        value_enum,
+        default_value_t = RandomXRuntimeProfile::JitFastRegs
+    )]
+    pub randomx_runtime_profile: RandomXRuntimeProfile,
+
+    /// Request Linux 1GB huge pages for the Fast-mode dataset when available
+    #[arg(long = "use-1gb-pages")]
+    pub use_1gb_pages: bool,
+
+    /// Apply a host-local oxide-randomx prefetch calibration CSV
+    #[arg(
+        long = "randomx-prefetch-calibration",
+        value_name = "PATH",
+        value_hint = ValueHint::FilePath
+    )]
+    pub randomx_prefetch_calibration: Option<PathBuf>,
 
     /// Number of hashes per batch in the mining loop.
     /// Omit this flag to auto-tune based on your CPU/cache profile (recommended).
@@ -187,8 +212,16 @@ pub struct ConfigFile {
     #[serde(alias = "dashboard-dir")]
     pub dashboard_dir: Option<PathBuf>,
     pub affinity: Option<bool>,
-    #[serde(alias = "huge-pages")]
+    #[serde(alias = "huge-pages", alias = "large_pages", alias = "large-pages")]
     pub huge_pages: Option<bool>,
+    #[serde(alias = "randomx-mode")]
+    pub randomx_mode: Option<RandomXMode>,
+    #[serde(alias = "randomx-runtime-profile")]
+    pub randomx_runtime_profile: Option<RandomXRuntimeProfile>,
+    #[serde(alias = "use-1gb-pages")]
+    pub use_1gb_pages: Option<bool>,
+    #[serde(alias = "randomx-prefetch-calibration")]
+    pub randomx_prefetch_calibration: Option<PathBuf>,
     #[serde(alias = "batch-size")]
     pub batch_size: Option<usize>,
     #[serde(alias = "no-yield")]
@@ -642,6 +675,36 @@ fn apply_config_defaults(
         applied.huge_pages = true;
     }
 
+    if let Some(randomx_mode) = config.randomx_mode {
+        if !has_arg(original_args, None, Some("randomx-mode")) {
+            push_value(args, "--randomx-mode", randomx_mode.as_str());
+            applied.randomx_mode = true;
+        }
+    }
+
+    if let Some(randomx_runtime_profile) = config.randomx_runtime_profile {
+        if !has_arg(original_args, None, Some("randomx-runtime-profile")) {
+            push_value(
+                args,
+                "--randomx-runtime-profile",
+                randomx_runtime_profile.as_str(),
+            );
+            applied.randomx_runtime_profile = true;
+        }
+    }
+
+    if config.use_1gb_pages == Some(true) && !has_arg(original_args, None, Some("use-1gb-pages")) {
+        push_flag(args, "--use-1gb-pages");
+        applied.use_1gb_pages = true;
+    }
+
+    if let Some(path) = config.randomx_prefetch_calibration.as_ref() {
+        if !has_arg(original_args, None, Some("randomx-prefetch-calibration")) {
+            push_value_os(args, "--randomx-prefetch-calibration", path.as_os_str());
+            applied.randomx_prefetch_calibration = true;
+        }
+    }
+
     if let Some(batch_size) = config.batch_size {
         if !has_arg(original_args, None, Some("batch-size")) {
             push_value(args, "--batch-size", batch_size.to_string());
@@ -788,6 +851,10 @@ pub struct ConfigApplied {
     pub dashboard_dir: bool,
     pub affinity: bool,
     pub huge_pages: bool,
+    pub randomx_mode: bool,
+    pub randomx_runtime_profile: bool,
+    pub use_1gb_pages: bool,
+    pub randomx_prefetch_calibration: bool,
     pub batch_size: bool,
     pub no_yield: bool,
     pub debug: bool,
@@ -829,6 +896,16 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "affinity",
     "huge_pages",
     "huge-pages",
+    "large_pages",
+    "large-pages",
+    "randomx_mode",
+    "randomx-mode",
+    "randomx_runtime_profile",
+    "randomx-runtime-profile",
+    "use_1gb_pages",
+    "use-1gb-pages",
+    "randomx_prefetch_calibration",
+    "randomx-prefetch-calibration",
     "batch_size",
     "batch-size",
     "no_yield",
@@ -970,11 +1047,13 @@ fn format_toml_error(path: &Path, message: &str, line_col: Option<(usize, usize)
 mod tests {
     use super::{parse_with_config_from, validate_args, Args, MiningMode};
     use clap::Parser;
+    use oxide_core::{RandomXMode, RandomXRuntimeProfile};
     use std::{
         env,
         ffi::OsString,
         fs,
         net::{IpAddr, Ipv4Addr, Ipv6Addr},
+        path::Path,
     };
     use tempfile::NamedTempFile;
 
@@ -1137,6 +1216,71 @@ affinity = true
     fn batch_size_is_none_when_flag_missing() {
         let args = Args::try_parse_from(["test", "-o", "pool:5555", "-u", "wallet"]).unwrap();
         assert_eq!(args.batch_size, None);
+    }
+
+    #[test]
+    fn randomx_profile_flags_parse() {
+        let args = Args::try_parse_from([
+            "test",
+            "-o",
+            "pool:5555",
+            "-u",
+            "wallet",
+            "--randomx-mode",
+            "light",
+            "--randomx-runtime-profile",
+            "jit-conservative",
+            "--use-1gb-pages",
+            "--randomx-prefetch-calibration",
+            "prefetch.csv",
+        ])
+        .unwrap();
+
+        assert_eq!(args.randomx_mode, RandomXMode::Light);
+        assert_eq!(
+            args.randomx_runtime_profile,
+            RandomXRuntimeProfile::JitConservative
+        );
+        assert!(args.use_1gb_pages);
+        assert_eq!(
+            args.randomx_prefetch_calibration.as_deref(),
+            Some(Path::new("prefetch.csv"))
+        );
+    }
+
+    #[test]
+    fn config_file_supplies_randomx_defaults() {
+        let config = NamedTempFile::new().unwrap();
+        fs::write(
+            config.path(),
+            r#"
+pool = "pool:5555"
+wallet = "wallet"
+randomx_mode = "light"
+randomx_runtime_profile = "interpreter"
+use_1gb_pages = true
+randomx_prefetch_calibration = "prefetch.csv"
+"#,
+        )
+        .unwrap();
+
+        let args = vec![
+            OsString::from("test"),
+            OsString::from("--config"),
+            config.path().as_os_str().to_os_string(),
+        ];
+
+        let parsed = parse_with_config_from(args).unwrap();
+        assert_eq!(parsed.args.randomx_mode, RandomXMode::Light);
+        assert_eq!(
+            parsed.args.randomx_runtime_profile,
+            RandomXRuntimeProfile::Interpreter
+        );
+        assert!(parsed.args.use_1gb_pages);
+        assert_eq!(
+            parsed.args.randomx_prefetch_calibration.as_deref(),
+            Some(Path::new("prefetch.csv"))
+        );
     }
 
     #[test]

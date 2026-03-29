@@ -7,7 +7,7 @@ edition = "2021"
 
 [features]
 default = []
-randomx = ["dep:randomx-rs"]
+randomx = ["dep:oxide-randomx"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -19,7 +19,10 @@ tracing = { workspace = true }
 hex = { workspace = true }
 num_cpus = { workspace = true }
 once_cell = { workspace = true }
-randomx-rs = { version = "1.4", optional = true }
+# v10 cross-repo integration currently consumes the sibling oxide-randomx repo
+# in the shared VS Code workspace until the pinned handoff revision is
+# published upstream.
+oxide-randomx = { path = "../../../oxide-randomx", optional = true, features = ["jit", "jit-fastregs"] }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
 core_affinity = { workspace = true }

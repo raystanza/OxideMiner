@@ -1,11 +1,12 @@
 // OxideMiner/crates/oxide-core/src/worker.rs
 
+#[cfg(feature = "randomx")]
 use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
+#[cfg(feature = "randomx")]
+use std::sync::atomic::Ordering;
+use std::sync::{atomic::AtomicU64, Arc, Mutex};
+#[cfg(feature = "randomx")]
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 
@@ -30,7 +31,8 @@ pub struct WorkerSpawnConfig {
     pub jobs_tx: broadcast::Sender<WorkItem>,
     pub shares_tx: mpsc::UnboundedSender<Share>,
     pub affinity: bool,
-    pub large_pages: bool,
+    pub randomx: crate::config::RandomXRuntimeConfig,
+    pub randomx_runtime: Arc<Mutex<crate::config::RandomXRuntimeStatus>>,
     pub batch_size: usize,
     pub yield_between_batches: bool,
     pub hash_counter: Arc<AtomicU64>,
@@ -42,13 +44,12 @@ pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::Jo
         jobs_tx,
         shares_tx,
         affinity,
-        large_pages,
+        randomx,
+        randomx_runtime,
         batch_size,
         yield_between_batches,
         hash_counter,
     } = config;
-    #[cfg(feature = "randomx")]
-    let _ = engine::set_large_pages(large_pages);
     let cache_topology = if affinity {
         Some(crate::system::cache_hierarchy())
     } else {
@@ -82,13 +83,15 @@ pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::Jo
     (0..n)
         .map(|i| {
             let mut rx = jobs_tx.subscribe();
-            let shares_tx = shares_tx.clone();
-            let core_ids = core_ids.clone();
-            let hc = hash_counter.clone();
+            let worker_shares_tx = shares_tx.clone();
+            let worker_core_ids = core_ids.clone();
+            let worker_hash_counter = hash_counter.clone();
+            let worker_randomx = randomx.clone();
+            let worker_randomx_runtime = randomx_runtime.clone();
             tokio::spawn(async move {
                 #[cfg(feature = "randomx")]
                 {
-                    if let Some(ref ids) = core_ids {
+                    if let Some(ref ids) = worker_core_ids {
                         if let Some(id) = ids.get(i % ids.len()) {
                             core_affinity::set_for_current(*id);
                         }
@@ -96,11 +99,13 @@ pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::Jo
                     if let Err(e) = randomx_worker_loop(
                         i,
                         n,
+                        &worker_randomx,
+                        &worker_randomx_runtime,
                         batch_size,
                         yield_between_batches,
                         &mut rx,
-                        shares_tx,
-                        hc,
+                        worker_shares_tx,
+                        worker_hash_counter,
                     )
                     .await
                     {
@@ -109,6 +114,14 @@ pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::Jo
                 }
                 #[cfg(not(feature = "randomx"))]
                 {
+                    let _ = (
+                        &worker_shares_tx,
+                        &worker_core_ids,
+                        &worker_hash_counter,
+                        &worker_randomx,
+                        &worker_randomx_runtime,
+                    );
+                    let _ = (batch_size, yield_between_batches);
                     tracing::warn!(worker = i, "built without RandomX; idle worker");
                     loop {
                         let _ = rx.recv().await;
@@ -176,372 +189,25 @@ fn l3_aware_core_order(
 }
 
 #[cfg(feature = "randomx")]
-mod engine {
-    use crate::system::{self, RANDOMX_DATASET_BYTES};
-    use anyhow::{anyhow, Result};
-    use once_cell::sync::Lazy;
-    use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
-    use std::cmp;
-    use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        RwLock,
-    };
-    use std::thread;
-
-    // Thin wrappers to mirror the old shape
-    #[derive(Clone)]
-    struct ThreadSafeCache(RandomXCache);
-
-    // SAFETY: `RandomXCache` instances become immutable after initialization. The wrapper only
-    // exposes cloning of the underlying cache, so sharing references between threads cannot race
-    // on mutation or destruction. The underlying FFI object also owns its memory for the lifetime
-    // of the wrapper, so transferring ownership across threads is sound.
-    unsafe impl Send for ThreadSafeCache {}
-    unsafe impl Sync for ThreadSafeCache {}
-
-    impl ThreadSafeCache {
-        fn clone_inner(&self) -> RandomXCache {
-            self.0.clone()
-        }
-    }
-
-    #[derive(Clone)]
-    pub struct Cache {
-        inner: ThreadSafeCache,
-        pub(crate) key: Vec<u8>,
-        pub(crate) flags: RandomXFlag,
-    }
-
-    #[derive(Clone)]
-    pub struct Dataset {
-        pub(crate) inner: RandomXDataset,
-        pub(crate) flags: RandomXFlag,
-        pub(crate) _key: Vec<u8>, // intentionally unused (for future)
-    }
-
-    // RandomX cache/dataset objects are read-only after initialization and may be shared across
-    // threads safely.
-    // SAFETY: `Cache` and `Dataset` only expose read-only operations after construction. The
-    // internal `RandomXCache`/`RandomXDataset` values are never mutated once the object is
-    // initialized, and cloning produces independent handles backed by the RandomX library. Moving
-    // these wrappers between threads therefore cannot introduce races, and the underlying library
-    // keeps the memory alive for the lifetime of the wrapper.
-    unsafe impl Send for Cache {}
-    unsafe impl Sync for Cache {}
-    unsafe impl Send for Dataset {}
-    unsafe impl Sync for Dataset {}
-
-    pub struct Vm {
-        pub(crate) inner: RandomXVM,
-        pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
-    }
-
-    // RandomX VMs are not thread-safe by default, but we confine each to a single worker thread.
-    // SAFETY: Each `Vm` is created and used by a single worker task. The async worker future is
-    // `Send` so it may move between executor threads, but it is never accessed concurrently from
-    // multiple threads, preserving the thread confinement required by `RandomXVM`.
-    unsafe impl Send for Vm {}
-
-    // randomx-rs exposes FLAG_* constants.
-    static LARGE_PAGES: AtomicBool = AtomicBool::new(false);
-
-    pub fn set_large_pages(enable: bool) -> bool {
-        if !enable {
-            LARGE_PAGES.store(false, Ordering::Relaxed);
-            return false;
-        }
-
-        let mut status = system::huge_page_status();
-        if !status.supported {
-            tracing::warn!("Large pages requested but the operating system does not report support; continuing without them");
-            LARGE_PAGES.store(false, Ordering::Relaxed);
-            return false;
-        }
-
-        if !status.has_privilege {
-            if !system::enable_large_page_privilege() {
-                tracing::warn!("Large pages requested but unable to enable required privileges; continuing without large pages");
-                LARGE_PAGES.store(false, Ordering::Relaxed);
-                return false;
-            }
-            status = system::huge_page_status();
-        }
-
-        if !status.enabled() {
-            let free = status.free_bytes.unwrap_or(0);
-            tracing::warn!(
-                free_bytes = free,
-                "Large pages requested but none are currently available; continuing without large pages",
-            );
-            LARGE_PAGES.store(false, Ordering::Relaxed);
-            return false;
-        }
-
-        if !status.dataset_fits(RANDOMX_DATASET_BYTES) {
-            let free = status.free_bytes.unwrap_or(0);
-            tracing::warn!(
-                free_bytes = free,
-                required_bytes = RANDOMX_DATASET_BYTES,
-                "Large pages requested but available huge pages cannot accommodate the RandomX dataset; continuing without large pages",
-            );
-            LARGE_PAGES.store(false, Ordering::Relaxed);
-            return false;
-        }
-
-        LARGE_PAGES.store(true, Ordering::Relaxed);
-        if let Some(page) = status.page_size_bytes {
-            tracing::info!(page_size_bytes = page, "RandomX large pages enabled",);
-        } else {
-            tracing::info!("RandomX large pages enabled");
-        }
-        true
-    }
-
-    fn default_flags() -> RandomXFlag {
-        let mut flags = RandomXFlag::FLAG_JIT | RandomXFlag::FLAG_FULL_MEM;
-        if LARGE_PAGES.load(Ordering::Relaxed) {
-            flags |= RandomXFlag::FLAG_LARGE_PAGES;
-        }
-        let features = system::cpu_features();
-        if features.aes_ni {
-            flags |= RandomXFlag::FLAG_HARD_AES;
-        } else {
-            flags |= RandomXFlag::FLAG_SECURE;
-        }
-        if features.avx2 || features.avx512f {
-            flags |= RandomXFlag::FLAG_ARGON2_AVX2;
-        } else if features.ssse3 {
-            flags |= RandomXFlag::FLAG_ARGON2_SSSE3;
-        }
-        flags
-    }
-
-    fn fullmem_vm_flags(
-        requested_flags: RandomXFlag,
-        cache_flags: RandomXFlag,
-        dataset_flags: RandomXFlag,
-    ) -> RandomXFlag {
-        let mut effective_flags = requested_flags;
-        if !cache_flags.contains(RandomXFlag::FLAG_LARGE_PAGES)
-            || !dataset_flags.contains(RandomXFlag::FLAG_LARGE_PAGES)
-        {
-            effective_flags &= !RandomXFlag::FLAG_LARGE_PAGES;
-        }
-        effective_flags
-    }
-
-    pub fn new_cache(flags: Option<RandomXFlag>, key: &[u8]) -> Result<Cache> {
-        let mut flags = flags.unwrap_or_else(default_flags);
-
-        // First attempt with requested flags
-        let cache = match RandomXCache::new(flags, key) {
-            Ok(c) => c,
-            Err(e) => {
-                // If large pages were requested but allocation failed, retry without them.
-                if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
-                    tracing::warn!("RandomX large pages allocation failed for cache; retrying without large pages: {e}");
-                    flags &= !RandomXFlag::FLAG_LARGE_PAGES;
-                    RandomXCache::new(flags, key)?
-                } else {
-                    return Err(e.into());
-                }
-            }
-        };
-        Ok(Cache {
-            inner: ThreadSafeCache(cache),
-            key: key.to_vec(),
-            flags,
-        })
-    }
-
-    // Windows defaults the main thread to a 1 MiB stack, which is insufficient for RandomX dataset
-    // initialization when large pages are enabled.  Spawn helper threads with a larger stack so the
-    // heavy initialization work happens off the main thread.
-    const DATASET_INIT_STACK_BYTES: usize = 8 * 1024 * 1024;
-
-    fn spawn_dataset_init(
-        flags: RandomXFlag,
-        cache: &Cache,
-        init_threads: usize,
-    ) -> Result<Dataset> {
-        let cache_clone = cache.clone();
-        let thread_name = format!("randomx-dataset-init-{init_threads}");
-        let handle = thread::Builder::new()
-            .name(thread_name)
-            .stack_size(DATASET_INIT_STACK_BYTES)
-            .spawn(move || -> Result<Dataset, randomx_rs::RandomXError> {
-                let dataset = RandomXDataset::new(flags, cache_clone.inner.clone_inner(), 0)?;
-                Ok(Dataset {
-                    inner: dataset,
-                    flags,
-                    _key: cache_clone.key.clone(),
-                })
-            })
-            .map_err(|e| anyhow!("failed to spawn dataset init thread: {e}"))?;
-
-        let result = handle
-            .join()
-            .map_err(|e| anyhow!("dataset init thread panicked: {e:?}"))?;
-
-        Ok(result?)
-    }
-
-    pub fn new_dataset(flags: Option<RandomXFlag>, cache: &Cache, threads: u32) -> Result<Dataset> {
-        let mut flags = flags.unwrap_or_else(default_flags);
-        let requested = usize::try_from(threads.max(1)).unwrap_or(1);
-        let init_threads = cmp::max(requested, num_cpus::get_physical());
-
-        let ds = match spawn_dataset_init(flags, cache, init_threads) {
-            Ok(d) => d,
-            Err(first_err) => {
-                if flags.contains(RandomXFlag::FLAG_LARGE_PAGES) {
-                    tracing::warn!(
-                        "RandomX large pages allocation failed for dataset; retrying without large pages: {first_err}"
-                    );
-                    flags &= !RandomXFlag::FLAG_LARGE_PAGES;
-                    spawn_dataset_init(flags, cache, init_threads)?
-                } else {
-                    return Err(first_err);
-                }
-            }
-        };
-
-        Ok(ds)
-    }
-
-    pub fn new_vm(
-        flags: Option<RandomXFlag>,
-        cache: Option<&Cache>,
-        dataset: Option<&Dataset>,
-    ) -> Result<Vm> {
-        let flags = flags.unwrap_or_else(default_flags);
-        // VM::new takes OWNED Option<RandomXCache>/<RandomXDataset>.
-        let vm = RandomXVM::new(
-            flags,
-            cache.map(|c| c.inner.clone_inner()),
-            dataset.map(|d| d.inner.clone()),
-        )?;
-        Ok(Vm {
-            inner: vm,
-            _flags: flags,
-        })
-    }
-
-    /// Calculate hash as fixed [u8;32].
-    #[inline(always)]
-    pub fn hash(vm: &Vm, input: &[u8]) -> [u8; 32] {
-        let v = vm.inner.calculate_hash(input).expect("randomx hash failed");
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&v); // randomx is always 32 bytes
-        out
-    }
-
-    // ------------------------ Thread-local dataset cache ------------------------
-
-    struct SharedDataset {
-        key: Vec<u8>,
-        cache: Cache,
-        dataset: Dataset,
-    }
-
-    impl SharedDataset {
-        fn matches(&self, key: &[u8]) -> bool {
-            self.key.as_slice() == key
-        }
-
-        fn clone_pair(&self) -> (Cache, Dataset) {
-            (self.cache.clone(), self.dataset.clone())
-        }
-    }
-
-    static GLOBAL_DATASET: Lazy<RwLock<Option<SharedDataset>>> = Lazy::new(|| RwLock::new(None));
-
-    /// Ensure a FULL_MEM dataset exists for this process + seed key.
-    pub fn ensure_fullmem_dataset(seed_key: &[u8], threads: u32) -> Result<(Cache, Dataset)> {
-        {
-            let guard = GLOBAL_DATASET.read().expect("dataset lock poisoned");
-            if let Some(shared) = guard.as_ref() {
-                if shared.matches(seed_key) {
-                    return Ok(shared.clone_pair());
-                }
-            }
-        }
-
-        let mut guard = GLOBAL_DATASET.write().expect("dataset lock poisoned");
-        if let Some(shared) = guard.as_ref() {
-            if shared.matches(seed_key) {
-                return Ok(shared.clone_pair());
-            }
-        }
-
-        let flags = default_flags();
-        let cache = new_cache(Some(flags), seed_key)?;
-        let dataset = new_dataset(Some(cache.flags), &cache, threads)?;
-        *guard = Some(SharedDataset {
-            key: seed_key.to_vec(),
-            cache: cache.clone(),
-            dataset: dataset.clone(),
-        });
-
-        Ok((cache, dataset))
-    }
-
-    /// Convenience: create a VM bound to an existing cache+dataset.
-    pub fn create_vm_for_dataset(
-        cache: &Cache,
-        dataset: &Dataset,
-        flags: Option<RandomXFlag>,
-    ) -> Result<Vm> {
-        let requested_flags = flags.unwrap_or(dataset.flags);
-        let effective_flags = fullmem_vm_flags(requested_flags, cache.flags, dataset.flags);
-        new_vm(Some(effective_flags), Some(cache), Some(dataset))
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn fullmem_vm_flags_drop_large_pages_after_fallback() {
-            let requested = RandomXFlag::FLAG_FULL_MEM
-                | RandomXFlag::FLAG_JIT
-                | RandomXFlag::FLAG_HARD_AES
-                | RandomXFlag::FLAG_LARGE_PAGES;
-            let cache_flags = requested & !RandomXFlag::FLAG_LARGE_PAGES;
-            let dataset_flags = cache_flags;
-
-            let effective = fullmem_vm_flags(requested, cache_flags, dataset_flags);
-
-            assert!(!effective.contains(RandomXFlag::FLAG_LARGE_PAGES));
-            assert!(effective.contains(RandomXFlag::FLAG_FULL_MEM));
-            assert!(effective.contains(RandomXFlag::FLAG_JIT));
-            assert!(effective.contains(RandomXFlag::FLAG_HARD_AES));
-        }
-    }
-}
-
-#[cfg(feature = "randomx")]
-pub use engine::{create_vm_for_dataset, ensure_fullmem_dataset, hash, set_large_pages};
-
-#[cfg(feature = "randomx")]
 async fn randomx_worker_loop(
     worker_id: usize,
     worker_count: usize,
+    randomx: &crate::config::RandomXRuntimeConfig,
+    randomx_runtime: &Arc<Mutex<crate::config::RandomXRuntimeStatus>>,
     batch_size: usize,
     yield_between_batches: bool,
     rx: &mut broadcast::Receiver<WorkItem>,
     shares_tx: mpsc::UnboundedSender<Share>,
     hash_counter: Arc<AtomicU64>,
 ) -> Result<()> {
-    use engine::*;
+    use crate::randomx_backend::{build_fast_vm, build_light_vm};
+    use crate::RandomXMode;
 
     let mut work: Option<WorkItem> = None;
 
-    // Precompute once (Send + Copy)
-    let threads_u32: u32 = worker_count as u32;
     let mut current_seed: [u8; 32] = [0; 32];
     let mut has_seed = false;
-    let mut vm: Option<Vm> = None;
+    let mut vm = None;
     let mut blob_buf: Vec<u8> = Vec::with_capacity(128);
     let nonce_step = worker_count as u32;
 
@@ -559,8 +225,26 @@ async fn randomx_worker_loop(
         let is_devfee = work.as_ref().unwrap().is_devfee;
 
         if !has_seed || j.seed_hash_bytes != current_seed {
-            let (cache, dataset) = ensure_fullmem_dataset(&j.seed_hash_bytes, threads_u32)?;
-            vm = Some(create_vm_for_dataset(&cache, &dataset, None)?);
+            let (next_vm, realized) = match randomx.mode {
+                RandomXMode::Light => build_light_vm(randomx, &j.seed_hash_bytes)?,
+                RandomXMode::Fast => build_fast_vm(randomx, &j.seed_hash_bytes, worker_count)?,
+            };
+            if worker_id == 0 {
+                if let Ok(mut status) = randomx_runtime.lock() {
+                    status.set_realized(realized.clone());
+                }
+                tracing::info!(
+                    randomx_mode = realized.mode.as_str(),
+                    requested_runtime_profile = realized.requested_runtime_profile.as_str(),
+                    effective_runtime_profile = realized.effective_runtime_profile.as_str(),
+                    jit_active = realized.jit_active,
+                    scratchpad_large_pages = realized.scratchpad_large_pages,
+                    dataset_large_pages = ?realized.dataset_large_pages,
+                    calibration_status = %realized.calibration_status,
+                    "RandomX runtime realized"
+                );
+            }
+            vm = Some(next_vm);
             current_seed = j.seed_hash_bytes;
             has_seed = true;
         }
@@ -608,14 +292,14 @@ async fn randomx_worker_loop(
                     break 'mine;
                 }
             }
-            let vm_ref = vm.as_ref().expect("vm initialized");
+            let vm_ref = vm.as_mut().expect("vm initialized");
             let mut need_yield = false;
             {
                 let vm = vm_ref;
                 let mut local_hashes: u64 = 0;
                 for i in 0..batch_size {
                     put_u32_le(&mut blob_buf, 39, nonce);
-                    let digest = hash(vm, &blob_buf);
+                    let digest = vm.hash(&blob_buf);
                     local_hashes += 1;
                     if meets_target(&digest, &j) {
                         let le_hex = hex::encode(digest);
@@ -660,6 +344,7 @@ async fn randomx_worker_loop(
     }
 }
 
+#[cfg(any(feature = "randomx", test))]
 #[inline]
 fn put_u32_le(dst: &mut [u8], offset: usize, val: u32) {
     dst[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
@@ -668,6 +353,7 @@ fn put_u32_le(dst: &mut [u8], offset: usize, val: u32) {
 /// Monero Stratum "target" is usually a 32-bit LITTLE-endian hex (e.g., "f3220000" => 0x000022f3).
 /// Compare against the hash’s MSB 32 bits for a LE digest: i.e., the **last** 4 bytes.
 /// If a wider target (>8 hex chars) is provided, treat as a full 256-bit BE integer.
+#[cfg(any(feature = "randomx", test))]
 fn meets_target(hash: &[u8; 32], job: &PoolJob) -> bool {
     if let Some(t32) = job.target_u32 {
         let h_top_le32 = u32::from_le_bytes([hash[28], hash[29], hash[30], hash[31]]);
@@ -727,7 +413,10 @@ mod tests {
                 jobs_tx,
                 shares_tx,
                 affinity: false,
-                large_pages: false,
+                randomx: crate::config::RandomXRuntimeConfig::default(),
+                randomx_runtime: Arc::new(Mutex::new(crate::config::RandomXRuntimeStatus::new(
+                    &crate::config::RandomXRuntimeConfig::default(),
+                ))),
                 batch_size: 10_000,
                 yield_between_batches: true,
                 hash_counter,

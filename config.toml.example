@@ -60,9 +60,25 @@
 # Pin worker threads to CPU cores (reduces OS scheduling jitter). Off by default.
 #affinity = true
 
-# Request huge/large pages for the RandomX dataset. This often improves hashrate,
+# Select the supported oxide-randomx mode. "fast" is the default supported path.
+# Use "light" only when you intentionally want the cache-only fallback.
+#randomx_mode = "fast"
+
+# Select the supported oxide-randomx runtime profile.
+# Supported values: "jit-fastregs" (default), "jit-conservative", "interpreter"
+#randomx_runtime_profile = "jit-fastregs"
+
+# Request huge/large pages for the supported RandomX path. This often improves hashrate,
 # but requires OS configuration/privileges (Linux hugepages, Windows SeLockMemoryPrivilege).
 #huge_pages = true
+
+# Request Linux 1GB huge pages for the Fast-mode dataset.
+# This implies huge_pages = true and falls back automatically when unavailable.
+#use_1gb_pages = false
+
+# Optional host-local oxide-randomx prefetch calibration CSV.
+# Leave unset unless you intentionally want a deployment-local override.
+#randomx_prefetch_calibration = "./prefetch.csv"
 
 # Number of hashes per batch in the mining loop. Higher = fewer yields, less overhead,
 # but increased latency to respond to new jobs. Defaults to 10000.

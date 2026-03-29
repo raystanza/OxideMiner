@@ -11,7 +11,7 @@ use oxide_core::stratum::{ConnectConfig, PoolJob};
 use oxide_core::worker::{Share, WorkItem, WorkerSpawnConfig};
 use oxide_core::{
     autotune_snapshot, spawn_workers, Config, DevFeeScheduler, HugePageStatus, ProxyConfig,
-    StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
+    RandomXMode, RandomXRuntimeConfig, StratumClient, DEV_FEE_BASIS_POINTS, DEV_WALLET_ADDRESS,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -160,10 +160,25 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         // Huge pages (intent vs capability)
         let large_pages_supported =
             hp_status.enabled() && hp_status.dataset_fits(snap.dataset_bytes);
-        let large_pages = args.huge_pages && large_pages_supported;
-        if args.huge_pages && !large_pages_supported {
+        let large_pages_requested = args.huge_pages || args.use_1gb_pages;
+        if large_pages_requested && !large_pages_supported {
             warn_huge_page_limit(&hp_status, snap.dataset_bytes);
         }
+
+        if args.use_1gb_pages && args.randomx_mode != RandomXMode::Fast {
+            tracing::info!(
+                randomx_mode = args.randomx_mode.as_str(),
+                "1GB huge page requests only apply to the Fast-mode dataset; Light mode will report the dataset request as not applicable"
+            );
+        }
+
+        let randomx = RandomXRuntimeConfig {
+            mode: args.randomx_mode,
+            runtime_profile: args.randomx_runtime_profile,
+            large_pages: large_pages_requested,
+            use_1gb_pages: args.use_1gb_pages,
+            prefetch_calibration_path: args.randomx_prefetch_calibration.clone(),
+        };
 
         let yield_between_batches = !args.no_yield;
 
@@ -208,7 +223,11 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             numa_nodes,
             numa_known,
             numa_topology = %numa_topology,
-            large_pages,
+            randomx_mode = randomx.mode.as_str(),
+            randomx_runtime_profile = randomx.runtime_profile.as_str(),
+            large_pages_requested = randomx.large_pages,
+            use_1gb_pages_requested = randomx.use_1gb_pages,
+            large_pages_predicted_supported = large_pages_supported,
             batch_size,
             batch_mode,
             recommended_batch = snap.recommended_batch_size,
@@ -220,19 +239,23 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             • Benchmark duration: {} seconds (fixed).\n\
             • Threads: {} ({}). Auto chooses ~L3-capacity-per-thread to avoid cache thrash.\n\
             • Batch size: {} hashes ({}; recommended {}). Larger batches cut per-share overhead but can increase latency and memory pressure.\n\
+            • RandomX mode/profile: {}/{}.\n\
             • CPU features: AES-NI={}, SSSE3={}, AVX2={}, AVX-512F={}, Prefetch={}.\n\
             • Cache (per core unless noted): L1d={} KiB, L1i={} KiB, L2={} KiB, L3={} (domains={}). RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
             • NUMA nodes: {} (known={}; topology: {}). On multi-socket systems, keeping threads/data local to a node reduces remote memory penalties.\n\
-            • Large pages: {}.\n\
+            • Large pages requested: {} (predicted supported={}).\n\
+            • 1GB huge pages requested: {}.\n\
             • Yield between batches: {}.\n\
             \n\n--- structured fields for tooling below ---\n",
             BENCH_SECONDS,
             n_workers, thread_mode,
             batch_size, batch_mode, snap.recommended_batch_size,
+            randomx.mode.as_str(), randomx.runtime_profile.as_str(),
             features.aes_ni, features.ssse3, features.avx2, features.avx512f, features.prefetch_sse,
             l1_kib.unwrap_or(0), l1i_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_summary, l3_domains,
             numa_nodes, numa_known, numa_topology.as_str(),
-            large_pages,
+            randomx.large_pages, large_pages_supported,
+            randomx.use_1gb_pages,
             yield_between_batches
         );
 
@@ -255,7 +278,7 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         let hps = oxide_core::run_benchmark(
             n_workers,
             BENCH_SECONDS.into(),
-            large_pages,
+            &randomx,
             batch_size,
             yield_between_batches,
         )
@@ -336,13 +359,25 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
     // Can we actually use huge pages? (OS enabled + dataset fits)
     let large_pages_supported = hp_status.enabled() && hp_status.dataset_fits(snap.dataset_bytes);
 
-    // Will we use huge pages? (user asked AND supported)
-    let large_pages = args.huge_pages && large_pages_supported;
-
-    // Warn only if the user asked for huge pages but we can’t provide them.
-    if args.huge_pages && !large_pages_supported {
+    let large_pages_requested = args.huge_pages || args.use_1gb_pages;
+    if large_pages_requested && !large_pages_supported {
         warn_huge_page_limit(&hp_status, snap.dataset_bytes);
     }
+
+    if args.use_1gb_pages && args.randomx_mode != RandomXMode::Fast {
+        tracing::info!(
+            randomx_mode = args.randomx_mode.as_str(),
+            "1GB huge page requests only apply to the Fast-mode dataset; Light mode will report the dataset request as not applicable"
+        );
+    }
+
+    let randomx = RandomXRuntimeConfig {
+        mode: args.randomx_mode,
+        runtime_profile: args.randomx_runtime_profile,
+        large_pages: large_pages_requested,
+        use_1gb_pages: args.use_1gb_pages,
+        prefetch_calibration_path: args.randomx_prefetch_calibration.clone(),
+    };
 
     // Thread mode: "custom" if user provided --threads, else "auto"
     let thread_mode = if args.threads.is_some() {
@@ -369,7 +404,11 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         numa_nodes,
         numa_known,
         numa_topology = %numa_topology,
-        large_pages,
+        randomx_mode = randomx.mode.as_str(),
+        randomx_runtime_profile = randomx.runtime_profile.as_str(),
+        large_pages_requested = randomx.large_pages,
+        use_1gb_pages_requested = randomx.use_1gb_pages,
+        large_pages_predicted_supported = large_pages_supported,
         batch_size,
         batch_mode,
         recommended_batch = snap.recommended_batch_size,
@@ -380,18 +419,22 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         "\nCPU tuning summary:\n\n\
         • Threads: {} ({}). Auto chooses ~L3-capacity-per-thread to avoid cache thrash.\n\
         • Batch size: {} hashes ({}; recommended {}). Larger batches cut per-share overhead but can increase latency and memory pressure.\n\
+        • RandomX mode/profile: {}/{}.\n\
         • CPU features: AES-NI={}, SSSE3={}, AVX2={}, AVX-512F={}, Prefetch={}.\n\
         • Cache (per core unless noted): L1d={} KiB, L1i={} KiB, L2={} KiB, L3={} (domains={}). RandomX is memory-hard; more cache lets us run more threads without stalls.\n\
         • NUMA nodes: {} (known={}; topology: {}). NUMA describes memory locality; L3 cache domains are cache-sharing groups and may differ on chiplet CPUs.\n\
-        • Large pages: {}. Reduces TLB misses for the RandomX dataset and can improve throughput when the dataset fits.\n\
+        • Large pages requested: {} (predicted supported={}). Reduces TLB misses for the RandomX dataset and can improve throughput when the dataset fits.\n\
+        • 1GB huge pages requested: {}. Applies only to the Fast-mode dataset on Linux hosts that have 1GB huge pages configured.\n\
         • Yield between batches: {}. Keeps the miner friendly on shared machines.\n\
         \n\n--- structured fields for tooling below ---\n",
         n_workers, thread_mode,
         batch_size, batch_mode, snap.recommended_batch_size,
+        randomx.mode.as_str(), randomx.runtime_profile.as_str(),
         aes, ssse3, avx2, avx512f, prefetch,
         l1_kib.unwrap_or(0), l1i_kib.unwrap_or(0), l2_kib.unwrap_or(0), l3_summary, l3_domains,
         numa_nodes, numa_known, numa_topology.as_str(),
-        large_pages,
+        randomx.large_pages, large_pages_supported,
+        randomx.use_1gb_pages,
         yield_between_batches
     );
 
@@ -442,6 +485,7 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
         stats_tls,
         stats_config,
         solo_zmq_enabled,
+        randomx.clone(),
     ));
 
     let _workers = spawn_workers(
@@ -450,7 +494,8 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             jobs_tx: jobs_tx.clone(),
             shares_tx,
             affinity: args.affinity,
-            large_pages,
+            randomx: randomx.clone(),
+            randomx_runtime: stats.randomx.clone(),
             batch_size,
             yield_between_batches,
             hash_counter: stats.hashes.clone(),
@@ -501,7 +546,11 @@ pub async fn run(args: Args, config: Option<LoadedConfigFile>) -> Result<()> {
             tls_cert_sha256,
             api_port: args.api_port,
             affinity: args.affinity,
-            huge_pages: args.huge_pages,
+            huge_pages: randomx.large_pages,
+            randomx_mode: args.randomx_mode,
+            randomx_runtime_profile: args.randomx_runtime_profile,
+            use_1gb_pages: args.use_1gb_pages,
+            randomx_prefetch_calibration: args.randomx_prefetch_calibration.clone(),
             batch_size,
             yield_between_batches,
             agent: format!("OxideMiner/{}", env!("CARGO_PKG_VERSION")),
@@ -1061,6 +1110,61 @@ fn log_config_overview(cfg: &LoadedConfigFile, args: &Args) {
         lines.push(detail);
     }
 
+    if let Some(randomx_mode) = cfg.values.randomx_mode {
+        let detail = if cfg.applied.randomx_mode {
+            format!(
+                "RandomX mode (--randomx-mode): {} (from config.toml)",
+                randomx_mode.as_str()
+            )
+        } else {
+            format!(
+                "RandomX mode (--randomx-mode): {} (config.toml, overridden by CLI)",
+                randomx_mode.as_str()
+            )
+        };
+        lines.push(detail);
+    }
+
+    if let Some(randomx_runtime_profile) = cfg.values.randomx_runtime_profile {
+        let detail = if cfg.applied.randomx_runtime_profile {
+            format!(
+                "RandomX runtime profile (--randomx-runtime-profile): {} (from config.toml)",
+                randomx_runtime_profile.as_str()
+            )
+        } else {
+            format!(
+                "RandomX runtime profile (--randomx-runtime-profile): {} (config.toml, overridden by CLI)",
+                randomx_runtime_profile.as_str()
+            )
+        };
+        lines.push(detail);
+    }
+
+    if cfg.values.use_1gb_pages == Some(true) {
+        let detail = if cfg.applied.use_1gb_pages {
+            "1GB huge pages (--use-1gb-pages): enabled via config.toml".to_string()
+        } else {
+            "1GB huge pages (--use-1gb-pages): requested in config.toml but overridden by CLI"
+                .to_string()
+        };
+        lines.push(detail);
+    }
+
+    if let Some(path) = cfg.values.randomx_prefetch_calibration.as_ref() {
+        let detail = if cfg.applied.randomx_prefetch_calibration {
+            format!(
+                "RandomX calibration (--randomx-prefetch-calibration): {} (from config.toml)",
+                path.display()
+            )
+        } else {
+            format!(
+                "RandomX calibration (--randomx-prefetch-calibration): {} (config.toml, overridden by CLI)",
+                path.display()
+            )
+        };
+        lines.push(detail);
+    }
+
     if let Some(port) = cfg.values.api_port {
         let detail = if cfg.applied.api_port {
             format!("API port (--api-port): {port} (from config.toml)")
@@ -1215,9 +1319,15 @@ fn log_config_overview(cfg: &LoadedConfigFile, args: &Args) {
         &mut lines,
     );
     bool_line(
-        args.huge_pages,
-        cfg.applied.huge_pages,
+        args.huge_pages || args.use_1gb_pages,
+        cfg.applied.huge_pages || cfg.applied.use_1gb_pages,
         "Huge pages (--huge-pages)",
+        &mut lines,
+    );
+    bool_line(
+        args.use_1gb_pages,
+        cfg.applied.use_1gb_pages,
+        "1GB huge pages (--use-1gb-pages)",
         &mut lines,
     );
     bool_line(

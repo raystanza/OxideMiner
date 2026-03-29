@@ -4,13 +4,16 @@
 use anyhow::Result;
 #[cfg(not(feature = "randomx"))]
 use anyhow::{anyhow, Result};
+#[cfg(feature = "randomx")]
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "randomx")]
 use tokio::task;
 
 #[cfg(feature = "randomx")]
-use crate::worker::{create_vm_for_dataset, ensure_fullmem_dataset, hash, set_large_pages};
+use crate::randomx_backend::{build_fast_vm, build_light_vm};
+#[cfg(feature = "randomx")]
+use crate::{RandomXMode, RandomXRuntimeConfig};
 
 #[cfg(feature = "randomx")]
 const BENCHMARK_BLOB_TEMPLATE: [u8; 76] = [
@@ -31,7 +34,7 @@ const BENCHMARK_BLOB_TEMPLATE: [u8; 76] = [
 pub async fn run_benchmark(
     threads: usize,
     seconds: u64,
-    large_pages: bool,
+    randomx: &RandomXRuntimeConfig,
     batch_size: usize,
     yield_between_batches: bool,
 ) -> Result<f64> {
@@ -39,19 +42,17 @@ pub async fn run_benchmark(
         return Ok(0.0);
     }
 
-    let _ = set_large_pages(large_pages);
     let duration = Duration::from_secs(seconds);
-    let threads_u32 = threads as u32;
-
     let seed = [0u8; 32];
-    let (shared_cache, shared_dataset) = ensure_fullmem_dataset(&seed, threads_u32)?;
 
     let mut handles: Vec<task::JoinHandle<Result<u64>>> = Vec::new();
     for id in 0..threads {
-        let cache = shared_cache.clone();
-        let dataset = shared_dataset.clone();
+        let randomx = randomx.clone();
         handles.push(task::spawn(async move {
-            let vm = create_vm_for_dataset(&cache, &dataset, None)?;
+            let mut vm = match randomx.mode {
+                RandomXMode::Light => build_light_vm(&randomx, &seed)?.0,
+                RandomXMode::Fast => build_fast_vm(&randomx, &seed, threads)?.0,
+            };
             let mut blob = BENCHMARK_BLOB_TEMPLATE;
             let mut nonce = id as u32;
             let start = Instant::now();
@@ -67,10 +68,10 @@ pub async fn run_benchmark(
                     }
                     // write nonce at offset 39
                     blob[39..43].copy_from_slice(&nonce.to_le_bytes());
-                    let _digest = hash(&vm, &blob);
+                    let _digest = vm.hash(&blob);
                     total_hashes += 1;
                     batch_hashes += 1;
-                    nonce = nonce.wrapping_add(threads_u32);
+                    nonce = nonce.wrapping_add(threads as u32);
                     now = Instant::now();
                 }
 
@@ -110,7 +111,7 @@ pub async fn run_benchmark(
 pub async fn run_benchmark(
     _threads: usize,
     _seconds: u64,
-    _large_pages: bool,
+    _randomx: &crate::RandomXRuntimeConfig,
     _batch_size: usize,
     _yield_between_batches: bool,
 ) -> Result<f64> {
@@ -123,13 +124,15 @@ mod tests {
 
     #[tokio::test]
     async fn benchmark_without_randomx_feature_errors() {
-        let err = run_benchmark(1, 1, false, 1, false).await.unwrap_err();
+        let err = run_benchmark(1, 1, &crate::RandomXRuntimeConfig::default(), 1, false)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("RandomX"));
     }
 
     #[tokio::test]
     async fn benchmark_zero_inputs_short_circuits() {
-        let result = run_benchmark(0, 0, false, 0, false).await;
+        let result = run_benchmark(0, 0, &crate::RandomXRuntimeConfig::default(), 0, false).await;
         assert!(result.is_err());
     }
 }

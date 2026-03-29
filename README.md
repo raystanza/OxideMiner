@@ -20,6 +20,8 @@ We ship a **command-line miner** with automatic CPU tuning, an **optional embedd
 
 > **Note:** This is an early-stage release. Expect rough edges while we stabilize and benchmark across more hardware.
 > Bug reports and tuning data are especially valuable at this stage.
+>
+> **Supported `oxide-randomx` contract:** OxideMiner now targets one supported `oxide-randomx` profile instead of separate `Intel` and `AMD` product builds. The supported production build is `jit + jit-fastregs`, the supported validation build is `jit + jit-fastregs + bench-instrument`, and the parent-facing runtime selector is `jit-fastregs` with supported fallbacks to `jit-conservative` and `interpreter`.
 
 ---
 
@@ -102,6 +104,7 @@ _By default OxideMiner will look for a 'config.toml' file in the same directory 
 - A Monero-compatible mining pool endpoint and wallet address.
 - For solo mining: a fully-synced local `monerod` with JSON-RPC enabled.
 - Optional: elevated privileges for huge/large page support (see below).
+- Current v10 source integration: keep `OxideMiner/` and `oxide-randomx/` as sibling directories in the same parent folder. The current workspace build consumes the sibling `oxide-randomx` checkout directly while the handoff revision is being finalized upstream.
 
 ### Build and install
 
@@ -109,8 +112,19 @@ _By default OxideMiner will look for a 'config.toml' file in the same directory 
 
 ```bash
 git clone https://github.com/raystanza/OxideMiner.git
+git clone https://github.com/raystanza/oxide-randomx.git
 cd OxideMiner
 ```
+
+The current v10 integration expects this layout:
+
+```text
+<parent>/
+  OxideMiner/
+  oxide-randomx/
+```
+
+This is a workspace-local integration choice for the current handoff cycle, not a promise that both repos stay version-locked forever.
 
 #### Pick your compile method
 
@@ -315,7 +329,11 @@ Run `oxide-miner --help` (or `cargo run -p oxide-miner -- --help`) to view all o
 | `--batch-size <N>`        | Manual hashes per batch (default auto recommendation).                                     |
 | `--no-yield`              | Disable cooperative yields between batches (less friendly to shared hosts).                |
 | `--affinity`              | Pin worker threads to CPU cores.                                                           |
-| `--huge-pages`            | Request large pages for RandomX dataset (requires OS support).                             |
+| `--huge-pages`            | Request large pages for the supported RandomX path. `--large-pages` is accepted as an alias. |
+| `--randomx-mode <light\|fast>` | Select the supported RandomX mode. Default `fast`; `light` remains the supported cache-only fallback. |
+| `--randomx-runtime-profile <interpreter\|jit-conservative\|jit-fastregs>` | Select the supported runtime profile. Default `jit-fastregs`. |
+| `--use-1gb-pages`         | Request Linux 1GB huge pages for the Fast-mode dataset. Implies large pages and falls back when unavailable. |
+| `--randomx-prefetch-calibration <PATH>` | Apply an optional host-local `oxide-randomx` prefetch calibration CSV. |
 | `--proxy <URL>`           | Route stratum traffic via SOCKS5 proxy. Format: `socks5://[user:pass@]host:port`.          |
 | `--tls`                   | Enable TLS for the stratum connection.                                                     |
 | `--tls-ca-cert <PATH>`    | Add a custom CA certificate (PEM/DER) when TLS is enabled.                                 |
@@ -344,9 +362,13 @@ pool = "xmr.kryptex.network:7029"
 wallet = "<YOUR_WALLET_ADDRESS>"
 pass = "rig001"
 threads = 8             # omit to auto-tune
+randomx_mode = "fast"   # supported values: "fast" (default) or "light"
+randomx_runtime_profile = "jit-fastregs" # supported values: "jit-fastregs", "jit-conservative", "interpreter"
 api_port = 8080         # enable HTTP dashboard
 api_bind = "127.0.0.1"  # address to bind the dashboard/API (default 127.0.0.1, only used with api_port)
 huge_pages = true       # request HugeTLB / large pages if OS allows it
+use_1gb_pages = false   # Linux-only Fast-mode dataset request; implies huge_pages when true
+# randomx_prefetch_calibration = "./prefetch.csv"
 
 # NOTE: TOML tables do not end; keep [solo] at the bottom unless you start a new table.
 [solo]
@@ -364,12 +386,21 @@ solo_zmq = "tcp://127.0.0.1:18083"
 
 ## Operating the miner
 
+### Supported `oxide-randomx` profile
+
+- OxideMiner consumes one supported `oxide-randomx` build profile instead of shipping separate `Intel` and `AMD` binaries.
+- Supported production build: `jit + jit-fastregs`
+- Supported validation build: `jit + jit-fastregs + bench-instrument`
+- Supported runtime profiles: `jit-fastregs` (default), `jit-conservative`, `interpreter`
+- Supported runtime modes: `fast` (default) and `light`
+- Experimental `simd-blockio`, `simd-xor-paths`, `threaded-interp`, and `superscalar-accel-proto` remain off by default.
+
 ### Benchmark mode
 
 Run `--benchmark` to skip pool connectivity and measure local RandomX throughput. The benchmark:
 
 - Performs the same CPU feature detection and auto-tuning as normal operation.
-- Honors manual overrides (`--threads`, `--batch-size`, `--huge-pages`, `--no-yield`).
+- Honors manual overrides (`--threads`, `--batch-size`, `--huge-pages`, `--randomx-mode`, `--randomx-runtime-profile`, `--use-1gb-pages`, `--randomx-prefetch-calibration`, `--no-yield`).
 - Executes a fixed-duration hashing loop (20 seconds) and reports hashes per second via structured logs.
 
 > OxideMiner’s benchmark isn’t synthetic fluff. It’s the _exact_ mining loop used in production, giving you a realistic, apples-to-apples performance baseline. This is useful for validating huge-page configuration, BIOS tweaks, or regression testing after code changes.
@@ -417,7 +448,8 @@ If the node is still syncing, OxideMiner logs a clear warning and keeps polling 
 
 RandomX benefits from large pages and deterministic thread placement. OxideMiner surfaces both knobs:
 
-- `--huge-pages` (or `huge_pages = true`) requests 2 MiB pages for the dataset. Success depends on OS configuration; the miner will log warnings when the allocation cannot be satisfied.
+- `--huge-pages` (or `huge_pages = true`) requests large-page backing for the supported RandomX path. OxideMiner records both the request and the realized backing through `/api/stats` and `/metrics`.
+- `--use-1gb-pages` (or `use_1gb_pages = true`) requests Linux 1GB huge pages for the Fast-mode dataset. This implies large pages and falls back to 2 MiB or standard pages when the host cannot satisfy the request.
 - `--affinity` pins worker threads using `core_affinity` to reduce scheduler jitter.
 
 > The options above give RandomX the low-latency memory access it was designed for and prevent CPU scheduler jitter from eating your hashrate.
@@ -437,7 +469,7 @@ Setting `--api-port` starts the HTTP server on `<api_bind>:<PORT>`. `--api-bind`
 - `/dashboard.css`, `/dashboard.js`, `/img/*`: Embedded static assets. Override via `--dashboard-dir` for local UI development.
 - `/plugins/themes`: Default dashboard Themes page (hamburger menu -> Plugins -> Themes).
 - `/api/plugins/themes`: JSON manifest of built-in and plugin themes stored under `plugins/themes/`.
-- `/api/stats`: JSON payload summarizing hashrate, total hashes, share counts, mining duration, system uptime (via `sysinfo`), pool metadata, and build information.
+- `/api/stats`: JSON payload summarizing hashrate, total hashes, share counts, mining duration, system uptime (via `sysinfo`), pool metadata, build information, and the requested-versus-realized `oxide-randomx` runtime state.
 - `/metrics`: Plain-text metrics for Prometheus and similar collectors.
 
 ### Metrics reference
@@ -468,6 +500,12 @@ oxide_solo_zmq_last_event_timestamp_seconds <u64>
 oxide_solo_zmq_last_topic{topic} 1
 oxide_pool_connected <0|1>
 oxide_tls_enabled <0|1>
+oxide_randomx_requested_info{mode,runtime_profile,large_pages,use_1gb_pages,calibration_path} 1
+oxide_randomx_runtime_info{mode,requested_runtime_profile,effective_runtime_profile,jit_active,calibration_status} 1
+oxide_randomx_scratchpad_large_pages <0|1>
+oxide_randomx_scratchpad_huge_page_size_bytes <usize>
+oxide_randomx_dataset_large_pages <0|1>
+oxide_randomx_dataset_huge_page_size_bytes <usize>
 version <string>
 commit_hash <string>
 commit_hash_short <string>
