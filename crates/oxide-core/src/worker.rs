@@ -209,14 +209,14 @@ mod engine {
     pub struct Cache {
         inner: ThreadSafeCache,
         pub(crate) key: Vec<u8>,
-        pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
+        pub(crate) flags: RandomXFlag,
     }
 
     #[derive(Clone)]
     pub struct Dataset {
         pub(crate) inner: RandomXDataset,
-        pub(crate) _flags: RandomXFlag, // intentionally unused (for future)
-        pub(crate) _key: Vec<u8>,       // intentionally unused (for future)
+        pub(crate) flags: RandomXFlag,
+        pub(crate) _key: Vec<u8>, // intentionally unused (for future)
     }
 
     // RandomX cache/dataset objects are read-only after initialization and may be shared across
@@ -316,6 +316,20 @@ mod engine {
         flags
     }
 
+    fn fullmem_vm_flags(
+        requested_flags: RandomXFlag,
+        cache_flags: RandomXFlag,
+        dataset_flags: RandomXFlag,
+    ) -> RandomXFlag {
+        let mut effective_flags = requested_flags;
+        if !cache_flags.contains(RandomXFlag::FLAG_LARGE_PAGES)
+            || !dataset_flags.contains(RandomXFlag::FLAG_LARGE_PAGES)
+        {
+            effective_flags &= !RandomXFlag::FLAG_LARGE_PAGES;
+        }
+        effective_flags
+    }
+
     pub fn new_cache(flags: Option<RandomXFlag>, key: &[u8]) -> Result<Cache> {
         let mut flags = flags.unwrap_or_else(default_flags);
 
@@ -336,7 +350,7 @@ mod engine {
         Ok(Cache {
             inner: ThreadSafeCache(cache),
             key: key.to_vec(),
-            _flags: flags,
+            flags,
         })
     }
 
@@ -359,7 +373,7 @@ mod engine {
                 let dataset = RandomXDataset::new(flags, cache_clone.inner.clone_inner(), 0)?;
                 Ok(Dataset {
                     inner: dataset,
-                    _flags: flags,
+                    flags,
                     _key: cache_clone.key.clone(),
                 })
             })
@@ -462,7 +476,7 @@ mod engine {
 
         let flags = default_flags();
         let cache = new_cache(Some(flags), seed_key)?;
-        let dataset = new_dataset(Some(flags), &cache, threads)?;
+        let dataset = new_dataset(Some(cache.flags), &cache, threads)?;
         *guard = Some(SharedDataset {
             key: seed_key.to_vec(),
             cache: cache.clone(),
@@ -478,7 +492,31 @@ mod engine {
         dataset: &Dataset,
         flags: Option<RandomXFlag>,
     ) -> Result<Vm> {
-        new_vm(flags, Some(cache), Some(dataset))
+        let requested_flags = flags.unwrap_or(dataset.flags);
+        let effective_flags = fullmem_vm_flags(requested_flags, cache.flags, dataset.flags);
+        new_vm(Some(effective_flags), Some(cache), Some(dataset))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn fullmem_vm_flags_drop_large_pages_after_fallback() {
+            let requested = RandomXFlag::FLAG_FULL_MEM
+                | RandomXFlag::FLAG_JIT
+                | RandomXFlag::FLAG_HARD_AES
+                | RandomXFlag::FLAG_LARGE_PAGES;
+            let cache_flags = requested & !RandomXFlag::FLAG_LARGE_PAGES;
+            let dataset_flags = cache_flags;
+
+            let effective = fullmem_vm_flags(requested, cache_flags, dataset_flags);
+
+            assert!(!effective.contains(RandomXFlag::FLAG_LARGE_PAGES));
+            assert!(effective.contains(RandomXFlag::FLAG_FULL_MEM));
+            assert!(effective.contains(RandomXFlag::FLAG_JIT));
+            assert!(effective.contains(RandomXFlag::FLAG_HARD_AES));
+        }
     }
 }
 
