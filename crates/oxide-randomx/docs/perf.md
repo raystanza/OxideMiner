@@ -35,8 +35,10 @@ For current `HEAD`, the parent-safe integration profile is:
   emitted outcome fields instead of assuming success
 - host-local prefetch calibration is optional; the default mapping remains
   unchanged
-- keep `simd-blockio`, `simd-xor-paths`, `threaded-interp`, and
-  `superscalar-accel-proto` out of default parent measurements
+- keep `simd-blockio`, `simd-xor-paths`, and `threaded-interp` fenced out of
+  default parent measurements
+- `superscalar-accel-proto` is the only active research lane and still stays
+  out of default parent measurements
 - do not treat matrix-only "best config" tables as policy authority
 
 Recommended supported-path measurement:
@@ -52,7 +54,7 @@ Authority:
 - `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md`
 - `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`
 - `perf_results/P1_2_simd_blockio_cross_host_policy_2026-03-08.md`
-- `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`
+- `docs/superscalar-research-program.md`
 
 ---
 
@@ -178,8 +180,8 @@ Notes:
   SuperscalarHash/cache-item path.
 * It is **not** a replacement for split host-baseline authority docs:
   `docs/perf-results-amd.md` and `docs/perf-results-intel.md`.
-* Current superscalar authority memo:
-  `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`.
+* Current superscalar research-program surface:
+  `docs/superscalar-research-program.md`.
 * Historical v7 prototype memo: `docs/superscalar-prototype-v7-07.md`.
 
 ---
@@ -280,12 +282,17 @@ Allows reduced-size “small fast bench” config (not representative of real Ra
 Status policy:
 
 * Experimental and currently parked for the supported parent path.
+* It is the only active research lane in the current crate, but it remains
+  fenced off from the supported parent path.
 * Keep feature-gated; do not treat it as a default-on or production integration surface.
 * The March 26, 2026 v9 disposition memo is the current policy authority.
   Light-mode upside remains real on clean Intel Linux and AMD Linux hosts, but
   AMD Windows remains mixed or rerun-sensitive, and Fast mode is still not
   promotive overall.
 * Keep the scalar reference path and use `superscalar_hash_harness --impl scalar` for differential capture.
+* Fresh AMD `23/113` Windows follow-up is not an active near-term lane; it
+  depends on restored access to the original host or a separately labeled new
+  host class.
 * Do not treat matrix-only "best config" rankings as policy authority for this
   branch.
 * Any future promotion needs exact correctness, repeated-run stability on the
@@ -295,7 +302,7 @@ Status policy:
 
 Current disposition/evidence artifacts:
 
-* Primary decision memo: `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`
+* Research program / stop rules: `docs/superscalar-research-program.md`
 * Integrated feature-interaction memo: `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`
 * AMD `23/113` host-unavailability memo: `perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md`
 * Clean AMD duplicate-family capture: `perf_results/AMD/v8_05_superscalar_prototype_amd_fam23_mod8_2026-03-11.md`
@@ -303,6 +310,7 @@ Current disposition/evidence artifacts:
 * Clean Intel duplicate-family capture: `perf_results/Intel/v8_06_superscalar_prototype_intel_fam6_mod45_2026-03-11.md`
 * Clean Intel novel-family capture: `perf_results/Intel/v8_06_superscalar_prototype_intel_fam6_mod58_2026-03-11.md`
 * Historical AMD rerun: `perf_results/AMD/v7_07_superscalar_prototype_amd_fam23_mod8_2026-03-06.md`
+* Historical prototype memo: `docs/superscalar-prototype-v7-07.md`
 
 ### `threaded-interp` (parked experimental)
 
@@ -406,7 +414,7 @@ Current disposition/evidence artifacts:
 | Large pages / Linux 1GB request semantics | Supported control-plane behavior; verify realized backing | Explicit request, best-effort outcome | `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`, `docs/perf.md` |
 | Host-local prefetch calibration | Supported optional host-local override | Off by default; opt-in per host | `perf_results/unlabeled/P0_5_clean_prefetch_cross_host_decision_2026-03-01.md`, `docs/oxideminer-integration-profile.md` |
 | `threaded-interp` | Closed negative result; parked experimental | Off by default; runtime-gated for investigation only | `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`, `perf_results/AMD/P0_2_regression_memo_2026-02-07.md` (historical regression base) |
-| `superscalar-accel-proto` | Parked experimental research lane | Off by default; feature-gated only | `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` |
+| `superscalar-accel-proto` | Parked experimental research lane | Off by default; feature-gated only | `docs/superscalar-research-program.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` |
 | `simd-blockio` | Experimental, CPU-conditional | Off by default | `perf_results/P1_2_simd_blockio_cross_host_policy_2026-03-08.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` |
 | `simd-xor-paths` | Experimental follow-up; exploratory direct A/B only | Off by default | `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`, `perf_results/AMD/P3_3_simd_xor_paths_disposition_2026-02-15.md` (historical exploratory base) |
 

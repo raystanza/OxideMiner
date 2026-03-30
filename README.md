@@ -385,7 +385,10 @@ solo_zmq = "tcp://127.0.0.1:18083"
 - Supported validation build: `jit + jit-fastregs + bench-instrument`
 - Supported runtime profiles: `jit-fastregs` (default), `jit-conservative`, `interpreter`
 - Supported runtime modes: `fast` (default) and `light`
-- Experimental `simd-blockio`, `simd-xor-paths`, `threaded-interp`, and `superscalar-accel-proto` remain off by default.
+- `simd-blockio` and `simd-xor-paths` remain fenced experimental features,
+  `threaded-interp` remains a closed negative result, and
+  `superscalar-accel-proto` remains the only active research lane; all stay off
+  by default.
 - For a repeatable real-host validation path and the current host matrix, see [`docs/oxide-randomx-supported-profile-validation.md`](docs/oxide-randomx-supported-profile-validation.md).
 
 ### Benchmark mode

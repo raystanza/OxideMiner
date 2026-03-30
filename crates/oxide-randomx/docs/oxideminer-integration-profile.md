@@ -19,7 +19,6 @@ Related policy memos:
 - `perf_results/unlabeled/P0_5_clean_prefetch_cross_host_decision_2026-03-01.md`
 - `perf_results/P2_2_jit_fastregs_cross_host_decision_2026-03-01.md`
 - `perf_results/P1_2_simd_blockio_cross_host_policy_2026-03-08.md`
-- `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`
 
 ## v10 Supported Build Contract
 

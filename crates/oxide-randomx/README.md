@@ -43,7 +43,9 @@ instead of inferring the contract from the whole tree.
 | `production` | `cargo build --release --features "jit jit-fastregs"` | supported throughput path |
 | `validation` | `cargo build --release --features "jit jit-fastregs bench-instrument"` | same path plus instrumentation for CI, perf gates, and integration bring-up |
 | supported runtime fallbacks | `jit-conservative`, then `interpreter` | keep the same prefetch and page-request policy |
-| non-default experimental | `simd-blockio`, `simd-xor-paths`, `threaded-interp`, `superscalar-accel-proto` | not part of the shipped default path |
+| fenced experimental | `simd-blockio`, `simd-xor-paths` | not part of the shipped default path |
+| closed negative | `threaded-interp` | parked, off by default, investigation only |
+| active research-only | `superscalar-accel-proto` | only active research lane; still off by default |
 
 No `Intel` / `AMD` release split is supported on current `HEAD`.
 The March 11, 2026 cross-host baseline keeps baseline `jit-fastregs` as the
@@ -66,8 +68,11 @@ unchanged by the latest integrated `ff_*` sweep:
 - supported fallbacks: conservative JIT (`jit=true`, `jit_fast_regs=false`),
   then interpreter (`jit=false`)
 - supported optional control: host-local prefetch calibration
-- experimental or parked and off by default:
-  `simd-blockio`, `simd-xor-paths`, `threaded-interp`,
+- fenced experimental and off by default:
+  `simd-blockio`, `simd-xor-paths`
+- closed negative and off by default:
+  `threaded-interp`
+- only active research lane, still off by default:
   `superscalar-accel-proto`
 
 Current authority chain:
@@ -119,9 +124,9 @@ not a replacement for broader OxideMiner parent validation on real hosts.
 | `jit`              | Supported x86_64 JIT backend for the conservative parent fallback path                                     |
 | `jit-fastregs`     | Supported higher-throughput JIT variant for the current parent default path (requires `jit`)               |
 | `bench-instrument` | Validation-build instrumentation for CI, perf gates, and parent bring-up                                   |
-| `simd-blockio`     | Experimental AVX2 scratchpad block I/O (CPU-conditional; validate locally before enabling)                 |
-| `simd-xor-paths`   | Experimental AVX2 XOR finish-path prototype (opt-in follow-up to `simd-blockio`)                           |
-| `superscalar-accel-proto` | Parked experimental superscalar research prototype; not a near-promotion candidate                |
+| `simd-blockio`     | Fenced experimental AVX2 scratchpad block I/O (CPU-conditional; validate locally before enabling)          |
+| `simd-xor-paths`   | Fenced experimental AVX2 XOR finish-path prototype (opt-in follow-up to `simd-blockio`)                    |
+| `superscalar-accel-proto` | Only active research lane; still feature-gated, off by default, and not a near-promotion candidate |
 | `threaded-interp`  | Closed negative result; parked experimental threaded dispatch (opt-in via `OXIDE_RANDOMX_THREADED_INTERP=1`) |
 | `fast-decode`      | Optimized instruction decoding (enabled by default)                                                        |
 | `unsafe-config`    | Expert `RandomXConfigBuilder` for non-default parameters                                                   |
@@ -142,7 +147,7 @@ not the raw library constructor defaults.
 | `simd-blockio` | Experimental, CPU-conditional | Off by default | `perf_results/P1_2_simd_blockio_cross_host_policy_2026-03-08.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` |
 | `simd-xor-paths` | Experimental follow-up; exploratory direct A/B only | Off by default | `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`, `perf_results/AMD/P3_3_simd_xor_paths_disposition_2026-02-15.md` (historical exploratory base) |
 | `threaded-interp` | Closed negative result; parked experimental | Off by default; runtime-gated for investigation only | `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`, `perf_results/AMD/P0_2_regression_memo_2026-02-07.md` (historical regression base) |
-| `superscalar-accel-proto` | Parked experimental research lane | Off by default; feature-gated only | `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` |
+| `superscalar-accel-proto` | Parked experimental research lane | Off by default; feature-gated only | `docs/superscalar-research-program.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` |
 
 Notes:
 
@@ -360,6 +365,8 @@ still has only exploratory direct A/B evidence.
 - Local runtime disable override: `OXIDE_RANDOMX_SUPERSCALAR_ACCEL_PROTO_DISABLE=1`.
 - Current status is a parked research lane, not a narrow supported opt-in
   candidate.
+- It is the only active research lane in the current crate; other experimental
+  branches remain fenced off or closed.
 - Clean Intel Linux and AMD Linux hosts still show real Light-mode upside, but
   AMD Windows remains mixed or rerun-sensitive, and Fast mode is still not
   promotive overall.
@@ -367,6 +374,9 @@ still has only exploratory direct A/B evidence.
   the supported parent default path.
 - Keep the scalar reference path and use
   `superscalar_hash_harness --impl scalar` for differential validation.
+- Fresh AMD `23/113` Windows follow-up is not an active near-term lane; it
+  depends on restored access to the original host or a separately labeled new
+  host class.
 - Reopen only after exact correctness, repeated same-SHA stability on the
   measured hosts, material Light improvement on clean AMD and Intel authority
   hosts, no practical Fast regressions, and bounded disagreement between
@@ -374,9 +384,10 @@ still has only exploratory direct A/B evidence.
 - Do not treat matrix-only "best config" rankings as policy authority for this
   branch.
 - Current rationale/evidence are documented in:
-  - `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`
+  - `docs/superscalar-research-program.md`
   - `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`
   - `perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md`
+  - `docs/superscalar-prototype-v7-07.md`
 
 ## Large Pages
 

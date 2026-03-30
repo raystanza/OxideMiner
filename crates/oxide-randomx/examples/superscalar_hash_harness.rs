@@ -1,8 +1,11 @@
-// Focused SuperscalarHash/cache-item microbench harness.
+// Research-only SuperscalarHash/cache-item differential harness.
 //
 // This harness isolates:
 // - `compute_item_words_in_place(...)`
 // - scalar superscalar program execution used by that path
+//
+// It is intended to compare the active implementation against the scalar
+// reference and is not a supported parent-path benchmark surface.
 
 use std::env;
 use std::process;
@@ -143,7 +146,9 @@ fn parse_usize(input: Option<&str>) -> usize {
 fn usage_and_exit() -> ! {
     eprintln!(
         "Usage: superscalar_hash_harness [--iters N] [--warmup N] [--items N] \
-         [--config test-small|default] [--impl active|scalar] [--format human|json|csv]"
+         [--config test-small|default] [--impl active|scalar] [--format human|json|csv]\n\
+         Research-only differential harness for superscalar-accel-proto.\n\
+         Compare --impl active against --impl scalar; do not treat this as a supported parent-path benchmark."
     );
     process::exit(1);
 }
