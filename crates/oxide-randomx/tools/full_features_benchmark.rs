@@ -18,7 +18,7 @@ const CAPTURE_DIR_PREFIX: &str = "ff";
 const PROVENANCE_ARTIFACT: &str = "meta/provenance.txt";
 const SUMMARY_ARTIFACT: &str = "meta/summary.json";
 const OVERVIEW_ARTIFACT: &str = "meta/overview.md";
-const AUTHORITY_WORKFLOW_VERSION: &str = "v9";
+const AUTHORITY_WORKFLOW_VERSION: &str = "v10";
 
 const GIT_SHA: &str = env!("OXIDE_RANDOMX_GIT_SHA");
 const GIT_SHA_SHORT: &str = env!("OXIDE_RANDOMX_GIT_SHA_SHORT");
@@ -440,7 +440,7 @@ fn build_authority_workflow(
                 true,
                 "AMD R5 3600 / Win11".to_string(),
                 EvidenceTier::Supporting,
-                "canonical v9 host class, but known rerun instability keeps captures in the supporting tier until repeated same-SHA behavior is reviewed".to_string(),
+                "canonical v10 host class, but known rerun instability keeps captures in the supporting tier until repeated same-SHA behavior is reviewed".to_string(),
                 RerunExpectation::RepeatedSameShaRequired,
                 "same-SHA repeated runs are required because the 2026-03-18 and 2026-03-20 captures changed realized large-page backing and integrated superscalar behavior".to_string(),
             ),
@@ -448,7 +448,7 @@ fn build_authority_workflow(
                 true,
                 "AMD R5 2600 / Win11".to_string(),
                 EvidenceTier::Authority,
-                "canonical v9 host class for Windows AMD Zen+ evidence".to_string(),
+                "canonical v10 host class for Windows AMD Zen+ evidence".to_string(),
                 RerunExpectation::SingleCaptureSufficient,
                 "single clean capture is normally sufficient for this host class".to_string(),
             ),
@@ -456,7 +456,7 @@ fn build_authority_workflow(
                 true,
                 "AMD R5 2600 / Ubuntu".to_string(),
                 EvidenceTier::Authority,
-                "canonical v9 host class for Linux AMD Zen+ evidence".to_string(),
+                "canonical v10 host class for Linux AMD Zen+ evidence".to_string(),
                 RerunExpectation::SingleCaptureSufficient,
                 "single clean capture is normally sufficient for this host class".to_string(),
             ),
@@ -464,7 +464,7 @@ fn build_authority_workflow(
                 true,
                 "Intel Dual-Xeon / Ubuntu".to_string(),
                 EvidenceTier::Authority,
-                "canonical v9 host class for dual-socket Intel Linux evidence".to_string(),
+                "canonical v10 host class for dual-socket Intel Linux evidence".to_string(),
                 RerunExpectation::SingleCaptureSufficient,
                 "single clean capture is normally sufficient for this host class".to_string(),
             ),
@@ -472,7 +472,7 @@ fn build_authority_workflow(
                 true,
                 "Intel i5 / Ubuntu".to_string(),
                 EvidenceTier::Authority,
-                "canonical v9 host class for small Intel Linux evidence".to_string(),
+                "canonical v10 host class for small Intel Linux evidence".to_string(),
                 RerunExpectation::SingleCaptureSufficient,
                 "single clean capture is normally sufficient for this host class".to_string(),
             ),
@@ -483,7 +483,7 @@ fn build_authority_workflow(
                     host.vendor, host.family, host.model, host.os_name
                 ),
                 EvidenceTier::Exploratory,
-                "outside the documented v9 canonical host inventory; use for exploratory evidence only".to_string(),
+                "outside the documented v10 canonical host inventory; use for exploratory evidence only".to_string(),
                 RerunExpectation::SingleCaptureSufficient,
                 "non-canonical hosts are exploratory until the host inventory is intentionally extended".to_string(),
             ),

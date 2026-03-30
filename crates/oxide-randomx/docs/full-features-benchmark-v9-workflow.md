@@ -1,6 +1,7 @@
-# Full Features Benchmark v9 Workflow
+# Full Features Authority Workflow
 
-This document defines the v9 authority workflow for `tools/full_features_benchmark.rs`.
+This document defines the v10 authority workflow for
+`tools/full_features_benchmark.rs` and `tools/full_features_authority.rs`.
 
 Public beta note:
 
@@ -17,15 +18,18 @@ It exists to answer four practical questions:
 3. what artifacts should come back
 4. how to classify the result as authority, supporting, or exploratory evidence
 
-Pre-v9 note:
+Compatibility note:
 
-- The new workflow metadata is additive.
-- Older `ff_*` captures remain valid historical artifacts, but they will not contain the new `host_class_id`, `capture_evidence_tier`, rerun-group, or page-backing summary fields.
-- Do not silently treat missing v9 metadata on older captures as negative evidence.
+- The workflow metadata is additive.
+- Older `ff_*` captures remain valid historical artifacts, but they may not
+  contain the `host_class_id`, `capture_evidence_tier`, rerun-group, or
+  page-backing summary fields used by the in-tree v10 workflow.
+- Do not silently treat missing v10-era metadata on older captures as negative
+  evidence.
 
 ## Canonical Host Inventory
 
-The v9 canonical host inventory is currently:
+The v10 canonical host inventory is currently:
 
 | `host_class_id` | Label | Expected evidence tier when clean | Rerun expectation |
 | --- | --- | --- | --- |
@@ -64,7 +68,7 @@ Interpretation rules:
 
 ## Clean Provenance
 
-A capture is clean for v9 authority purposes only when all of these hold:
+A capture is clean for v10 authority purposes only when all of these hold:
 
 - `git_dirty=false`
 - full feature bundle is compiled:
@@ -180,10 +184,11 @@ That still emits one executable plus one instructions file, but the instructions
 
 ## Run Locally
 
-Representative local command:
+Representative local command from the `OxideMiner` repo root:
 
 ```bash
-target/release/full_features_benchmark --out-dir perf_results/<bucket>/ff_<host>_<timestamp>
+cargo run -p oxide-randomx --release --bin full_features_benchmark --features "jit jit-fastregs bench-instrument threaded-interp simd-blockio simd-xor-paths superscalar-accel-proto" -- \
+  --out-dir crates/oxide-randomx/perf_results/<bucket>/ff_<host>_<timestamp>
 ```
 
 Useful flags:
@@ -285,9 +290,10 @@ For any new `ff_*` directory:
 
 ## Current Authority Index
 
-The checked-in machine-readable source of truth for the current full-features authority set is:
+The checked-in machine-readable source of truth for the current full-features
+authority set is:
 
-- `perf_results/full_features_authority_index_v9.json`
+- `crates/oxide-randomx/perf_results/full_features_authority_index_v10.json`
 
 That index records, per `host_class_id`:
 
@@ -300,18 +306,19 @@ That index records, per `host_class_id`:
 Validate the index before changing it:
 
 ```bash
-cargo run --release --bin full_features_authority -- validate-index
+cargo run -p oxide-randomx --release --bin full_features_authority -- validate-index
 ```
 
 That command proves the checked-in paths still exist and that the indexed provenance still matches the capture artifacts.
 
 ## Compare A New Capture
 
-Compare any new or historical `ff_*` directory against the indexed authority for its host class:
+Compare any new or historical `ff_*` directory against the indexed authority for
+its host class:
 
 ```bash
-cargo run --release --bin full_features_authority -- compare \
-  --capture perf_results/AMD/ff_amd_fam23_mod113_20260318_210634
+cargo run -p oxide-randomx --release --bin full_features_authority -- compare \
+  --capture crates/oxide-randomx/perf_results/AMD/ff_amd_fam23_mod113_windows_20260318_210634
 ```
 
 The comparer is intentionally narrow. It reads:
@@ -320,9 +327,10 @@ The comparer is intentionally narrow. It reads:
 - `meta/pair_summary.csv`
 - `meta/matrix_index.csv`
 
-That keeps it compatible with the pre-v9 captures that do not yet emit `host_class_id`, `capture_evidence_tier`, or `rerun_group_id`.
+That keeps it compatible with older captures that do not yet emit
+`host_class_id`, `capture_evidence_tier`, or `rerun_group_id`.
 
-The compare report is organized around the signals that matter for v9:
+The compare report is organized around the signals that matter for v10:
 
 - `provenance_identity`: host/OS/compiler/SHA/settings identity
 - `rerun_relationship`: `same_capture`, `same_sha_same_settings`, `same_sha_settings_drift`, or `different_sha_same_host_class`
@@ -335,15 +343,16 @@ Use that compare output before adopting a new capture or writing any memo about 
 
 When a new capture should replace or supplement the current authority set:
 
-1. Run `full_features_benchmark` with the v9 workflow settings and copy the full `ff_*` directory back into `perf_results/...`.
-2. Run `cargo run --release --bin full_features_authority -- compare --capture <new ff_* dir>`.
-3. Review the rerun relationship, provenance identity, realized page backing, and ABBA pair deltas.
-4. If the repo should adopt the new capture, edit `perf_results/full_features_authority_index_v9.json` intentionally in the same patch.
-5. Move the prior authority path into `related_captures` when it remains useful as rerun, supporting, or superseded context.
-6. Re-run `cargo run --release --bin full_features_authority -- validate-index`.
+1. Run `full_features_benchmark` with the v10 workflow settings.
+2. Run it from the repo root with an explicit crate-local destination such as `--out-dir crates/oxide-randomx/perf_results/<bucket>/ff_<host>_<timestamp>`.
+3. Run `cargo run -p oxide-randomx --release --bin full_features_authority -- compare --capture <new ff_* dir>`.
+4. Review the rerun relationship, provenance identity, realized page backing, and ABBA pair deltas.
+5. If the repo should adopt the new capture, edit `crates/oxide-randomx/perf_results/full_features_authority_index_v10.json` intentionally in the same patch.
+6. Move the prior authority path into `related_captures` when it remains useful as rerun, supporting, or superseded context.
+7. Re-run `cargo run -p oxide-randomx --release --bin full_features_authority -- validate-index`.
 
 Update rules:
 
 - Do not replace an authority path without also preserving the reasoning in `authority_classification`, `related_captures`, or `rerun_stability`.
-- Do not silently reinterpret older captures as if they already carried v9 metadata; the comparer infers host class from provenance when needed, but that is a compatibility bridge, not a retroactive schema rewrite.
+- Do not silently reinterpret older captures as if they already carried v10 metadata; the comparer infers host class from provenance when needed, but that is a compatibility bridge, not a retroactive schema rewrite.
 - Keep index edits reviewable. Prefer changing only the relevant entry, notes, and related capture list in the same PR as the new capture.

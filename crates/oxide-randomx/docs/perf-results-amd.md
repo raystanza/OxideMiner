@@ -5,7 +5,8 @@ This document is the canonical AMD-host performance-results summary for the repo
 - Measurement commands/output schema live in `docs/perf.md`.
 - Planning/state disposition lives in `dev/ROADMAPv9.md`.
 - Current supported-path baseline authority lives in `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md`.
-- Current integrated experimental-feature authority lives in `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`.
+- Current in-tree integrated experimental-feature authority workflow lives in `docs/full-features-benchmark-v9-workflow.md`.
+- Current in-tree integrated experimental-feature authority index lives in `perf_results/full_features_authority_index_v10.json`.
 - Current superscalar feature disposition lives in `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`.
 - Supported-path baseline snapshot lives in `perf_results/PERF_COMP.md`.
 - Raw evidence and decision memos live in `perf_results/`.

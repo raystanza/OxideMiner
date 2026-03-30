@@ -76,10 +76,12 @@ Current authority chain:
 - lifecycle harness: `docs/oxideminer-integration-harness.md`
 - supported-path baseline authority:
   `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md`
-- integrated feature-interaction authority:
-  `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`
+- full-features authority workflow:
+  `docs/full-features-benchmark-v9-workflow.md`
 - indexed full-features host set:
-  `perf_results/full_features_authority_index_v9.json`
+  `perf_results/full_features_authority_index_v10.json`
+- in-tree authority capsules:
+  `perf_results/README.md`
 
 Lifecycle harness example:
 

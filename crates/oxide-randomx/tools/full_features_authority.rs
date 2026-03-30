@@ -5,7 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 
-const DEFAULT_INDEX_PATH: &str = "perf_results/full_features_authority_index_v9.json";
+const DEFAULT_INDEX_PATH: &str =
+    "crates/oxide-randomx/perf_results/full_features_authority_index_v10.json";
 const PROVENANCE_ARTIFACT: &str = "meta/provenance.txt";
 const PAIR_SUMMARY_ARTIFACT: &str = "meta/pair_summary.csv";
 const MATRIX_INDEX_ARTIFACT: &str = "meta/matrix_index.csv";
@@ -533,14 +534,19 @@ fn print_usage() {
          Examples:\n\
            cargo run --release --bin full_features_authority -- validate-index\n\
            cargo run --release --bin full_features_authority -- compare \\\n\
-             --capture perf_results/AMD/ff_amd_fam23_mod113_20260318_210634"
+             --capture crates/oxide-randomx/perf_results/AMD/ff_amd_fam23_mod113_windows_20260318_210634"
     );
+}
+
+fn looks_like_repo_root(dir: &Path) -> bool {
+    dir.join("Cargo.toml").is_file()
+        && (dir.join("crates/oxide-randomx").is_dir() || dir.join("perf_results").is_dir())
 }
 
 fn find_repo_root() -> Result<PathBuf, String> {
     let mut dir = env::current_dir().map_err(|err| format!("failed to read cwd: {err}"))?;
     loop {
-        if dir.join("Cargo.toml").is_file() && dir.join("perf_results").is_dir() {
+        if looks_like_repo_root(&dir) {
             return Ok(dir);
         }
         if !dir.pop() {
@@ -1852,12 +1858,16 @@ mod tests {
         fs::write(meta_dir.join("matrix_index.csv"), matrix_index).expect("write matrix index");
     }
 
-    fn test_pair_summary_csv(include_v9_statuses: bool, delta_pct: f64, signal: &str) -> String {
+    fn test_pair_summary_csv(
+        include_pair_statuses: bool,
+        delta_pct: f64,
+        signal: &str,
+    ) -> String {
         let mut header = "pair_label,family,config,mode,page_profile,delta_pct_candidate_vs_baseline,signal_classification".to_string();
         let mut row = format!(
             "baseline_vs_superscalar_proto,superscalar_proto,Interpreter,Light,large_pages_on,{delta_pct:.6},{signal}"
         );
-        if include_v9_statuses {
+        if include_pair_statuses {
             header.push_str(",baseline_dataset_large_pages_status,baseline_dataset_1gb_pages_status,baseline_scratchpad_large_pages_status,baseline_scratchpad_1gb_pages_status,candidate_dataset_large_pages_status,candidate_dataset_1gb_pages_status,candidate_scratchpad_large_pages_status,candidate_scratchpad_1gb_pages_status");
             row.push_str(
                 ",all_true,all_false,all_true,all_false,all_true,all_false,all_true,all_false",
@@ -1881,13 +1891,13 @@ mod tests {
         os_build_or_kernel: &str,
         git_sha: &str,
         rustc: &str,
-        include_v9: bool,
+        include_authority_metadata: bool,
     ) -> String {
         let mut body = format!(
             "timestamp=2026-03-20T12:00:00-04:00\nhost_tag=amd_fam23_mod113\nvendor=AuthenticAMD\nfamily=23\nmodel=113\nstepping=0\ncpu_model_string=AMD test CPU\nos_name={os_name}\nos_version=2009\nos_build_or_kernel={os_build_or_kernel}\nlogical_threads=12\nthreads=12\nperf_iters=50\nperf_warmup=5\npage_profiles=pages_off,large_pages_on\nabba_page_profile=large_pages_on\ngit_sha={git_sha}\ngit_sha_short={}\ngit_dirty=false\nrustc={rustc}\ncompiled_features=jit jit-fastregs bench-instrument threaded-interp simd-blockio simd-xor-paths superscalar-accel-proto\n",
             &git_sha[..7]
         );
-        if include_v9 {
+        if include_authority_metadata {
             body.push_str("host_class_id=amd_fam23_mod113_windows\ncapture_evidence_tier=supporting\nrerun_group_id=amd_fam23_mod113_windows_17ef718_rustc193\nrerun_expectation=repeated_same_sha_required\n");
         }
         body
@@ -1897,7 +1907,7 @@ mod tests {
         format!(
             r#"{{
   "schema_version": 1,
-  "workflow_version": "v9",
+  "workflow_version": "v10",
   "artifact_kind": "full_features_authority_index",
   "analysis_memo": "dev/full_features_benchmark_ff_analysis_2026-03-19.md",
   "entries": [
@@ -1950,6 +1960,17 @@ mod tests {
     }
 
     #[test]
+    fn looks_like_repo_root_accepts_oxideminer_layout_without_root_perf_results() {
+        let temp_dir = temp_root("repo_root_shape");
+        fs::write(temp_dir.join("Cargo.toml"), "[workspace]\nmembers=[]\n").expect("write cargo");
+        fs::create_dir_all(temp_dir.join("crates/oxide-randomx")).expect("create crate dir");
+
+        assert!(looks_like_repo_root(&temp_dir));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn load_authority_index_rejects_duplicate_host_class_ids() {
         let temp_dir = temp_root("duplicate_index");
         let index_path = temp_dir.join("index.json");
@@ -1957,7 +1978,7 @@ mod tests {
             &index_path,
             r#"{
   "schema_version": 1,
-  "workflow_version": "v9",
+  "workflow_version": "v10",
   "artifact_kind": "full_features_authority_index",
   "analysis_memo": "memo",
   "entries": [
@@ -2131,8 +2152,9 @@ mod tests {
             &test_matrix_index_csv(&["true", "true"]),
         );
 
-        let index_rel = "perf_results/full_features_authority_index_v9.json";
+        let index_rel = "crates/oxide-randomx/perf_results/full_features_authority_index_v10.json";
         let index_path = repo_root.join(index_rel);
+        fs::create_dir_all(index_path.parent().expect("index parent")).expect("create index dir");
         fs::write(&index_path, test_index_json(authority_rel, related_rel)).expect("write index");
 
         let index = load_authority_index(&index_path).expect("load index");

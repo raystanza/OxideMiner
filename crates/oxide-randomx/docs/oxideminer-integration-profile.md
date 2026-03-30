@@ -9,7 +9,8 @@ full tree, use `docs/oxideminer-supported-build-contract.md` and the matching
 Current authority chain:
 
 - `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md`
-- `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`
+- `docs/full-features-benchmark-v9-workflow.md`
+- `perf_results/full_features_authority_index_v10.json`
 
 Related policy memos:
 
@@ -57,7 +58,7 @@ The measured supported-path ordering remains stable on that host set:
 
 Important caveat:
 
-- `perf_results/full_features_authority_index_v9.json` now separates the clean
+- `perf_results/full_features_authority_index_v10.json` now separates the clean
   integrated authority hosts from supporting-only AMD `23/113`.
 - AMD `23/113` is supporting-only because same-host reruns changed realized
   `large_pages_on` backing and superscalar rows, not because of a dirty-tree
