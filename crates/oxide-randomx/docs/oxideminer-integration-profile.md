@@ -11,6 +11,8 @@ Current authority chain:
 - `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md`
 - `docs/full-features-benchmark-v9-workflow.md`
 - `perf_results/full_features_authority_index_v10.json`
+- `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`
+- `perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md`
 
 Related policy memos:
 
@@ -33,8 +35,8 @@ current `HEAD`.
 
 This project does not support `Intel` / `AMD` release splits on current
 `HEAD`.
-The March 11, 2026 baseline authority and `perf_results/PERF_COMP.md` keep
-baseline `jit-fastregs` as the best supported throughput path on AMD `23/8`,
+The March 11, 2026 baseline authority keeps baseline `jit-fastregs` as the
+best supported throughput path on AMD `23/8`,
 AMD `23/113`, Intel `6/45`, and Intel `6/58`.
 If future specialization is justified, it should come from a narrow runtime
 host classifier or deployment-local calibration / rollout policy, not
@@ -46,7 +48,8 @@ The March 11, 2026 supported-path baseline memo spans these measured host
 classes:
 
 - AMD `23/8` (baseline authority host)
-- AMD `23/113` (packaged supporting host evidence in the current integrated read)
+- AMD `23/113` (historical supporting host evidence; rerun follow-up blocked as
+  of `2026-03-30`)
 - Intel `6/45` (baseline authority host)
 - Intel `6/58` (baseline authority host)
 
@@ -63,6 +66,9 @@ Important caveat:
 - AMD `23/113` is supporting-only because same-host reruns changed realized
   `large_pages_on` backing and superscalar rows, not because of a dirty-tree
   provenance caveat.
+- As of `2026-03-30`, the original AMD `23/113` Windows host is unavailable for
+  rerun follow-up, so the current classification is bounded to historical
+  supporting evidence.
 - The integrated `ff_*` memo adds the current feature-interaction read: none of
   the experimental mixes displaces baseline `jit-fastregs`, and matrix-only
   "best config" tables are supporting context rather than parent policy.
@@ -194,9 +200,8 @@ Reason:
 
 - the current cross-host authority keeps baseline `jit-fastregs` as the
   supported path
-- the integrated `ff_*` memo reinforces that `threaded-interp` is a closed
-  negative result and that `simd-blockio` / `simd-xor-paths` remain
-  non-promotive
+- the integrated v10 authority adds no Tier 1 evidence that reopens
+  `threaded-interp` or promotes `simd-blockio` / `simd-xor-paths`
 - `superscalar-accel-proto` remains a parked experimental research lane, not a
   supported default, because the integrated cross-host story is still mixed on
   AMD Windows, rerun-sensitive on AMD `23/113`, and not promotive in Fast mode

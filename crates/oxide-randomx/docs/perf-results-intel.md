@@ -7,8 +7,9 @@ This document is the canonical Intel-host performance-results summary for the re
 - Current supported-path baseline authority lives in `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md`.
 - Current in-tree integrated experimental-feature authority workflow lives in `docs/full-features-benchmark-v9-workflow.md`.
 - Current in-tree integrated experimental-feature authority index lives in `perf_results/full_features_authority_index_v10.json`.
+- Current in-tree integrated full-features authority memo lives in `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`.
+- Current AMD `23/113` rerun-gap memo lives in `perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md`.
 - Current superscalar feature disposition lives in `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`.
-- Supported-path baseline snapshot lives in `perf_results/PERF_COMP.md`.
 - Raw evidence and decision memos live in `perf_results/`.
 
 ## Capture Date
@@ -307,7 +308,11 @@ Primary memo:
 Alignment summary:
 
 - Measured current-`HEAD` host set is now Intel `6/45`, Intel `6/58`, AMD `23/8`, and AMD `23/113`
-- Clean authority standard is met on Intel `6/45`, Intel `6/58`, and AMD `23/8`; AMD `23/113` remains supporting current-`HEAD` evidence because its raw artifacts report `git_dirty=true`
+- Clean authority standard is met on Intel `6/45`, Intel `6/58`, and AMD `23/8`.
+- AMD `23/113` remains supporting-only from historical evidence: same-SHA
+  `ff_*` reruns on `2026-03-18` and `2026-03-20` changed realized
+  `large_pages_on` backing and the primary Light superscalar row, and the
+  original Windows host is unavailable as of `2026-03-30`.
 - Best-throughput supported ordering is unchanged from older v5/v6/v7 authority: baseline `jit-fastregs` still beats conservative JIT, and conservative JIT still beats interpreter, on every captured host class
 - On Intel `6/58`, Light `jit-fastregs` is only `0.19%` better than conservative JIT, so treat that Light result as a near-tie; Fast mode still clearly favors baseline `jit-fastregs`
 - The parent-supported stable envelope is unchanged: interpreter, conservative JIT, and baseline `jit-fastregs` stay in scope; `simd-blockio`, `simd-xor-paths`, `threaded-interp`, and the dropped P2.2 fast-regs candidate stay outside the default path
@@ -632,16 +637,16 @@ cp "$OUT"/v5_baseline_*_20260217_181405.* <repo>/perf_results/
 
 ## Supported-Path Baseline Snapshot Link
 
-- Supported-path baseline snapshot: `perf_results/PERF_COMP.md` (summary only; primary supported-path authority is `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md`, and current integrated experimental policy lives in `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`).
+- Supported-path baseline authority: `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md` (current integrated experimental policy lives in `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`).
 
 ## Experimental Feature Policy Index (Current Authority)
 
 | Feature | Current Decision | Primary Decision Memo | Host Coverage (Direct A/B) | Provenance Quality |
 | --- | --- | --- | --- | --- |
-| `threaded-interp` | Closed negative result; parked experimental; runtime-default off | `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md` | AMD Family 23 direct A/B base plus v9 integrated authority host set | Historical direct A/B base is exploratory (`git_dirty=true`); current policy read comes from v9 integrated authority |
-| `superscalar-accel-proto` | Parked experimental research lane; feature-gated only; scalar reference retained; not in supported path | `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md` | AMD Family 23 Model 8 + AMD Family 23 Model 113 + Intel Family 6 Model 45 + Intel Family 6 Model 58, with integrated v9 authority on AMD `23/8` Win/Linux and Intel `6/45`/`6/58` Linux | Current v9 disposition keeps the branch parked because clean Light upside is still real, but Fast mode is not promotive overall and AMD Windows remains too mixed for support |
+| `threaded-interp` | Closed negative result; parked experimental; runtime-default off | `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` | AMD Family 23 direct A/B base plus v10 integrated authority host set | Historical direct A/B base is exploratory (`git_dirty=true`); current policy read remains bounded by the v10 integrated authority |
+| `superscalar-accel-proto` | Parked experimental research lane; feature-gated only; scalar reference retained; not in supported path | `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md` | AMD Family 23 Model 8 + AMD Family 23 Model 113 + Intel Family 6 Model 45 + Intel Family 6 Model 58, with v10 integrated authority on AMD `23/8` Win/Linux and Intel `6/45`/`6/58` Linux | Current v9 disposition keeps the branch parked because clean Light upside is still real, but Fast mode is not promotive overall and AMD Windows remains too mixed for support |
 | `simd-blockio` | Keep experimental; CPU-conditional; runtime-default off (Intel Fam6 Model45 auto-disabled); broader policy frozen pending better hosts/Fast stability | `perf_results/P1_2_simd_blockio_cross_host_policy_2026-03-08.md` | AMD Family 23 Model 8 + AMD Family 23 Model 113 + Intel Family 6 Model 45 + Intel Family 6 Model 58 | `v7.11` is now the current authority: host diversity expanded to four family/model classes, but the classifier still stays unchanged because Fast remains too mixed for broader rules |
-| `simd-xor-paths` | Keep experimental; no default-on recommendation; direct A/B remains exploratory | `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md` | AMD Family 23 direct A/B base plus v9 integrated authority host set | Historical direct A/B base is exploratory (`git_dirty=true`, single-family); current policy read stays non-promotive |
+| `simd-xor-paths` | Keep experimental; no default-on recommendation; direct A/B remains exploratory | `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` | AMD Family 23 direct A/B base plus v10 integrated authority host set | Historical direct A/B base is exploratory (`git_dirty=true`, single-family); current policy read stays non-promotive |
 
 Policy note:
 

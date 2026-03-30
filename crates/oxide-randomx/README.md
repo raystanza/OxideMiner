@@ -80,6 +80,10 @@ Current authority chain:
   `docs/full-features-benchmark-v9-workflow.md`
 - indexed full-features host set:
   `perf_results/full_features_authority_index_v10.json`
+- integrated full-features authority:
+  `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`
+- AMD `23/113` rerun-gap memo:
+  `perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md`
 - in-tree authority capsules:
   `perf_results/README.md`
 
@@ -132,25 +136,29 @@ not the raw library constructor defaults.
 | Interpreter | Supported reference / lowest-risk fallback | Fallback only | `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md` |
 | Conservative JIT | Supported performance fallback | Fallback when fast-regs is unavailable or intentionally disabled | `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md` |
 | Baseline `jit-fastregs` | Supported recommended throughput path | Recommended default on JIT-capable x86_64 parents | `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md` |
-| Large pages / Linux 1GB request semantics | Supported control-plane behavior; verify realized backing | Explicit request, best-effort outcome | `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`, `docs/perf.md` |
+| Large pages / Linux 1GB request semantics | Supported control-plane behavior; verify realized backing | Explicit request, best-effort outcome | `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`, `docs/perf.md` |
 | Emitted perf / allocation / prefetch telemetry | Supported observability surface | On in supported harness/examples when built with `bench-instrument` | `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md`, `docs/oxideminer-integration-harness.md` |
 | Host-local prefetch calibration | Supported optional host-local override | Off by default; opt-in per host | `perf_results/unlabeled/P0_5_clean_prefetch_cross_host_decision_2026-03-01.md`, `docs/oxideminer-integration-profile.md` |
-| `simd-blockio` | Experimental, CPU-conditional | Off by default | `perf_results/P1_2_simd_blockio_cross_host_policy_2026-03-08.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md` |
-| `simd-xor-paths` | Experimental follow-up; exploratory direct A/B only | Off by default | `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`, `perf_results/AMD/P3_3_simd_xor_paths_disposition_2026-02-15.md` (historical exploratory base) |
-| `threaded-interp` | Closed negative result; parked experimental | Off by default; runtime-gated for investigation only | `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`, `perf_results/AMD/P0_2_regression_memo_2026-02-07.md` (historical regression base) |
-| `superscalar-accel-proto` | Parked experimental research lane | Off by default; feature-gated only | `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md` |
+| `simd-blockio` | Experimental, CPU-conditional | Off by default | `perf_results/P1_2_simd_blockio_cross_host_policy_2026-03-08.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` |
+| `simd-xor-paths` | Experimental follow-up; exploratory direct A/B only | Off by default | `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`, `perf_results/AMD/P3_3_simd_xor_paths_disposition_2026-02-15.md` (historical exploratory base) |
+| `threaded-interp` | Closed negative result; parked experimental | Off by default; runtime-gated for investigation only | `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`, `perf_results/AMD/P0_2_regression_memo_2026-02-07.md` (historical regression base) |
+| `superscalar-accel-proto` | Parked experimental research lane | Off by default; feature-gated only | `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`, `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` |
 
 Notes:
 
 - `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md` remains
   the default-path authority.
-- `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md` is the
+- `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` is the
   current integrated feature-interaction authority. It keeps baseline
   `jit-fastregs` as the supported path, marks AMD `23/113` Windows as
   supporting-only, and treats matrix-only "best config" tables as supporting
   context rather than policy authority.
 - AMD `23/113` Windows remains supporting integrated evidence with rerun-stability
   caveats, not clean-equivalent authority.
+- As of `2026-03-30`, the original AMD `23/113` Windows host is unavailable
+  for rerun follow-up, so the current classification remains historical
+  supporting evidence only. See
+  `perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md`.
 
 ## Light vs Fast Mode
 
@@ -295,11 +303,11 @@ Unset variables keep defaults. Out-of-range numeric values are ignored.
 - Runtime gate: set `OXIDE_RANDOMX_THREADED_INTERP=1` to enable for investigation.
 - Current disposition: closed negative result on the current host set; not
   recommended for production runs.
-- The integrated `ff_*` memo reinforces that every measured host regressed in
-  Light interpreter mode, so the branch stays parked rather than "optional by
-  default."
+- The current integrated authority adds no new Tier 1 evidence that reopens the
+  earlier regression result, so the
+  branch stays parked rather than "optional by default."
 - Current rationale is documented in:
-  - `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`
+  - `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`
   - Historical regression base: `perf_results/AMD/P0_2_regression_memo_2026-02-07.md`
   - `perf_results/bench_apples_light_threaded_on_p0_2.csv`
 
@@ -311,8 +319,9 @@ Unset variables keep defaults. Out-of-range numeric values are ignored.
 - Current guidance is CPU-conditional: run host-local A/B before enabling.
 - Intel Family 6 Model 45 (Xeon E5-2690 class) is now runtime-disabled by default even when built with `simd-blockio`.
 - The March 11, 2026 current-`HEAD` cross-host baseline refresh did not promote `simd-blockio` into the supported parent path.
-- The integrated `ff_*` memo also produced no promotive ABBA signal for guarded
-  or forced `simd-blockio`, so matrix sweeps do not change the default policy.
+- The current integrated authority adds no Tier 1 evidence that promotes
+  `simd-blockio` into the supported parent path, so matrix sweeps do not
+  change the default policy.
 - Measured host coverage now includes AMD `23/8`, AMD `23/113`, Intel `6/45`,
   and Intel `6/58`, but the policy remains "experimental and local-validation
   only."
@@ -320,7 +329,7 @@ Unset variables keep defaults. Out-of-range numeric values are ignored.
 - Current disposition and evidence are documented in:
   - Primary policy memo: `perf_results/P1_2_simd_blockio_cross_host_policy_2026-03-08.md`
   - Current-`HEAD` cross-host baseline authority: `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md`
-  - Integrated feature-interaction memo: `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`
+  - Integrated feature-interaction memo: `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`
   - Clean Intel duplicate-family confirmation: `perf_results/Intel/v6_10_simd_blockio_intel_family_evidence_2026-03-01.md`
   - Clean AMD duplicate-family confirmation: `perf_results/AMD/v6_11_simd_blockio_amd_family_evidence_2026-03-01.md`
   - Historical policy base: `perf_results/Intel/P1_2_simd_blockio_cross_cpu_disposition_2026-02-16.md`
@@ -335,10 +344,10 @@ still has only exploratory direct A/B evidence.
 - Local override for investigation only: `OXIDE_RANDOMX_SIMD_XOR_PATHS_FORCE=1`.
 - Local runtime disable override: `OXIDE_RANDOMX_SIMD_XOR_PATHS_DISABLE=1`.
 - Current disposition is **keep experimental** (no default-on recommendation in this pass).
-- The integrated `ff_*` memo found only noise relative to forced
-  `simd-blockio`, so there is still no parent-default case.
+- The current integrated authority adds no Tier 1 promotion case for this
+  branch, so there is still no parent-default case.
 - Current rationale/evidence are documented in:
-  - `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`
+  - `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`
   - Historical exploratory base: `perf_results/AMD/P3_3_simd_xor_paths_disposition_2026-02-15.md`
   - `perf_results/v4_11_simd_xor_analysis_20260215_114322.json`
 
@@ -366,7 +375,7 @@ still has only exploratory direct A/B evidence.
   branch.
 - Current rationale/evidence are documented in:
   - `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`
-  - `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`
+  - `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`
   - `perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md`
 
 ## Large Pages
@@ -548,8 +557,7 @@ println!("Scratchpad reads: {} bytes", stats.scratchpad_read_bytes);
 | [docs/perf.md](docs/perf.md)                             | Performance measurement methodology and command recipes         |
 | [docs/perf-results-amd.md](docs/perf-results-amd.md)     | AMD host baseline matrix and evidence-backed disposition index  |
 | [docs/perf-results-intel.md](docs/perf-results-intel.md) | Intel host baseline matrix and evidence-backed disposition index |
-| [perf_results/P2_4_integrated_full_features_authority_2026-03-26.md](perf_results/P2_4_integrated_full_features_authority_2026-03-26.md) | Current integrated full-features authority memo for feature interactions and host classification |
-| [perf_results/PERF_COMP.md](perf_results/PERF_COMP.md)   | Current cross-machine supported-path comparison snapshot        |
+| [perf_results/P2_4_integrated_full_features_authority_2026-03-30.md](perf_results/P2_4_integrated_full_features_authority_2026-03-30.md) | Current integrated full-features authority memo for feature interactions and host classification |
 | [docs/jit.md](docs/jit.md)                               | JIT design, calling convention, W^X strategy                    |
 | [docs/randomx-refs/specs.md](docs/randomx-refs/specs.md) | Full RandomX algorithm specification                            |
 

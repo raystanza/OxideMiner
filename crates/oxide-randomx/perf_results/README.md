@@ -20,6 +20,7 @@ Current source of truth:
 
 - `crates/oxide-randomx/perf_results/full_features_authority_index_v10.json`
 - `crates/oxide-randomx/docs/full-features-benchmark-v9-workflow.md`
+- `crates/oxide-randomx/perf_results/P2_4_integrated_full_features_authority_2026-03-30.md`
 - `crates/oxide-randomx/perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md`
 
 Design notes:

@@ -140,7 +140,11 @@ Notes:
   but the counters are zeroed because instrumentation was not compiled in.
 - If a `full_features_benchmark` matrix ranks an experimental config above the
   baseline on one host, do not translate that into harness defaults. This
-  harness follows the supported path until policy authority changes.
+  harness follows the supported path until policy authority changes. Read
+  `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md` for the
+  supported default path and
+  `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` for the
+  current experimental-feature and host-limitation read.
 
 ## Output
 
