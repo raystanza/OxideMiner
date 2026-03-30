@@ -151,6 +151,25 @@ struct CorrectnessSummary {
     report_file_name: String,
 }
 
+struct ReportContext<'a> {
+    host: &'a HostIdentity,
+    host_tag: &'a str,
+    now: &'a NowStrings,
+    options: &'a Options,
+}
+
+struct LimitationArtifacts<'a> {
+    manifest_name: &'a str,
+    provenance_name: &'a str,
+    memo_name: &'a str,
+}
+
+struct SummaryArtifacts<'a> {
+    manifest_name: &'a str,
+    provenance_name: &'a str,
+    perf_index_name: &'a str,
+}
+
 #[derive(Clone, Copy)]
 struct OracleVector {
     mode: Mode,
@@ -273,6 +292,12 @@ fn main() {
         eprintln!("error: failed to write provenance: {err}");
         process::exit(1);
     }
+    let report_ctx = ReportContext {
+        host: &host,
+        host_tag: &host_tag,
+        now: &now,
+        options: &options,
+    };
 
     if !host.is_amd() {
         let memo_name = format!(
@@ -284,15 +309,15 @@ fn main() {
             eprintln!("error: failed to write non-AMD memo: {err}");
             process::exit(1);
         }
+        let limitation_artifacts = LimitationArtifacts {
+            manifest_name: &manifest_name,
+            provenance_name: &provenance_name,
+            memo_name: &memo_name,
+        };
         if let Err(err) = write_limitation_summary_json(
             &out_dir.join(&summary_name),
-            &host,
-            &host_tag,
-            &now,
-            &options,
-            &manifest_name,
-            &provenance_name,
-            &memo_name,
+            &report_ctx,
+            &limitation_artifacts,
             "not_amd_host",
         ) {
             eprintln!("error: failed to write summary: {err}");
@@ -325,15 +350,15 @@ fn main() {
             eprintln!("error: failed to write duplicate-family memo: {err}");
             process::exit(1);
         }
+        let limitation_artifacts = LimitationArtifacts {
+            manifest_name: &manifest_name,
+            provenance_name: &provenance_name,
+            memo_name: &memo_name,
+        };
         if let Err(err) = write_limitation_summary_json(
             &out_dir.join(&summary_name),
-            &host,
-            &host_tag,
-            &now,
-            &options,
-            &manifest_name,
-            &provenance_name,
-            &memo_name,
+            &report_ctx,
+            &limitation_artifacts,
             "duplicate_family_blocked",
         ) {
             eprintln!("error: failed to write summary: {err}");
@@ -464,16 +489,16 @@ fn main() {
         }
     };
 
+    let summary_artifacts = SummaryArtifacts {
+        manifest_name: &manifest_name,
+        provenance_name: &provenance_name,
+        perf_index_name: &perf_index_name,
+    };
     if let Err(err) = write_summary_json(
         &out_dir.join(&summary_name),
-        &host,
-        &host_tag,
-        &now,
-        &options,
+        &report_ctx,
         &correctness,
-        &manifest_name,
-        &provenance_name,
-        &perf_index_name,
+        &summary_artifacts,
         &light_summary,
         &fast_summary,
     ) {
@@ -487,10 +512,7 @@ fn main() {
     );
     if let Err(err) = write_evidence_memo(
         &out_dir.join(&memo_name),
-        &host,
-        &host_tag,
-        &now,
-        &options,
+        &report_ctx,
         &correctness,
         &light_summary,
         &fast_summary,
@@ -1048,13 +1070,8 @@ fn write_duplicate_family_memo(
 
 fn write_limitation_summary_json(
     path: &Path,
-    host: &HostIdentity,
-    host_tag: &str,
-    now: &NowStrings,
-    options: &Options,
-    manifest_name: &str,
-    provenance_name: &str,
-    memo_name: &str,
+    ctx: &ReportContext<'_>,
+    artifacts: &LimitationArtifacts<'_>,
     status: &str,
 ) -> Result<(), String> {
     let mut json = String::new();
@@ -1063,7 +1080,7 @@ fn write_limitation_summary_json(
     writeln!(
         &mut json,
         "  \"timestamp\": \"{}\",",
-        escape_json(&now.timestamp_compact)
+        escape_json(&ctx.now.timestamp_compact)
     )
     .map_err(|e| e.to_string())?;
     writeln!(&mut json, "  \"status\": \"{}\",", escape_json(status)).map_err(|e| e.to_string())?;
@@ -1073,28 +1090,28 @@ fn write_limitation_summary_json(
     writeln!(
         &mut json,
         "    \"vendor\": \"{}\",",
-        escape_json(&host.vendor)
+        escape_json(&ctx.host.vendor)
     )
     .map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"family\": {},", host.family).map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"model\": {},", host.model).map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"stepping\": {},", host.stepping).map_err(|e| e.to_string())?;
+    writeln!(&mut json, "    \"family\": {},", ctx.host.family).map_err(|e| e.to_string())?;
+    writeln!(&mut json, "    \"model\": {},", ctx.host.model).map_err(|e| e.to_string())?;
+    writeln!(&mut json, "    \"stepping\": {},", ctx.host.stepping).map_err(|e| e.to_string())?;
     writeln!(
         &mut json,
         "    \"model_name\": \"{}\",",
-        escape_json(&host.model_name)
+        escape_json(&ctx.host.model_name)
     )
     .map_err(|e| e.to_string())?;
     writeln!(
         &mut json,
         "    \"host_tag\": \"{}\",",
-        escape_json(host_tag)
+        escape_json(ctx.host_tag)
     )
     .map_err(|e| e.to_string())?;
     writeln!(
         &mut json,
         "    \"novelty\": \"{}\"",
-        if host.is_duplicate_family() {
+        if ctx.host.is_duplicate_family() {
             "duplicate_family_confirmation"
         } else {
             "not_amd_host"
@@ -1103,29 +1120,34 @@ fn write_limitation_summary_json(
     .map_err(|e| e.to_string())?;
     writeln!(&mut json, "  }},").map_err(|e| e.to_string())?;
     writeln!(&mut json, "  \"params\": {{").map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"threads\": {},", options.threads).map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"perf_iters\": {},", options.perf_iters)
+    writeln!(&mut json, "    \"threads\": {},", ctx.options.threads)
         .map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"perf_warmup\": {},", options.perf_warmup)
+    writeln!(&mut json, "    \"perf_iters\": {},", ctx.options.perf_iters)
         .map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"large_pages\": {}", options.large_pages)
+    writeln!(&mut json, "    \"perf_warmup\": {},", ctx.options.perf_warmup)
+        .map_err(|e| e.to_string())?;
+    writeln!(&mut json, "    \"large_pages\": {}", ctx.options.large_pages)
         .map_err(|e| e.to_string())?;
     writeln!(&mut json, "  }},").map_err(|e| e.to_string())?;
     writeln!(&mut json, "  \"artifacts\": {{").map_err(|e| e.to_string())?;
     writeln!(
         &mut json,
         "    \"manifest\": \"{}\",",
-        escape_json(manifest_name)
+        escape_json(artifacts.manifest_name)
     )
     .map_err(|e| e.to_string())?;
     writeln!(
         &mut json,
         "    \"provenance\": \"{}\",",
-        escape_json(provenance_name)
+        escape_json(artifacts.provenance_name)
     )
     .map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"memo\": \"{}\"", escape_json(memo_name))
-        .map_err(|e| e.to_string())?;
+    writeln!(
+        &mut json,
+        "    \"memo\": \"{}\"",
+        escape_json(artifacts.memo_name)
+    )
+    .map_err(|e| e.to_string())?;
     writeln!(&mut json, "  }}").map_err(|e| e.to_string())?;
     writeln!(&mut json, "}}").map_err(|e| e.to_string())?;
 
@@ -1211,9 +1233,11 @@ fn run_oracle_case(
     let _env_guard = SimdEnvGuard::new(state.force_enabled(), state.disable_enabled());
 
     let cfg = RandomXConfig::test_small();
-    let mut flags = RandomXFlags::default();
-    flags.large_pages_plumbing = false;
-    flags.use_1gb_pages = false;
+    let flags = RandomXFlags {
+        large_pages_plumbing: false,
+        use_1gb_pages: false,
+        ..RandomXFlags::default()
+    };
 
     let cache = RandomXCache::new(key, &cfg).map_err(|e| format!("cache init failed: {e:?}"))?;
     let mut vm = match mode {
@@ -1624,14 +1648,9 @@ fn write_combined_csv(out_path: &Path, inputs: &[&Path]) -> Result<(), String> {
 
 fn write_summary_json(
     path: &Path,
-    host: &HostIdentity,
-    host_tag: &str,
-    now: &NowStrings,
-    options: &Options,
+    ctx: &ReportContext<'_>,
     correctness: &CorrectnessSummary,
-    manifest_name: &str,
-    provenance_name: &str,
-    perf_index_name: &str,
+    artifacts: &SummaryArtifacts<'_>,
     light: &ModeSummary,
     fast: &ModeSummary,
 ) -> Result<(), String> {
@@ -1641,7 +1660,7 @@ fn write_summary_json(
     writeln!(
         &mut json,
         "  \"timestamp\": \"{}\",",
-        escape_json(&now.timestamp_compact)
+        escape_json(&ctx.now.timestamp_compact)
     )
     .map_err(|e| e.to_string())?;
     writeln!(&mut json, "  \"head_sha\": \"{}\",", escape_json(GIT_SHA))
@@ -1650,22 +1669,22 @@ fn write_summary_json(
     writeln!(
         &mut json,
         "    \"vendor\": \"{}\",",
-        escape_json(&host.vendor)
+        escape_json(&ctx.host.vendor)
     )
     .map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"family\": {},", host.family).map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"model\": {},", host.model).map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"stepping\": {},", host.stepping).map_err(|e| e.to_string())?;
+    writeln!(&mut json, "    \"family\": {},", ctx.host.family).map_err(|e| e.to_string())?;
+    writeln!(&mut json, "    \"model\": {},", ctx.host.model).map_err(|e| e.to_string())?;
+    writeln!(&mut json, "    \"stepping\": {},", ctx.host.stepping).map_err(|e| e.to_string())?;
     writeln!(
         &mut json,
         "    \"model_name\": \"{}\",",
-        escape_json(&host.model_name)
+        escape_json(&ctx.host.model_name)
     )
     .map_err(|e| e.to_string())?;
     writeln!(
         &mut json,
         "    \"host_tag\": \"{}\",",
-        escape_json(host_tag)
+        escape_json(ctx.host_tag)
     )
     .map_err(|e| e.to_string())?;
     writeln!(&mut json, "    \"novelty\": \"novel_family_evidence\",")
@@ -1675,12 +1694,13 @@ fn write_summary_json(
     writeln!(&mut json, "  }},").map_err(|e| e.to_string())?;
 
     writeln!(&mut json, "  \"params\": {{").map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"threads\": {},", options.threads).map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"perf_iters\": {},", options.perf_iters)
+    writeln!(&mut json, "    \"threads\": {},", ctx.options.threads)
         .map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"perf_warmup\": {},", options.perf_warmup)
+    writeln!(&mut json, "    \"perf_iters\": {},", ctx.options.perf_iters)
         .map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"large_pages\": {}", options.large_pages)
+    writeln!(&mut json, "    \"perf_warmup\": {},", ctx.options.perf_warmup)
+        .map_err(|e| e.to_string())?;
+    writeln!(&mut json, "    \"large_pages\": {}", ctx.options.large_pages)
         .map_err(|e| e.to_string())?;
     writeln!(&mut json, "  }},").map_err(|e| e.to_string())?;
 
@@ -1714,19 +1734,19 @@ fn write_summary_json(
     writeln!(
         &mut json,
         "    \"manifest\": \"{}\",",
-        escape_json(manifest_name)
+        escape_json(artifacts.manifest_name)
     )
     .map_err(|e| e.to_string())?;
     writeln!(
         &mut json,
         "    \"provenance\": \"{}\",",
-        escape_json(provenance_name)
+        escape_json(artifacts.provenance_name)
     )
     .map_err(|e| e.to_string())?;
     writeln!(
         &mut json,
         "    \"perf_index\": \"{}\",",
-        escape_json(perf_index_name)
+        escape_json(artifacts.perf_index_name)
     )
     .map_err(|e| e.to_string())?;
     writeln!(
@@ -1852,10 +1872,7 @@ fn write_mode_summary_json(
 
 fn write_evidence_memo(
     path: &Path,
-    host: &HostIdentity,
-    host_tag: &str,
-    now: &NowStrings,
-    options: &Options,
+    ctx: &ReportContext<'_>,
     correctness: &CorrectnessSummary,
     light: &ModeSummary,
     fast: &ModeSummary,
@@ -1913,20 +1930,20 @@ fn write_evidence_memo(
 \
          - `{}`
 ",
-        now.date_hyphen,
+        ctx.now.date_hyphen,
         PROMPT_ID,
         SimdState::BaselineScalar.config_label(),
         SimdState::ForcedInvestigation.config_label(),
-        host.vendor,
-        host.family,
-        host.model,
-        host.stepping,
-        host.model_name,
-        host_tag,
-        options.threads,
-        options.perf_iters,
-        options.perf_warmup,
-        if options.large_pages { "on" } else { "off" },
+        ctx.host.vendor,
+        ctx.host.family,
+        ctx.host.model,
+        ctx.host.stepping,
+        ctx.host.model_name,
+        ctx.host_tag,
+        ctx.options.threads,
+        ctx.options.perf_iters,
+        ctx.options.perf_warmup,
+        if ctx.options.large_pages { "on" } else { "off" },
         correctness.status,
         correctness.checked_cases,
         light.baseline_mean_ns_per_hash,
@@ -2194,7 +2211,7 @@ fn hex_decode(input: &str) -> Result<Vec<u8>, String> {
     if trimmed.is_empty() {
         return Ok(Vec::new());
     }
-    if trimmed.len() % 2 != 0 {
+    if !trimmed.len().is_multiple_of(2) {
         return Err(format!("hex string has odd length: {trimmed}"));
     }
 

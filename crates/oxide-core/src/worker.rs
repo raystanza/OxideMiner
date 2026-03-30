@@ -38,6 +38,18 @@ pub struct WorkerSpawnConfig {
     pub hash_counter: Arc<AtomicU64>,
 }
 
+#[cfg(feature = "randomx")]
+struct RandomXWorkerLoopConfig {
+    worker_id: usize,
+    worker_count: usize,
+    randomx: crate::config::RandomXRuntimeConfig,
+    randomx_runtime: Arc<Mutex<crate::config::RandomXRuntimeStatus>>,
+    batch_size: usize,
+    yield_between_batches: bool,
+    shares_tx: mpsc::UnboundedSender<Share>,
+    hash_counter: Arc<AtomicU64>,
+}
+
 /// Spawn `n` workers; each subscribes to job broadcasts and sends shares back.
 pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::JoinHandle<()>> {
     let WorkerSpawnConfig {
@@ -82,7 +94,7 @@ pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::Jo
     };
     (0..n)
         .map(|i| {
-            let mut rx = jobs_tx.subscribe();
+            let rx = jobs_tx.subscribe();
             let worker_shares_tx = shares_tx.clone();
             let worker_core_ids = core_ids.clone();
             let worker_hash_counter = hash_counter.clone();
@@ -96,16 +108,19 @@ pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::Jo
                             core_affinity::set_for_current(*id);
                         }
                     }
-                    if let Err(e) = randomx_worker_loop(
-                        i,
-                        n,
-                        &worker_randomx,
-                        &worker_randomx_runtime,
+                    let worker_loop_config = RandomXWorkerLoopConfig {
+                        worker_id: i,
+                        worker_count: n,
+                        randomx: worker_randomx,
+                        randomx_runtime: worker_randomx_runtime,
                         batch_size,
                         yield_between_batches,
-                        &mut rx,
-                        worker_shares_tx,
-                        worker_hash_counter,
+                        shares_tx: worker_shares_tx,
+                        hash_counter: worker_hash_counter,
+                    };
+                    if let Err(e) = randomx_worker_loop(
+                        worker_loop_config,
+                        rx,
                     )
                     .await
                     {
@@ -190,18 +205,22 @@ fn l3_aware_core_order(
 
 #[cfg(feature = "randomx")]
 async fn randomx_worker_loop(
-    worker_id: usize,
-    worker_count: usize,
-    randomx: &crate::config::RandomXRuntimeConfig,
-    randomx_runtime: &Arc<Mutex<crate::config::RandomXRuntimeStatus>>,
-    batch_size: usize,
-    yield_between_batches: bool,
-    rx: &mut broadcast::Receiver<WorkItem>,
-    shares_tx: mpsc::UnboundedSender<Share>,
-    hash_counter: Arc<AtomicU64>,
+    config: RandomXWorkerLoopConfig,
+    mut rx: broadcast::Receiver<WorkItem>,
 ) -> Result<()> {
     use crate::randomx_backend::{build_fast_vm, build_light_vm};
     use crate::RandomXMode;
+
+    let RandomXWorkerLoopConfig {
+        worker_id,
+        worker_count,
+        randomx,
+        randomx_runtime,
+        batch_size,
+        yield_between_batches,
+        shares_tx,
+        hash_counter,
+    } = config;
 
     let mut work: Option<WorkItem> = None;
 
@@ -226,8 +245,8 @@ async fn randomx_worker_loop(
 
         if !has_seed || j.seed_hash_bytes != current_seed {
             let (next_vm, realized) = match randomx.mode {
-                RandomXMode::Light => build_light_vm(randomx, &j.seed_hash_bytes)?,
-                RandomXMode::Fast => build_fast_vm(randomx, &j.seed_hash_bytes, worker_count)?,
+                RandomXMode::Light => build_light_vm(&randomx, &j.seed_hash_bytes)?,
+                RandomXMode::Fast => build_fast_vm(&randomx, &j.seed_hash_bytes, worker_count)?,
             };
             if worker_id == 0 {
                 if let Ok(mut status) = randomx_runtime.lock() {

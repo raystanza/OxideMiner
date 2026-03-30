@@ -1858,11 +1858,7 @@ mod tests {
         fs::write(meta_dir.join("matrix_index.csv"), matrix_index).expect("write matrix index");
     }
 
-    fn test_pair_summary_csv(
-        include_pair_statuses: bool,
-        delta_pct: f64,
-        signal: &str,
-    ) -> String {
+    fn test_pair_summary_csv(include_pair_statuses: bool, delta_pct: f64, signal: &str) -> String {
         let mut header = "pair_label,family,config,mode,page_profile,delta_pct_candidate_vs_baseline,signal_classification".to_string();
         let mut row = format!(
             "baseline_vs_superscalar_proto,superscalar_proto,Interpreter,Light,large_pages_on,{delta_pct:.6},{signal}"

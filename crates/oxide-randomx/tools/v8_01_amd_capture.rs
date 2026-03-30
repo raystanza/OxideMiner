@@ -210,6 +210,16 @@ struct RowArtifact {
     csv_fields: BTreeMap<String, String>,
 }
 
+struct ArtifactNameSet<'a> {
+    provenance_name: &'a str,
+    commands_name: &'a str,
+    manifest_name: &'a str,
+    perf_index_name: &'a str,
+    summary_name: &'a str,
+    memo_name: &'a str,
+    share_name: &'a str,
+}
+
 fn main() {
     let options = match parse_args() {
         Ok(options) => options,
@@ -342,13 +352,15 @@ fn main() {
     }
 
     let artifact_names = collect_artifact_names(
-        &provenance_name,
-        &commands_name,
-        &manifest_name,
-        &perf_index_name,
-        &summary_name,
-        &memo_name,
-        &share_name,
+        &ArtifactNameSet {
+            provenance_name: &provenance_name,
+            commands_name: &commands_name,
+            manifest_name: &manifest_name,
+            perf_index_name: &perf_index_name,
+            summary_name: &summary_name,
+            memo_name: &memo_name,
+            share_name: &share_name,
+        },
         &row_artifacts,
     );
 
@@ -1273,23 +1285,17 @@ fn write_unexpected_host_artifacts(
 }
 
 fn collect_artifact_names(
-    provenance_name: &str,
-    commands_name: &str,
-    manifest_name: &str,
-    perf_index_name: &str,
-    summary_name: &str,
-    memo_name: &str,
-    share_name: &str,
+    artifact_names: &ArtifactNameSet<'_>,
     rows: &[RowArtifact],
 ) -> Vec<String> {
     let mut artifacts = vec![
-        provenance_name.to_string(),
-        commands_name.to_string(),
-        manifest_name.to_string(),
-        perf_index_name.to_string(),
-        summary_name.to_string(),
-        memo_name.to_string(),
-        share_name.to_string(),
+        artifact_names.provenance_name.to_string(),
+        artifact_names.commands_name.to_string(),
+        artifact_names.manifest_name.to_string(),
+        artifact_names.perf_index_name.to_string(),
+        artifact_names.summary_name.to_string(),
+        artifact_names.memo_name.to_string(),
+        artifact_names.share_name.to_string(),
     ];
     for row in rows {
         artifacts.push(row.csv_name.clone());

@@ -60,6 +60,16 @@ struct BundleMeta {
     archive_name: String,
 }
 
+struct PublicSummaryContext<'a> {
+    bundle_meta: &'a BundleMeta,
+    host: &'a HostIdentity,
+    now: &'a oxide_randomx::full_features_capture::NowStrings,
+    profile: PublicBetaProfile,
+    plan: &'a oxide_randomx::full_features_capture::CapturePlan,
+    artifacts: &'a [String],
+    output: &'a oxide_randomx::full_features_capture::CaptureOutput,
+}
+
 fn main() {
     let options = match parse_args() {
         Ok(options) => options,
@@ -202,16 +212,17 @@ fn main() {
         eprintln!("error: failed to write manifest: {err}");
         process::exit(1);
     }
-    if let Err(err) = write_public_summary_json(
-        &out_dir.join(SUMMARY_JSON_FILE),
-        &bundle_meta,
-        &host,
-        &now,
-        options.profile,
-        &plan,
-        &artifact_names,
-        &output,
-    ) {
+    let summary_context = PublicSummaryContext {
+        bundle_meta: &bundle_meta,
+        host: &host,
+        now: &now,
+        profile: options.profile,
+        plan: &plan,
+        artifacts: &artifact_names,
+        output: &output,
+    };
+    if let Err(err) = write_public_summary_json(&out_dir.join(SUMMARY_JSON_FILE), &summary_context)
+    {
         eprintln!("error: failed to write summary.json: {err}");
         process::exit(1);
     }
@@ -468,30 +479,21 @@ fn write_public_manifest(
     write_artifact(path, body)
 }
 
-fn write_public_summary_json(
-    path: &Path,
-    bundle_meta: &BundleMeta,
-    host: &HostIdentity,
-    now: &oxide_randomx::full_features_capture::NowStrings,
-    profile: PublicBetaProfile,
-    plan: &oxide_randomx::full_features_capture::CapturePlan,
-    artifacts: &[String],
-    output: &oxide_randomx::full_features_capture::CaptureOutput,
-) -> Result<(), String> {
+fn write_public_summary_json(path: &Path, ctx: &PublicSummaryContext<'_>) -> Result<(), String> {
     let summary = json!({
         "schema_version": PUBLIC_SCHEMA_VERSION,
         "tool": TOOL_ID,
-        "beta_release_id": bundle_meta.beta_release_id,
-        "bundle_id": bundle_meta.bundle_id,
+        "beta_release_id": ctx.bundle_meta.beta_release_id,
+        "bundle_id": ctx.bundle_meta.bundle_id,
         "created_at": {
-            "timestamp": now.compact,
-            "date": now.date,
-            "iso": now.iso,
+            "timestamp": ctx.now.compact,
+            "date": ctx.now.date,
+            "iso": ctx.now.iso,
         },
         "profile": {
-            "key": profile.as_str(),
-            "display": profile.display(),
-            "runtime_class": runtime_class_text(profile),
+            "key": ctx.profile.as_str(),
+            "display": ctx.profile.display(),
+            "runtime_class": runtime_class_text(ctx.profile),
         },
         "network_behavior": {
             "automatic_upload": false,
@@ -507,33 +509,33 @@ fn write_public_summary_json(
             "oses": ["windows", "linux"],
         },
         "host": {
-            "host_tag": host.host_tag(),
-            "vendor": host.vendor,
-            "family": host.family,
-            "model": host.model,
-            "stepping": host.stepping,
-            "cpu_model_string": host.cpu_model_string,
-            "logical_threads": host.logical_threads,
-            "os_name": host.os_name,
-            "os_version": host.os_version,
-            "os_build_or_kernel": host.os_build_or_kernel,
+            "host_tag": ctx.host.host_tag(),
+            "vendor": ctx.host.vendor,
+            "family": ctx.host.family,
+            "model": ctx.host.model,
+            "stepping": ctx.host.stepping,
+            "cpu_model_string": ctx.host.cpu_model_string,
+            "logical_threads": ctx.host.logical_threads,
+            "os_name": ctx.host.os_name,
+            "os_version": ctx.host.os_version,
+            "os_build_or_kernel": ctx.host.os_build_or_kernel,
         },
         "plan": {
-            "page_profiles": plan.page_profiles.iter().map(page_profile_json).collect::<Vec<_>>(),
-            "matrix_rows": plan.matrix_specs.len(),
-            "abba_pairs": plan.pair_specs.len(),
-            "superscalar_isolated": plan.superscalar_specs.len(),
+            "page_profiles": ctx.plan.page_profiles.iter().map(page_profile_json).collect::<Vec<_>>(),
+            "matrix_rows": ctx.plan.matrix_specs.len(),
+            "abba_pairs": ctx.plan.pair_specs.len(),
+            "superscalar_isolated": ctx.plan.superscalar_specs.len(),
         },
         "artifacts": {
-            "result_dir_name": bundle_meta.result_dir_name,
-            "share_archive_file": bundle_meta.archive_name,
-            "files": artifacts,
+            "result_dir_name": ctx.bundle_meta.result_dir_name,
+            "share_archive_file": ctx.bundle_meta.archive_name,
+            "files": ctx.artifacts,
         },
-        "page_backing_summary": output.page_backing_summaries.iter().map(page_backing_summary_json).collect::<Vec<_>>(),
-        "matrix_rows": output.matrix_runs.iter().map(run_json_value).collect::<Vec<_>>(),
-        "pair_runs": output.pair_runs.iter().map(run_json_value).collect::<Vec<_>>(),
-        "pair_summaries": output.pair_summaries.iter().map(oxide_randomx::full_features_capture::pair_summary_json).collect::<Vec<_>>(),
-        "superscalar_isolated": output.superscalar_runs.iter().map(superscalar_json_value).collect::<Vec<_>>(),
+        "page_backing_summary": ctx.output.page_backing_summaries.iter().map(page_backing_summary_json).collect::<Vec<_>>(),
+        "matrix_rows": ctx.output.matrix_runs.iter().map(run_json_value).collect::<Vec<_>>(),
+        "pair_runs": ctx.output.pair_runs.iter().map(run_json_value).collect::<Vec<_>>(),
+        "pair_summaries": ctx.output.pair_summaries.iter().map(oxide_randomx::full_features_capture::pair_summary_json).collect::<Vec<_>>(),
+        "superscalar_isolated": ctx.output.superscalar_runs.iter().map(superscalar_json_value).collect::<Vec<_>>(),
     });
     let body = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
     write_artifact(path, body)
@@ -821,22 +823,25 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("oxide_randomx_beta_summary_json");
         let _ = fs::remove_dir_all(&temp_dir);
         fs::create_dir_all(&temp_dir).unwrap();
-        write_public_summary_json(
-            &temp_dir.join(SUMMARY_JSON_FILE),
-            &bundle,
-            &host,
-            &now,
-            PublicBetaProfile::Standard,
-            &public_beta_plan(PublicBetaProfile::Standard, HostOsClass::Linux),
-            &[SUMMARY_JSON_FILE.to_string()],
-            &oxide_randomx::full_features_capture::CaptureOutput {
-                matrix_runs: Vec::new(),
-                pair_runs: Vec::new(),
-                pair_summaries: Vec::new(),
-                superscalar_runs: Vec::new(),
-                page_backing_summaries: Vec::new(),
-            },
-        )
+        let plan = public_beta_plan(PublicBetaProfile::Standard, HostOsClass::Linux);
+        let output = oxide_randomx::full_features_capture::CaptureOutput {
+            matrix_runs: Vec::new(),
+            pair_runs: Vec::new(),
+            pair_summaries: Vec::new(),
+            superscalar_runs: Vec::new(),
+            page_backing_summaries: Vec::new(),
+        };
+        let artifacts = [SUMMARY_JSON_FILE.to_string()];
+        let summary_context = PublicSummaryContext {
+            bundle_meta: &bundle,
+            host: &host,
+            now: &now,
+            profile: PublicBetaProfile::Standard,
+            plan: &plan,
+            artifacts: &artifacts,
+            output: &output,
+        };
+        write_public_summary_json(&temp_dir.join(SUMMARY_JSON_FILE), &summary_context)
         .unwrap();
         let body = fs::read_to_string(temp_dir.join(SUMMARY_JSON_FILE)).unwrap();
         assert!(body.contains("\"beta_release_id\": \"beta-2026-03\""));

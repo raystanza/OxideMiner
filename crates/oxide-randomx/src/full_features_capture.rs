@@ -1163,12 +1163,14 @@ pub fn public_beta_plan(profile: PublicBetaProfile, os_class: HostOsClass) -> Ca
                 .collect(),
             pair_specs: full_pair_specs()
                 .into_iter()
-                .filter(|spec| match (spec.family, spec.pair_label, spec.run.key) {
-                    ("threaded_interp", "baseline_vs_threaded", "light_interp") => true,
-                    ("simd_blockio", "baseline_vs_guarded", "light_interp") => true,
-                    ("simd_blockio", "baseline_vs_guarded", "fast_interp") => true,
-                    ("superscalar_proto", "baseline_vs_superscalar_proto", _) => true,
-                    _ => false,
+                .filter(|spec| {
+                    matches!(
+                        (spec.family, spec.pair_label, spec.run.key),
+                        ("threaded_interp", "baseline_vs_threaded", "light_interp")
+                            | ("simd_blockio", "baseline_vs_guarded", "light_interp")
+                            | ("simd_blockio", "baseline_vs_guarded", "fast_interp")
+                            | ("superscalar_proto", "baseline_vs_superscalar_proto", _)
+                    )
                 })
                 .collect(),
             superscalar_specs: superscalar_specs(),
