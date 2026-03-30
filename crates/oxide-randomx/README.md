@@ -98,10 +98,13 @@ requested and effective flags, explicit `lifecycle.jit` state, explicit
 `rekey.parity.matches` so parent consumers can validate the supported lifecycle
 without reading crate internals.
 
-The GitHub-hosted CI perf gate stays narrower than the lab authority set: it
-enforces only `light_interp`, `light_jit`, and `fast_jit_fastregs` as
-supported-path guardrails on `ubuntu-latest`. Those fixtures are CI regression
-tripwires, not AMD/Intel host authority.
+The GitHub-hosted workspace CI stays narrower than the lab authority set: the
+mandatory perf gate enforces only `light_interp`, `light_jit_conservative`, and
+`fast_jit_fastregs` on `ubuntu-latest`, while a separate validation-build Light
+`jit-fastregs` smoke of `examples/oxideminer_integration.rs` protects the
+supported validation build and emitted report shape. Those CI fixtures and
+smokes are workspace regression guardrails, not AMD/Intel host authority and
+not a replacement for broader OxideMiner parent validation on real hosts.
 
 ## Features
 

@@ -1,0 +1,105 @@
+name: oxide-randomx CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/oxide-randomx-ci.yml'
+      - '.cargo/config.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/oxide-randomx/**'
+  push:
+    paths:
+      - '.github/workflows/oxide-randomx-ci.yml'
+      - '.cargo/config.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/oxide-randomx/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  contract-tests:
+    name: Supported Contract Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: cargo test -p oxide-randomx
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p oxide-randomx
+
+      - name: cargo test -p oxide-randomx --features bench-instrument
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p oxide-randomx --features bench-instrument
+
+      - name: cargo test -p oxide-randomx --features "jit jit-fastregs"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p oxide-randomx --features "jit jit-fastregs"
+
+      - name: Validation-build light jit-fastregs smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/oxideminer_integration_light.json"
+          cargo run -p oxide-randomx --example oxideminer_integration --features "jit jit-fastregs bench-instrument" -- --mode light --runtime-profile jit-fastregs --warmup-rounds 0 --steady-rounds 1 --threads 1 --format json > "${report}"
+          jq -e '
+            .report_version == "oxideminer-integration-v2"
+            and .build_contract.validation_features == "jit jit-fastregs bench-instrument"
+            and .requested_runtime_profile == "jit-fastregs"
+            and (.sessions | length) == 1
+            and .sessions[0].mode == "light"
+            and .sessions[0].lifecycle.requested_runtime_profile == "jit-fastregs"
+            and .sessions[0].lifecycle.effective_runtime_profile == "jit-fastregs"
+            and .sessions[0].lifecycle.jit.requested == true
+            and .sessions[0].lifecycle.jit.requested_fast_regs == true
+            and .sessions[0].rekey.parity.matches == true
+          ' "${report}" > /dev/null
+
+  perf-gate:
+    name: Supported-Path Perf Gate
+    runs-on: ubuntu-latest
+    needs: contract-tests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Run supported-path perf gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash crates/oxide-randomx/scripts/ci/run_ci_perf_gate.sh
+
+      - name: Upload perf gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxide-randomx-perf-gate-artifacts
+          path: artifacts/perf-gate
+          if-no-files-found: error

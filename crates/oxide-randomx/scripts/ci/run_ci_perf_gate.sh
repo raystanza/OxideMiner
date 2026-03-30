@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-manifest_path=${1:-perf_baselines/ci/manifest.txt}
+crate_rel_path="crates/oxide-randomx"
+manifest_path=${1:-${crate_rel_path}/perf_baselines/ci/manifest.txt}
 artifact_dir=${2:-artifacts/perf-gate}
 build_features=${OXIDE_RANDOMX_CI_PERF_FEATURES:-jit jit-fastregs bench-instrument}
 
@@ -18,8 +19,27 @@ resolve_binary() {
     printf '%s\n' "${base_path}"
 }
 
+resolve_workspace_or_crate_path() {
+    local path="$1"
+    if [[ -e "${path}" ]]; then
+        printf '%s\n' "${path}"
+        return 0
+    fi
+    if [[ -e "${crate_rel_path}/${path}" ]]; then
+        printf '%s\n' "${crate_rel_path}/${path}"
+        return 0
+    fi
+    return 1
+}
+
 repo_root=$(git rev-parse --show-toplevel)
 cd "${repo_root}"
+
+if [[ ! -e "${manifest_path}" ]]; then
+    if resolved_manifest=$(resolve_workspace_or_crate_path "${manifest_path}"); then
+        manifest_path="${resolved_manifest}"
+    fi
+fi
 
 candidate_dir="${artifact_dir}/candidate"
 baseline_dir="${artifact_dir}/baseline"
@@ -28,6 +48,12 @@ compare_dir="${artifact_dir}/compare"
 if [[ ! -f "${manifest_path}" ]]; then
     echo "missing perf gate manifest: ${manifest_path}" >&2
     exit 2
+fi
+
+if [[ -d "ox-build/target" ]]; then
+    cargo_target_dir="ox-build/target"
+else
+    cargo_target_dir="target"
 fi
 
 mkdir -p "${candidate_dir}" "${baseline_dir}" "${compare_dir}"
@@ -44,10 +70,10 @@ if [[ -z "${OXIDE_RANDOMX_GIT_DIRTY:-}" ]]; then
 fi
 export OXIDE_RANDOMX_RUSTC_VERSION=${OXIDE_RANDOMX_RUSTC_VERSION:-$(rustc --version)}
 
-cargo build --release --bin perf_compare --example perf_harness --features "${build_features}"
+cargo build --release -p oxide-randomx --bin perf_compare --example perf_harness --features "${build_features}"
 
-harness=$(resolve_binary "./target/release/examples/perf_harness")
-compare=$(resolve_binary "./target/release/perf_compare")
+harness=$(resolve_binary "./${cargo_target_dir}/release/examples/perf_harness")
+compare=$(resolve_binary "./${cargo_target_dir}/release/perf_compare")
 
 regressions=()
 tool_failures=()
@@ -70,6 +96,12 @@ while IFS='|' read -r scenario_id baseline_path threshold_pct candidate_repeats 
     compare_log="${compare_dir}/${scenario_id}.txt"
     candidate_csv="${candidate_dir}/${scenario_id}.csv"
     baseline_copy="${baseline_dir}/${scenario_id}.csv"
+    baseline_resolved_path="${baseline_path}"
+    if [[ ! -f "${baseline_resolved_path}" ]]; then
+        if resolved_baseline=$(resolve_workspace_or_crate_path "${baseline_path}"); then
+            baseline_resolved_path="${resolved_baseline}"
+        fi
+    fi
     fast_bench_env="off"
     if [[ "${mode}" == "fast" ]]; then
         fast_bench_env="on"
@@ -78,6 +110,7 @@ while IFS='|' read -r scenario_id baseline_path threshold_pct candidate_repeats 
     {
         echo "scenario_id=${scenario_id}"
         echo "baseline=${baseline_path}"
+        echo "baseline_resolved=${baseline_resolved_path}"
         echo "threshold_pct=${threshold_pct}"
         echo "candidate_repeats=${candidate_repeats}"
         echo "scope=supported_path_ci_guardrail_only"
@@ -86,7 +119,7 @@ while IFS='|' read -r scenario_id baseline_path threshold_pct candidate_repeats 
         echo
     } > "${compare_log}"
 
-    if [[ ! -f "${baseline_path}" ]]; then
+    if [[ ! -f "${baseline_resolved_path}" ]]; then
         echo "::error title=Perf gate input failure::${scenario_id} baseline fixture is missing at ${baseline_path}"
         tool_failures+=("${scenario_id}")
         if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
@@ -95,7 +128,7 @@ while IFS='|' read -r scenario_id baseline_path threshold_pct candidate_repeats 
         continue
     fi
 
-    cp "${baseline_path}" "${baseline_copy}"
+    cp "${baseline_resolved_path}" "${baseline_copy}"
     rm -f "${candidate_csv}"
 
     for run_index in $(seq 1 "${candidate_repeats}"); do
@@ -138,7 +171,7 @@ while IFS='|' read -r scenario_id baseline_path threshold_pct candidate_repeats 
         fi
     done
 
-    if "${compare}" --baseline "${baseline_path}" --candidate "${candidate_csv}" --threshold-pct "${threshold_pct}" </dev/null | tee -a "${compare_log}"; then
+    if "${compare}" --baseline "${baseline_resolved_path}" --candidate "${candidate_csv}" --threshold-pct "${threshold_pct}" </dev/null | tee -a "${compare_log}"; then
         result="pass"
     else
         status=$?

@@ -63,6 +63,31 @@ The harness accepts only supported runtime profiles:
 That constraint is deliberate. The harness is meant to validate the supported
 parent lifecycle, not arbitrary runtime flag combinations.
 
+## CI Role
+
+Workspace CI should use this harness only as a lightweight validation-build
+smoke for the supported parent-facing lifecycle:
+
+```bash
+cargo run --example oxideminer_integration --features "jit jit-fastregs bench-instrument" -- \
+  --mode light \
+  --runtime-profile jit-fastregs \
+  --warmup-rounds 0 \
+  --steady-rounds 1 \
+  --threads 1 \
+  --format json
+```
+
+That GitHub-hosted runner smoke protects the supported validation build,
+requested/effective runtime profile wiring, and emitted report shape. It is
+separate from:
+
+- `scripts/ci/run_ci_perf_gate.sh`, which keeps the mandatory perf threshold
+  set intentionally narrow
+- cross-host lab authority documents such as `docs/perf-results-amd.md` and
+  `docs/perf-results-intel.md`
+- broader OxideMiner parent validation on real hosts
+
 ## Validation Commands
 
 Supported-path Light validation:

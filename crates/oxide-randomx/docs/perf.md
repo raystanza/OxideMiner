@@ -1307,13 +1307,16 @@ cargo run --release --bin perf_compare -- \
 
 ### Required CI perf gate
 
-`CI` runs `bash scripts/ci/run_ci_perf_gate.sh` on `ubuntu-latest` for a small, explicit supported-path manifest at `perf_baselines/ci/manifest.txt`.
+The `oxide-randomx CI` workflow runs
+`bash crates/oxide-randomx/scripts/ci/run_ci_perf_gate.sh` on `ubuntu-latest`
+for a small, explicit supported-path manifest at
+`crates/oxide-randomx/perf_baselines/ci/manifest.txt`.
 Workflow enforcement host and fixture provenance are tracked separately; see `perf_baselines/ci/README.md` for the currently blessed capture source.
 
 Current gated scenarios:
 
 * `light_interp`: `--mode light --jit off --iters 10 --warmup 2`
-* `light_jit`: `--mode light --jit on --jit-fast-regs off --iters 10 --warmup 2`
+* `light_jit_conservative`: `--mode light --jit on --jit-fast-regs off --iters 10 --warmup 2`
 * `fast_jit_fastregs`: `OXIDE_RANDOMX_FAST_BENCH=1 --mode fast --jit on --jit-fast-regs on --iters 10 --warmup 2`
 
 Why this scope:
@@ -1321,8 +1324,12 @@ Why this scope:
 * The manifest follows the current parent-facing supported path, not every experimental branch.
 * The Light rows protect the supported fallback ladder.
 * The Fast `jit-fastregs` row protects the default throughput path OxideMiner is expected to use.
+* Light `jit-fastregs` is protected by the separate validation-build
+  `oxideminer_integration` smoke and by `cargo test -p oxide-randomx --features "jit jit-fastregs"`, which keeps the perf gate small enough that thresholds remain meaningful.
 * `scripts/ci/run_ci_perf_gate.sh` enables `OXIDE_RANDOMX_FAST_BENCH=1` automatically for manifest rows whose mode is `fast`, so local reproduction stays one-command.
-* The v9 supported-path refresh did not require a fixture replacement because the mandatory scenario set is unchanged.
+* The v10 CI refresh did not require a fixture-content replacement because the
+  mandatory scenario set is unchanged apart from relabeling the conservative
+  JIT row to `light_jit_conservative`.
 
 Gate policy:
 
@@ -1331,7 +1338,7 @@ Gate policy:
 * Each candidate scenario is captured twice in CI and compared against a checked-in three-row baseline fixture.
 * Thresholds are versioned in `perf_baselines/ci/manifest.txt`.
   * `light_interp`: `15.0%`
-  * `light_jit`: `15.0%`
+  * `light_jit_conservative`: `15.0%`
   * `fast_jit_fastregs`: `20.0%`
   * The March 14, 2026 supported-path refresh kept the Light rows at `15.0%`, but widened the Fast row to `20.0%` after the same-`HEAD` local gate rerun on Intel `6/58` drifted by `+17.164%`.
 * The job uploads `baseline/*.csv`, `candidate/*.csv`, `compare/*.txt`, and the manifest on both success and failure.
@@ -1347,14 +1354,18 @@ Important scope note:
 
 Adjacent non-perf validation:
 
-* `CI` also runs a lightweight `examples/oxideminer_integration.rs` Light-mode smoke on `ubuntu-latest`.
-* That step validates the supported parent-facing lifecycle and report shape.
-* It is not part of the perf-threshold decision, and it does not turn GitHub-hosted runners into host-authority evidence.
+* The same GitHub-hosted workflow also runs a lightweight validation-build
+  `examples/oxideminer_integration.rs` Light-mode smoke on `ubuntu-latest`.
+* That step validates the supported `jit-fastregs` validation build,
+  parent-facing lifecycle, and report shape.
+* It is not part of the perf-threshold decision, and it does not turn
+  GitHub-hosted runners into host-authority evidence or replace broader
+  OxideMiner parent validation.
 
 Local reproduction of the mandatory gate:
 
 ```bash
-bash scripts/ci/run_ci_perf_gate.sh
+bash crates/oxide-randomx/scripts/ci/run_ci_perf_gate.sh
 ```
 
 This writes combined candidate CSVs, copied baseline fixtures, and compare logs under `artifacts/perf-gate/`.
@@ -1363,8 +1374,8 @@ tool paths automatically before running the gate.
 
 Fixture refresh flow:
 
-1. Prefer running the `Supported-Path Perf Gate Capture` workflow with `workflow_dispatch` on the commit you want to bless.
-2. Download `perf-gate-artifacts` and inspect the relevant `compare/*.txt` plus `candidate/*.csv` files.
+1. Prefer running the `oxide-randomx CI` workflow with `workflow_dispatch` on the commit you want to bless.
+2. Download `oxide-randomx-perf-gate-artifacts` and inspect the relevant `compare/*.txt` plus `candidate/*.csv` files.
 3. If the change is intentional and the candidate output is stable, replace the matching baseline CSV under `perf_baselines/ci/` and update `perf_baselines/ci/README.md` with the new provenance in the same PR.
 4. If you intentionally bless a local refresh instead, record the host/toolchain provenance explicitly and explain why that local capture is acceptable for the CI guardrail.
 
