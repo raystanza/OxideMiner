@@ -43,7 +43,8 @@ Rules:
 
 - `host_tag` is still used for output directory naming, but it is not a sufficient host-class identifier because it collapses the Windows and Linux `amd_fam23_mod8` hosts.
 - If a capture emits a `host_class_id` outside this table, treat it as `exploratory` until the host inventory is intentionally extended.
-- AMD `23/113` Windows remains supporting-only for now because same-SHA reruns changed realized large-page backing and integrated superscalar behavior.
+- AMD `23/113` Windows remains supporting-only because same-SHA reruns changed realized large-page backing and integrated superscalar behavior.
+- As of `2026-03-30`, the historical AMD `23/113` Windows host is unavailable for rerun follow-up; treat the checked-in capsules as historical supporting evidence until access is restored or a different host class is captured explicitly.
 
 ## Canonical Page Profiles
 
@@ -169,18 +170,22 @@ When a remote host needs a fixed rerun contract, the packagers can bake that int
 - `--remote-run-prefix` / `-RemoteRunPrefix` / `REMOTE_RUN_PREFIX`
 - `--remote-host-context-file` / `-RemoteHostContextFile` / `REMOTE_HOST_CONTEXT_FILE`
 
-Representative AMD `23/113` Windows rerun package command:
+Representative remote Windows rerun package command for any currently reachable
+Windows host:
 
 ```powershell
 .\scripts\build\build_full_features_benchmark.ps1 `
   -TargetHost windows `
   -RunCount 3 `
-  -RemoteBundleRoot 'C:\oxide-randomx-captures\promptv9_04_amd_fam23_mod113_20260326' `
-  -RemoteRunPrefix 'ff_amd_fam23_mod113_promptv9_04' `
+  -RemoteBundleRoot 'C:\oxide-randomx-captures\ff_windows_capture_20260330' `
+  -RemoteRunPrefix 'ff_windows_capture' `
   -RemoteHostContextFile 'HOST_CONTEXT_NOTES.txt'
 ```
 
 That still emits one executable plus one instructions file, but the instructions file now includes the fixed rerun loop, the outside-repo bundle root, and the host-context note requested for return.
+
+Do not treat AMD `23/113` Windows as an active remote target in this workflow
+unless access has been explicitly restored and re-documented in-tree.
 
 ## Run Locally
 
@@ -213,6 +218,11 @@ Remote host flow:
 5. Preserve and return the entire emitted bundle, not just selected summaries.
 6. Copy the intact returned `ff_*` directories back into this repo.
 7. Read classification and page-backing status from the emitted `meta/*` artifacts before writing any memo.
+
+Current limitation:
+
+- As of `2026-03-30`, AMD `23/113` Windows is not a reachable remote target for this repo.
+- Do not write workflow notes that imply a fresh `amd_fam23_mod113_windows` rerun is still pending unless access has actually been restored.
 
 ## Expected Artifacts
 
@@ -294,6 +304,7 @@ The checked-in machine-readable source of truth for the current full-features
 authority set is:
 
 - `crates/oxide-randomx/perf_results/full_features_authority_index_v10.json`
+- `crates/oxide-randomx/perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md` for the current AMD `23/113` rerun gap
 
 That index records, per `host_class_id`:
 

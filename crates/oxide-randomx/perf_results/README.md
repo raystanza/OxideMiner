@@ -20,6 +20,7 @@ Current source of truth:
 
 - `crates/oxide-randomx/perf_results/full_features_authority_index_v10.json`
 - `crates/oxide-randomx/docs/full-features-benchmark-v9-workflow.md`
+- `crates/oxide-randomx/perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md`
 
 Design notes:
 
@@ -29,6 +30,9 @@ Design notes:
   row plus page-backing realization fields.
 - AMD `23/113` Windows remains supporting-only because same-SHA reruns changed
   realized `large_pages_on` backing and the primary superscalar row.
+- As of `2026-03-30`, the remote AMD `23/113` Windows host is unavailable, so
+  the supporting-only classification is historical and current rerun follow-up
+  is blocked.
 
 Representative local commands from the `OxideMiner` repo root:
 

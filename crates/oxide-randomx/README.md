@@ -367,7 +367,7 @@ still has only exploratory direct A/B evidence.
 - Current rationale/evidence are documented in:
   - `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`
   - `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`
-  - `perf_results/AMD/P2_amd_fam23_mod113_stability_memo_2026-03-26.md`
+  - `perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md`
 
 ## Large Pages
 

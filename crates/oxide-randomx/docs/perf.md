@@ -297,7 +297,7 @@ Current disposition/evidence artifacts:
 
 * Primary decision memo: `perf_results/P2_5_superscalar_v9_disposition_2026-03-26.md`
 * Integrated feature-interaction memo: `perf_results/P2_4_integrated_full_features_authority_2026-03-26.md`
-* AMD `23/113` rerun-stability memo: `perf_results/AMD/P2_amd_fam23_mod113_stability_memo_2026-03-26.md`
+* AMD `23/113` host-unavailability memo: `perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md`
 * Clean AMD duplicate-family capture: `perf_results/AMD/v8_05_superscalar_prototype_amd_fam23_mod8_2026-03-11.md`
 * Packaged AMD novel-family support capture: `perf_results/AMD/v8_05_capture_amd_fam23_mod113_20260312_170748/v8_05_summary_amd_fam23_mod113_20260312_170748.json`
 * Clean Intel duplicate-family capture: `perf_results/Intel/v8_06_superscalar_prototype_intel_fam6_mod45_2026-03-11.md`
@@ -419,6 +419,9 @@ Notes:
   not policy authority.
 * AMD `23/113` Windows remains supporting integrated evidence with rerun-stability
   caveats, not clean-equivalent authority.
+* As of `2026-03-30`, the historical AMD `23/113` Windows host is unavailable,
+  so this evidence remains bounded by an unresolved rerun gap rather than an
+  active follow-up lane.
 * Older, narrower memos are preserved as supporting context; policy authority is
   the primary memo listed above.
 * Clean six-row baseline authority is tracked in `docs/perf-results-amd.md` and `docs/perf-results-intel.md`, not in experimental decision captures.

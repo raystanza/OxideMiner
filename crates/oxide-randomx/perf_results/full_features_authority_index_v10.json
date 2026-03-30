@@ -113,13 +113,14 @@
         "rustc": "rustc 1.93.0 (254b59607 2026-01-19)"
       },
       "rerun_stability": {
-        "status": "rerun_sensitive_same_sha",
+        "status": "rerun_sensitive_same_sha_host_unavailable",
         "expectation": "repeated_same_sha_required",
-        "note": "Same-SHA reruns changed realized large_pages_on backing and the primary superscalar row, so this host stays supporting-only."
+        "note": "Same-SHA reruns changed realized large_pages_on backing and the primary superscalar row, and the remote host is unavailable as of 2026-03-30, so this host stays supporting-only."
       },
       "notes": [
         "Imported v10 supporting authority capsule.",
-        "Supporting-only classification is about rerun stability, not dirty-tree provenance."
+        "Supporting-only classification is about rerun stability, not dirty-tree provenance.",
+        "Current rerun-gap memo: crates/oxide-randomx/perf_results/AMD/P2_amd_fam23_mod113_host_unavailability_2026-03-30.md"
       ]
     },
     {
