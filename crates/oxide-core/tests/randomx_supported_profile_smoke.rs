@@ -6,10 +6,11 @@ use oxide_randomx::{
 use std::sync::Arc;
 
 fn supported_jit_fastregs_flags() -> RandomXFlags {
-    let mut flags = RandomXFlags::default();
-    flags.jit = true;
-    flags.jit_fast_regs = true;
-    flags
+    RandomXFlags {
+        jit: true,
+        jit_fast_regs: true,
+        ..RandomXFlags::default()
+    }
 }
 
 #[test]

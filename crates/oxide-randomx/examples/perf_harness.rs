@@ -1118,27 +1118,23 @@ fn small_fast_config() -> Result<RandomXConfig, String> {
 }
 
 fn build_flags(jit_on: bool, jit_fast_regs: bool, large_pages: bool) -> RandomXFlags {
-    let mut flags = RandomXFlags::default();
-    apply_prefetch_env_overrides(&mut flags);
     #[cfg(feature = "jit")]
     {
-        flags.jit = jit_on;
-        flags.jit_fast_regs = jit_fast_regs;
+        RandomXFlags {
+            large_pages_plumbing: large_pages,
+            jit: jit_on,
+            jit_fast_regs,
+            ..RandomXFlags::from_env()
+        }
     }
     #[cfg(not(feature = "jit"))]
     {
         let _ = (jit_on, jit_fast_regs);
+        RandomXFlags {
+            large_pages_plumbing: large_pages,
+            ..RandomXFlags::from_env()
+        }
     }
-    flags.large_pages_plumbing = large_pages;
-    flags
-}
-
-fn apply_prefetch_env_overrides(flags: &mut RandomXFlags) {
-    let env_flags = RandomXFlags::from_env();
-    flags.prefetch = env_flags.prefetch;
-    flags.prefetch_distance = env_flags.prefetch_distance;
-    flags.prefetch_auto_tune = env_flags.prefetch_auto_tune;
-    flags.scratchpad_prefetch_distance = env_flags.scratchpad_prefetch_distance;
 }
 
 fn env_flag(name: &str) -> bool {

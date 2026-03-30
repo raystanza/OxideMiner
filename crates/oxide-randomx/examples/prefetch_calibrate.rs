@@ -456,23 +456,31 @@ fn workload() -> (Vec<u8>, Vec<Vec<u8>>) {
 }
 
 fn build_flags(opts: &Options, distance: u8) -> Result<RandomXFlags, String> {
-    let mut flags = RandomXFlags::default();
-    flags.prefetch = distance > 0;
-    flags.prefetch_distance = distance;
-    flags.prefetch_auto_tune = false;
-    flags.scratchpad_prefetch_distance = opts.scratchpad_prefetch_distance;
     #[cfg(feature = "jit")]
     {
-        flags.jit = opts.jit_requested;
-        flags.jit_fast_regs = opts.jit_fast_regs;
+        Ok(RandomXFlags {
+            prefetch: distance > 0,
+            prefetch_distance: distance,
+            prefetch_auto_tune: false,
+            scratchpad_prefetch_distance: opts.scratchpad_prefetch_distance,
+            jit: opts.jit_requested,
+            jit_fast_regs: opts.jit_fast_regs,
+            ..RandomXFlags::default()
+        })
     }
     #[cfg(not(feature = "jit"))]
     {
         if opts.jit_requested || opts.jit_fast_regs {
             return Err("jit options require --features jit".to_string());
         }
+        Ok(RandomXFlags {
+            prefetch: distance > 0,
+            prefetch_distance: distance,
+            prefetch_auto_tune: false,
+            scratchpad_prefetch_distance: opts.scratchpad_prefetch_distance,
+            ..RandomXFlags::default()
+        })
     }
-    Ok(flags)
 }
 
 fn fast_config() -> Result<RandomXConfig, String> {

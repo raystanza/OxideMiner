@@ -383,16 +383,17 @@ fn collect_hashes(vm: &mut RandomXVm, inputs: &[Vec<u8>], rounds: u64) -> Vec<[u
 }
 
 fn base_opts(mode: HarnessModeSelection, runtime_profile: RuntimeProfile) -> HarnessOptions {
-    let mut opts = HarnessOptions::default();
-    opts.config = RandomXConfig::test_small();
-    opts.mode = mode;
-    opts.runtime_profile = runtime_profile;
-    opts.warmup_rounds = 0;
-    opts.steady_rounds = 1;
-    opts.threads = 1;
-    opts.large_pages = false;
-    opts.use_1gb_pages = false;
-    opts
+    HarnessOptions {
+        config: RandomXConfig::test_small(),
+        mode,
+        runtime_profile,
+        warmup_rounds: 0,
+        steady_rounds: 1,
+        threads: 1,
+        large_pages: false,
+        use_1gb_pages: false,
+        ..HarnessOptions::default()
+    }
 }
 
 fn report_json(report: &oxide_randomx::oxideminer_integration::HarnessReport) -> Value {

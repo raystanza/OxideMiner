@@ -767,13 +767,13 @@ fn detect_host_identity() -> Result<HostIdentity, String> {
     {
         use std::arch::x86_64::__cpuid;
 
-        let cpuid0 = unsafe { __cpuid(0) };
+        let cpuid0 = __cpuid(0);
         let mut vendor = [0u8; 12];
         vendor[..4].copy_from_slice(&cpuid0.ebx.to_le_bytes());
         vendor[4..8].copy_from_slice(&cpuid0.edx.to_le_bytes());
         vendor[8..12].copy_from_slice(&cpuid0.ecx.to_le_bytes());
 
-        let cpuid1 = unsafe { __cpuid(1) };
+        let cpuid1 = __cpuid(1);
         let eax = cpuid1.eax;
 
         let base_family = (eax >> 8) & 0xF;
@@ -1120,14 +1120,21 @@ fn write_limitation_summary_json(
     .map_err(|e| e.to_string())?;
     writeln!(&mut json, "  }},").map_err(|e| e.to_string())?;
     writeln!(&mut json, "  \"params\": {{").map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"threads\": {},", ctx.options.threads)
-        .map_err(|e| e.to_string())?;
+    writeln!(&mut json, "    \"threads\": {},", ctx.options.threads).map_err(|e| e.to_string())?;
     writeln!(&mut json, "    \"perf_iters\": {},", ctx.options.perf_iters)
         .map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"perf_warmup\": {},", ctx.options.perf_warmup)
-        .map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"large_pages\": {}", ctx.options.large_pages)
-        .map_err(|e| e.to_string())?;
+    writeln!(
+        &mut json,
+        "    \"perf_warmup\": {},",
+        ctx.options.perf_warmup
+    )
+    .map_err(|e| e.to_string())?;
+    writeln!(
+        &mut json,
+        "    \"large_pages\": {}",
+        ctx.options.large_pages
+    )
+    .map_err(|e| e.to_string())?;
     writeln!(&mut json, "  }},").map_err(|e| e.to_string())?;
     writeln!(&mut json, "  \"artifacts\": {{").map_err(|e| e.to_string())?;
     writeln!(
@@ -1694,14 +1701,21 @@ fn write_summary_json(
     writeln!(&mut json, "  }},").map_err(|e| e.to_string())?;
 
     writeln!(&mut json, "  \"params\": {{").map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"threads\": {},", ctx.options.threads)
-        .map_err(|e| e.to_string())?;
+    writeln!(&mut json, "    \"threads\": {},", ctx.options.threads).map_err(|e| e.to_string())?;
     writeln!(&mut json, "    \"perf_iters\": {},", ctx.options.perf_iters)
         .map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"perf_warmup\": {},", ctx.options.perf_warmup)
-        .map_err(|e| e.to_string())?;
-    writeln!(&mut json, "    \"large_pages\": {}", ctx.options.large_pages)
-        .map_err(|e| e.to_string())?;
+    writeln!(
+        &mut json,
+        "    \"perf_warmup\": {},",
+        ctx.options.perf_warmup
+    )
+    .map_err(|e| e.to_string())?;
+    writeln!(
+        &mut json,
+        "    \"large_pages\": {}",
+        ctx.options.large_pages
+    )
+    .map_err(|e| e.to_string())?;
     writeln!(&mut json, "  }},").map_err(|e| e.to_string())?;
 
     writeln!(&mut json, "  \"correctness\": {{").map_err(|e| e.to_string())?;

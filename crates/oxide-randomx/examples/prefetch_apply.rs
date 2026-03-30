@@ -1,5 +1,5 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use oxide_randomx::prefetch_calibration::{
     apply_prefetch_calibration_for_current_host, PrefetchCalibrationApplyStatus,
@@ -27,19 +27,23 @@ fn main() {
 }
 
 fn run(opts: Options) -> Result<String, String> {
-    let mut flags = RandomXFlags::default();
-    flags.scratchpad_prefetch_distance = opts.scratchpad_prefetch_distance;
     #[cfg(feature = "jit")]
-    {
-        flags.jit = opts.jit_requested;
-        flags.jit_fast_regs = opts.jit_fast_regs;
-    }
+    let mut flags = RandomXFlags {
+        scratchpad_prefetch_distance: opts.scratchpad_prefetch_distance,
+        jit: opts.jit_requested,
+        jit_fast_regs: opts.jit_fast_regs,
+        ..RandomXFlags::default()
+    };
     #[cfg(not(feature = "jit"))]
-    {
+    let mut flags = {
         if opts.jit_requested || opts.jit_fast_regs {
             return Err("jit options require --features jit".to_string());
         }
-    }
+        RandomXFlags {
+            scratchpad_prefetch_distance: opts.scratchpad_prefetch_distance,
+            ..RandomXFlags::default()
+        }
+    };
 
     let outcome = apply_prefetch_calibration_for_current_host(
         &opts.calibration,
@@ -127,7 +131,7 @@ fn usage_and_exit() -> ! {
 }
 
 fn format_human(
-    calibration: &PathBuf,
+    calibration: &Path,
     flags: &RandomXFlags,
     outcome: &oxide_randomx::prefetch_calibration::PrefetchCalibrationApplyOutcome,
 ) -> String {

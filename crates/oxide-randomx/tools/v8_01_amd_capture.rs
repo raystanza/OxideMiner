@@ -22,11 +22,6 @@ const RUSTC_VERSION: &str = env!("OXIDE_RANDOMX_RUSTC_VERSION");
 mod perf_harness_support {
     #![allow(dead_code)]
 
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/examples/perf_harness.rs"
-    ));
-
     pub struct CaptureSpec<'a> {
         pub mode: &'a str,
         pub iters: u64,
@@ -87,6 +82,11 @@ mod perf_harness_support {
             summary: summary_line(&report),
         })
     }
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/perf_harness.rs"
+    ));
 }
 
 #[derive(Debug)]
@@ -577,13 +577,13 @@ fn detect_host_identity() -> Result<HostIdentity, String> {
     {
         use std::arch::x86_64::__cpuid;
 
-        let cpuid0 = unsafe { __cpuid(0) };
+        let cpuid0 = __cpuid(0);
         let mut vendor = [0u8; 12];
         vendor[..4].copy_from_slice(&cpuid0.ebx.to_le_bytes());
         vendor[4..8].copy_from_slice(&cpuid0.edx.to_le_bytes());
         vendor[8..12].copy_from_slice(&cpuid0.ecx.to_le_bytes());
 
-        let cpuid1 = unsafe { __cpuid(1) };
+        let cpuid1 = __cpuid(1);
         let eax = cpuid1.eax;
         let base_family = (eax >> 8) & 0xF;
         let ext_family = (eax >> 20) & 0xFF;

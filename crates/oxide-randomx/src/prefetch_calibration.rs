@@ -474,14 +474,13 @@ fn detect_cpu_identity() -> PrefetchCpuIdentity {
     #[cfg(not(miri))]
     {
         use std::arch::x86_64::__cpuid;
-        let cpuid0 = unsafe { __cpuid(0) };
-        let vendor_bytes = [
-            cpuid0.ebx.to_le_bytes(),
-            cpuid0.edx.to_le_bytes(),
-            cpuid0.ecx.to_le_bytes(),
-        ];
-        let vendor = String::from_utf8_lossy(&vendor_bytes.concat()).to_string();
-        let cpuid1 = unsafe { __cpuid(1) };
+        let cpuid0 = __cpuid(0);
+        let mut vendor_bytes = [0u8; 12];
+        vendor_bytes[..4].copy_from_slice(&cpuid0.ebx.to_le_bytes());
+        vendor_bytes[4..8].copy_from_slice(&cpuid0.edx.to_le_bytes());
+        vendor_bytes[8..12].copy_from_slice(&cpuid0.ecx.to_le_bytes());
+        let vendor = String::from_utf8_lossy(&vendor_bytes).into_owned();
+        let cpuid1 = __cpuid(1);
         let eax = cpuid1.eax;
         let base_family = (eax >> 8) & 0xF;
         let ext_family = (eax >> 20) & 0xFF;
@@ -559,6 +558,38 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "jit")]
+    fn scenario_flags(
+        scratchpad_prefetch_distance: u8,
+        jit: bool,
+        jit_fast_regs: bool,
+    ) -> RandomXFlags {
+        RandomXFlags {
+            prefetch: false,
+            prefetch_distance: 0,
+            prefetch_auto_tune: true,
+            scratchpad_prefetch_distance,
+            jit,
+            jit_fast_regs,
+            ..RandomXFlags::default()
+        }
+    }
+
+    #[cfg(not(feature = "jit"))]
+    fn scenario_flags(
+        scratchpad_prefetch_distance: u8,
+        _jit: bool,
+        _jit_fast_regs: bool,
+    ) -> RandomXFlags {
+        RandomXFlags {
+            prefetch: false,
+            prefetch_distance: 0,
+            prefetch_auto_tune: true,
+            scratchpad_prefetch_distance,
+            ..RandomXFlags::default()
+        }
+    }
+
     fn temp_csv_path(suffix: &str) -> std::path::PathBuf {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -597,16 +628,7 @@ mod tests {
 
     #[test]
     fn scenario_key_from_runtime_uses_flags_shape() {
-        let mut flags = RandomXFlags::default();
-        flags.prefetch = false;
-        flags.prefetch_distance = 0;
-        flags.prefetch_auto_tune = true;
-        flags.scratchpad_prefetch_distance = 7;
-        #[cfg(feature = "jit")]
-        {
-            flags.jit = true;
-            flags.jit_fast_regs = true;
-        }
+        let flags = scenario_flags(7, true, true);
 
         let scenario =
             PrefetchScenarioKey::from_runtime(PrefetchCalibrationMode::Fast, &flags, "test-id");
@@ -678,11 +700,7 @@ mod tests {
     fn apply_current_host_prefetch_calibration_updates_flags() {
         let path = temp_csv_path("apply");
         let workload_id = "prefetch-apply-test";
-        let mut flags = RandomXFlags::default();
-        flags.prefetch = false;
-        flags.prefetch_distance = 0;
-        flags.prefetch_auto_tune = true;
-        flags.scratchpad_prefetch_distance = 4;
+        let mut flags = scenario_flags(4, false, false);
         let record = current_host_record(&flags, PrefetchCalibrationMode::Light, workload_id);
         upsert_calibration_record(&path, record.clone()).expect("upsert");
 
@@ -707,11 +725,7 @@ mod tests {
     #[test]
     fn apply_current_host_prefetch_calibration_keeps_flags_when_file_missing() {
         let path = temp_csv_path("missing");
-        let mut flags = RandomXFlags::default();
-        flags.prefetch = false;
-        flags.prefetch_distance = 0;
-        flags.prefetch_auto_tune = true;
-        flags.scratchpad_prefetch_distance = 3;
+        let mut flags = scenario_flags(3, false, false);
 
         let outcome = apply_prefetch_calibration_for_current_host(
             &path,
@@ -735,11 +749,7 @@ mod tests {
     #[test]
     fn apply_current_host_prefetch_calibration_requires_strict_match() {
         let path = temp_csv_path("mismatch");
-        let mut flags = RandomXFlags::default();
-        flags.prefetch = false;
-        flags.prefetch_distance = 0;
-        flags.prefetch_auto_tune = true;
-        flags.scratchpad_prefetch_distance = 1;
+        let mut flags = scenario_flags(1, false, false);
         let record =
             current_host_record(&flags, PrefetchCalibrationMode::Light, "strict-match-test");
         upsert_calibration_record(&path, record).expect("upsert");

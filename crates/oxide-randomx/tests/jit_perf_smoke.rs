@@ -10,8 +10,10 @@ fn jit_perf_smoke_light() {
         *byte = idx as u8;
     }
     let cache = RandomXCache::new(&key, &cfg).expect("cache");
-    let mut flags = RandomXFlags::default();
-    flags.jit = true;
+    let flags = RandomXFlags {
+        jit: true,
+        ..RandomXFlags::default()
+    };
     let mut vm = RandomXVm::new_light(cache, cfg, flags).expect("vm");
 
     if !vm.is_jit_active() {

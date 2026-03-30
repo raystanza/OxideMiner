@@ -202,18 +202,17 @@ pub mod cpu_detect {
         use std::arch::x86_64::__cpuid;
 
         // Leaf 0: Vendor ID
-        let cpuid0 = unsafe { __cpuid(0) };
+        let cpuid0 = __cpuid(0);
 
         // Vendor string: EBX, EDX, ECX (in that order)
-        let vendor_bytes = [
-            cpuid0.ebx.to_le_bytes(),
-            cpuid0.edx.to_le_bytes(),
-            cpuid0.ecx.to_le_bytes(),
-        ];
-        let vendor = String::from_utf8_lossy(&vendor_bytes.concat()).to_string();
+        let mut vendor_bytes = [0u8; 12];
+        vendor_bytes[..4].copy_from_slice(&cpuid0.ebx.to_le_bytes());
+        vendor_bytes[4..8].copy_from_slice(&cpuid0.edx.to_le_bytes());
+        vendor_bytes[8..12].copy_from_slice(&cpuid0.ecx.to_le_bytes());
+        let vendor = String::from_utf8_lossy(&vendor_bytes).into_owned();
 
         // Leaf 1: Family/Model/Stepping
-        let cpuid1 = unsafe { __cpuid(1) };
+        let cpuid1 = __cpuid(1);
         let eax = cpuid1.eax;
 
         // Family = BaseFamily + ExtFamily (if BaseFamily == 15)

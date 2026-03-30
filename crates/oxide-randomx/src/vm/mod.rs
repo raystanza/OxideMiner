@@ -221,14 +221,14 @@ fn simd_blockio_runtime_enabled() -> bool {
         use std::arch::x86_64::__cpuid;
 
         // CPUID(0): vendor string in EBX, EDX, ECX order.
-        let cpuid0 = unsafe { __cpuid(0) };
+        let cpuid0 = __cpuid(0);
         let mut vendor = [0u8; 12];
         vendor[..4].copy_from_slice(&cpuid0.ebx.to_le_bytes());
         vendor[4..8].copy_from_slice(&cpuid0.edx.to_le_bytes());
         vendor[8..12].copy_from_slice(&cpuid0.ecx.to_le_bytes());
 
         // CPUID(1): decode family/model.
-        let cpuid1 = unsafe { __cpuid(1) };
+        let cpuid1 = __cpuid(1);
         let eax = cpuid1.eax;
         let base_family = (eax >> 8) & 0xF;
         let ext_family = (eax >> 20) & 0xFF;
