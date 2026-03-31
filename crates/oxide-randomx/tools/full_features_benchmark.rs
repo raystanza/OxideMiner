@@ -1,10 +1,10 @@
 use oxide_randomx::full_features_capture::{
     canonical_page_profiles, collect_artifacts, detect_host_identity, ensure_compiled_features,
     execute_capture_plan, internal_full_plan, now_strings, short_hash32, write_artifact,
-    CaptureContext, CaptureOptions, CaptureSurface, CapturedRun, HostIdentity, HostOsClass,
-    PageBackingSummary, PageProfile, PageProfileRole, PairSummary, COMMANDS_ARTIFACT,
-    DEFAULT_PERF_ITERS, DEFAULT_PERF_WARMUP, MANIFEST_ARTIFACT, MATRIX_INDEX_ARTIFACT,
-    PAIR_INDEX_ARTIFACT, PAIR_SUMMARY_ARTIFACT,
+    CaptureContext, CaptureOptions, CaptureSurface, CapturedRun, HostIdentity, PageBackingSummary,
+    PageProfile, PageProfileRole, PairSummary, COMMANDS_ARTIFACT, DEFAULT_PERF_ITERS,
+    DEFAULT_PERF_WARMUP, MANIFEST_ARTIFACT, MATRIX_INDEX_ARTIFACT, PAIR_INDEX_ARTIFACT,
+    PAIR_SUMMARY_ARTIFACT,
 };
 use serde_json::{json, Map, Value};
 use std::env;
@@ -18,7 +18,7 @@ const CAPTURE_DIR_PREFIX: &str = "ff";
 const PROVENANCE_ARTIFACT: &str = "meta/provenance.txt";
 const SUMMARY_ARTIFACT: &str = "meta/summary.json";
 const OVERVIEW_ARTIFACT: &str = "meta/overview.md";
-const AUTHORITY_WORKFLOW_VERSION: &str = "v10";
+const AUTHORITY_WORKFLOW_VERSION: &str = "public-v1";
 
 const GIT_SHA: &str = env!("OXIDE_RANDOMX_GIT_SHA");
 const GIT_SHA_SHORT: &str = env!("OXIDE_RANDOMX_GIT_SHA_SHORT");
@@ -27,7 +27,6 @@ const RUSTC_VERSION: &str = env!("OXIDE_RANDOMX_RUSTC_VERSION");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EvidenceTier {
-    Authority,
     Supporting,
     Exploratory,
 }
@@ -35,7 +34,6 @@ enum EvidenceTier {
 impl EvidenceTier {
     fn as_str(self) -> &'static str {
         match self {
-            Self::Authority => "authority",
             Self::Supporting => "supporting",
             Self::Exploratory => "exploratory",
         }
@@ -433,61 +431,20 @@ fn build_authority_workflow(
     page_profiles: &[PageProfile],
 ) -> AuthorityWorkflow {
     let host_tag = host.host_tag();
-    let host_class_id = format!("{}_{}", host_tag, host.os_class().as_str());
-    let (canonical_host_class, host_inventory_label, host_inventory_tier, host_inventory_reason, rerun_expectation, rerun_reason) =
-        match (host.vendor.as_str(), host.family, host.model, host.os_class()) {
-            ("AuthenticAMD", 23, 113, HostOsClass::Windows) => (
-                true,
-                "AMD R5 3600 / Win11".to_string(),
-                EvidenceTier::Supporting,
-                "canonical v10 host class, but known rerun instability keeps captures in the supporting tier until repeated same-SHA behavior is reviewed".to_string(),
-                RerunExpectation::RepeatedSameShaRequired,
-                "same-SHA repeated runs are required because the 2026-03-18 and 2026-03-20 captures changed realized large-page backing and integrated superscalar behavior".to_string(),
-            ),
-            ("AuthenticAMD", 23, 8, HostOsClass::Windows) => (
-                true,
-                "AMD R5 2600 / Win11".to_string(),
-                EvidenceTier::Authority,
-                "canonical v10 host class for Windows AMD Zen+ evidence".to_string(),
-                RerunExpectation::SingleCaptureSufficient,
-                "single clean capture is normally sufficient for this host class".to_string(),
-            ),
-            ("AuthenticAMD", 23, 8, HostOsClass::Linux) => (
-                true,
-                "AMD R5 2600 / Ubuntu".to_string(),
-                EvidenceTier::Authority,
-                "canonical v10 host class for Linux AMD Zen+ evidence".to_string(),
-                RerunExpectation::SingleCaptureSufficient,
-                "single clean capture is normally sufficient for this host class".to_string(),
-            ),
-            ("GenuineIntel", 6, 45, HostOsClass::Linux) => (
-                true,
-                "Intel Dual-Xeon / Ubuntu".to_string(),
-                EvidenceTier::Authority,
-                "canonical v10 host class for dual-socket Intel Linux evidence".to_string(),
-                RerunExpectation::SingleCaptureSufficient,
-                "single clean capture is normally sufficient for this host class".to_string(),
-            ),
-            ("GenuineIntel", 6, 58, HostOsClass::Linux) => (
-                true,
-                "Intel i5 / Ubuntu".to_string(),
-                EvidenceTier::Authority,
-                "canonical v10 host class for small Intel Linux evidence".to_string(),
-                RerunExpectation::SingleCaptureSufficient,
-                "single clean capture is normally sufficient for this host class".to_string(),
-            ),
-            _ => (
-                false,
-                format!(
-                    "{} family/model {}/{} ({})",
-                    host.vendor, host.family, host.model, host.os_name
-                ),
-                EvidenceTier::Exploratory,
-                "outside the documented v10 canonical host inventory; use for exploratory evidence only".to_string(),
-                RerunExpectation::SingleCaptureSufficient,
-                "non-canonical hosts are exploratory until the host inventory is intentionally extended".to_string(),
-            ),
-        };
+    let host_class_id = host_tag.clone();
+    let host_inventory_label = format!(
+        "{} {}-thread {} host",
+        match host.bucket {
+            oxide_randomx::full_features_capture::HostBucket::Amd => "AMD",
+            oxide_randomx::full_features_capture::HostBucket::Intel => "Intel",
+            oxide_randomx::full_features_capture::HostBucket::Unlabeled => "Unlabeled",
+        },
+        host.logical_threads,
+        host.os_class().as_str()
+    );
+    let canonical_host_class = false;
+    let host_inventory_tier = EvidenceTier::Supporting;
+    let host_inventory_reason = "The integrated public repository does not hardcode canonical authority hosts, but a clean local capture can still serve as supporting evidence until a maintainer intentionally promotes it into a local authority index.".to_string();
 
     let mut clean_provenance_notes = Vec::new();
     if GIT_DIRTY != "false" {
@@ -525,6 +482,15 @@ fn build_authority_workflow(
             clean_provenance_notes.join("; ")
         )
     };
+    let rerun_expectation = if clean_provenance {
+        RerunExpectation::RepeatedSameShaRequired
+    } else {
+        RerunExpectation::SingleCaptureSufficient
+    };
+    let rerun_reason = match rerun_expectation {
+        RerunExpectation::RepeatedSameShaRequired => "Clean local captures should be repeated on the same git SHA before they are referenced as supporting evidence in a local authority index.".to_string(),
+        RerunExpectation::SingleCaptureSufficient => "This capture is already exploratory because provenance drifted, so a same-SHA rerun is optional unless a maintainer wants to investigate the drift.".to_string(),
+    };
 
     let page_profile_key_suffix = page_profiles
         .iter()
@@ -558,17 +524,8 @@ fn build_authority_workflow(
     }
 }
 
-fn page_profile_evidence_tier(capture_tier: EvidenceTier, role: PageProfileRole) -> EvidenceTier {
-    match capture_tier {
-        EvidenceTier::Exploratory => EvidenceTier::Exploratory,
-        EvidenceTier::Supporting => EvidenceTier::Supporting,
-        EvidenceTier::Authority => match role {
-            PageProfileRole::AuthorityPrimary => EvidenceTier::Authority,
-            PageProfileRole::SupportingControl | PageProfileRole::SupportingSemantics => {
-                EvidenceTier::Supporting
-            }
-        },
-    }
+fn page_profile_evidence_tier(capture_tier: EvidenceTier, _role: PageProfileRole) -> EvidenceTier {
+    capture_tier
 }
 
 fn page_profile_for_key<'a>(ctx: &'a Context, key: &str) -> &'a PageProfile {
@@ -1490,34 +1447,39 @@ mod tests {
     }
 
     #[test]
-    fn authority_workflow_marks_amd_23_113_windows_as_supporting() {
-        let host = test_host("AuthenticAMD", 23, 113, "Microsoft Windows 11 Pro", 12);
+    fn authority_workflow_defaults_to_exploratory_inventory() {
+        let host = test_host("AuthenticAMD", 10, 20, "Microsoft Windows 11 Pro", 12);
         let workflow = build_authority_workflow(
             &host,
             &test_options(12),
-            &canonical_page_profiles(HostOsClass::Windows),
+            &canonical_page_profiles(oxide_randomx::full_features_capture::HostOsClass::Windows),
         );
 
-        assert_eq!(workflow.host_class_id, "amd_fam23_mod113_windows");
-        assert!(workflow.canonical_host_class);
+        assert!(!workflow.host_class_id.is_empty());
+        assert!(!workflow.canonical_host_class);
         assert_eq!(workflow.host_inventory_tier, EvidenceTier::Supporting);
-        assert_eq!(
-            workflow.capture_evidence_tier,
-            if GIT_DIRTY == "false" {
-                EvidenceTier::Supporting
-            } else {
-                EvidenceTier::Exploratory
-            }
-        );
+        if GIT_DIRTY == "false" {
+            assert_eq!(workflow.capture_evidence_tier, EvidenceTier::Supporting);
+            assert_eq!(
+                workflow.rerun_expectation,
+                RerunExpectation::RepeatedSameShaRequired
+            );
+        } else {
+            assert_eq!(workflow.capture_evidence_tier, EvidenceTier::Exploratory);
+            assert_eq!(
+                workflow.rerun_expectation,
+                RerunExpectation::SingleCaptureSufficient
+            );
+        }
     }
 
     #[test]
     fn authority_workflow_downgrades_noncanonical_settings_to_exploratory() {
-        let host = test_host("GenuineIntel", 6, 45, "Ubuntu 24.04.4 LTS", 32);
+        let host = test_host("GenuineIntel", 11, 21, "Ubuntu 24.04.4 LTS", 32);
         let workflow = build_authority_workflow(
             &host,
             &test_options(16),
-            &canonical_page_profiles(HostOsClass::Linux),
+            &canonical_page_profiles(oxide_randomx::full_features_capture::HostOsClass::Linux),
         );
 
         assert_eq!(workflow.capture_evidence_tier, EvidenceTier::Exploratory);

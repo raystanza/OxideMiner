@@ -243,7 +243,7 @@ pub mod cpu_detect {
 
     #[cfg_attr(miri, allow(dead_code))]
     fn classify_intel(family: u32, model: u32) -> CpuFamily {
-        // Intel Family 6 covers everything from Pentium Pro to current
+        // Current Intel desktop/server lineages all fall under family 6.
         if family != 6 {
             return CpuFamily::Unknown;
         }

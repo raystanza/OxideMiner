@@ -34,6 +34,7 @@ Thumbs.db
 # Build directories
 ox-build/
 ox-build/target/
+crates/oxide-randomx/perf_results/
 
 # AI Agent files
 AGENTS.md

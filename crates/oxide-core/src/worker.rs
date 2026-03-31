@@ -118,12 +118,7 @@ pub fn spawn_workers(n: usize, config: WorkerSpawnConfig) -> Vec<tokio::task::Jo
                         shares_tx: worker_shares_tx,
                         hash_counter: worker_hash_counter,
                     };
-                    if let Err(e) = randomx_worker_loop(
-                        worker_loop_config,
-                        rx,
-                    )
-                    .await
-                    {
+                    if let Err(e) = randomx_worker_loop(worker_loop_config, rx).await {
                         tracing::warn!(worker = i, error = ?e, "worker exited");
                     }
                 }

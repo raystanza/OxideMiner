@@ -194,8 +194,8 @@ fn env_var_truthy(name: &str) -> bool {
 #[cfg(all(feature = "simd-blockio", target_arch = "x86_64"))]
 #[inline]
 fn simd_blockio_is_blocked_cpu(vendor: &[u8], family: u32, model: u32) -> bool {
-    // Runtime mitigation: measured Intel Family 6 Model 45 (Sandy Bridge-EP)
-    // shows reproducible fast-mode regression with simd-blockio.
+    // Runtime mitigation: one measured legacy Intel server host shows a
+    // reproducible fast-mode regression with simd-blockio.
     vendor == b"GenuineIntel" && family == 6 && model == 45
 }
 
@@ -3743,7 +3743,7 @@ mod tests {
 
     #[cfg(all(feature = "simd-blockio", target_arch = "x86_64"))]
     #[test]
-    fn simd_blockio_blocked_cpu_classifier_targets_xeon_model_45() {
+    fn simd_blockio_blocked_cpu_classifier_targets_known_regression_host() {
         assert!(super::simd_blockio_is_blocked_cpu(b"GenuineIntel", 6, 45));
         assert!(!super::simd_blockio_is_blocked_cpu(b"GenuineIntel", 6, 85));
         assert!(!super::simd_blockio_is_blocked_cpu(b"AuthenticAMD", 23, 8));

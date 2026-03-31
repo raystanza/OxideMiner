@@ -11,8 +11,10 @@
 It’s built to squeeze every cycle from your CPU while keeping your system secure and predictable.
 No hidden payloads, no opaque binaries...just verifiable, auditable performance.
 
-📢 **BETA TESTERS WANTED** 🧪  
-Please visit [oxide-randomx-public-beta](https://github.com/raystanza/oxide-randomx-public-beta) to help provide crucial data related to the upcomming release of Oxide Miner's custom RandomX implementation. `oxide-randomx` now lives inside this repository under `crates/oxide-randomx` as a proprietary internal component of OxideMiner. You can see the update I posted in the [Discussions](https://github.com/raystanza/OxideMiner/discussions/128).
+`oxide-randomx` now lives directly in this repository under `crates/oxide-randomx`.
+There is no separate companion repo or prerelease side-channel to track
+anymore; the RandomX engine, its validation tooling, and the parent integration
+docs now ship together in one open-source workspace.
 
 We ship a **command-line miner** with automatic CPU tuning, an **optional embedded dashboard**, and hardened controls for TLS, logging, and system friendliness. Every byte of it compiles from the code you see here.
 

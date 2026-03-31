@@ -226,7 +226,7 @@ execute_checksum,execute_select_checksum\n\
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureSurface<'a> {
     Internal,
-    Public { beta_release_id: &'a str },
+    Public { release_id: &'a str },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -422,12 +422,12 @@ pub struct SuperscalarSpec {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PublicBetaProfile {
+pub enum PublicCaptureProfile {
     Standard,
     Full,
 }
 
-impl PublicBetaProfile {
+impl PublicCaptureProfile {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Standard => "standard",
@@ -490,7 +490,15 @@ impl HostIdentity {
             HostBucket::Intel => "intel",
             HostBucket::Unlabeled => "host",
         };
-        format!("{vendor}_fam{}_mod{}", self.family, self.model)
+        let fingerprint = short_hash32(&format!(
+            "{}:{}:{}:{}",
+            self.vendor, self.family, self.model, self.cpu_model_string
+        ));
+        format!(
+            "{vendor}_{}_{}t_{fingerprint:08x}",
+            self.os_class().as_str(),
+            self.logical_threads
+        )
     }
 
     pub fn os_class(&self) -> HostOsClass {
@@ -1151,11 +1159,11 @@ pub fn internal_full_plan(os_class: HostOsClass) -> CapturePlan {
     }
 }
 
-pub fn public_beta_plan(profile: PublicBetaProfile, os_class: HostOsClass) -> CapturePlan {
+pub fn public_capture_plan(profile: PublicCaptureProfile, os_class: HostOsClass) -> CapturePlan {
     match profile {
-        PublicBetaProfile::Standard => CapturePlan {
+        PublicCaptureProfile::Standard => CapturePlan {
             id: "standard",
-            display_name: "Public Beta Standard",
+            display_name: "Public Capture Standard",
             runtime_class: "moderate",
             page_profiles: canonical_page_profiles(os_class),
             matrix_specs: full_matrix_specs()
@@ -1176,9 +1184,9 @@ pub fn public_beta_plan(profile: PublicBetaProfile, os_class: HostOsClass) -> Ca
                 .collect(),
             superscalar_specs: superscalar_specs(),
         },
-        PublicBetaProfile::Full => CapturePlan {
+        PublicCaptureProfile::Full => CapturePlan {
             id: "full",
-            display_name: "Public Beta Full",
+            display_name: "Public Capture Full",
             runtime_class: "long",
             page_profiles: canonical_page_profiles(os_class),
             matrix_specs: full_matrix_specs(),
@@ -1953,7 +1961,7 @@ fn write_compare_txt(
 
 fn matrix_index_fields() -> &'static [&'static str] {
     &[
-        "beta_release_id",
+        "release_id",
         "features",
         "cpu",
         "cores",
@@ -2267,7 +2275,7 @@ fn sanitize_perf_artifacts(
 ) -> (Vec<String>, BTreeMap<String, String>, Value) {
     match surface {
         CaptureSurface::Internal => (csv_header.to_vec(), csv_fields.clone(), json_value),
-        CaptureSurface::Public { beta_release_id } => {
+        CaptureSurface::Public { release_id } => {
             let mut header = Vec::new();
             let mut fields = BTreeMap::new();
             for column in csv_header {
@@ -2279,8 +2287,8 @@ fn sanitize_perf_artifacts(
                     fields.insert(column.clone(), value.clone());
                 }
             }
-            header.push("beta_release_id".to_string());
-            fields.insert("beta_release_id".to_string(), beta_release_id.to_string());
+            header.push("release_id".to_string());
+            fields.insert("release_id".to_string(), release_id.to_string());
 
             if let Some(root) = json_value.as_object_mut() {
                 if let Some(provenance) = root.get_mut("provenance").and_then(Value::as_object_mut)
@@ -2289,13 +2297,13 @@ fn sanitize_perf_artifacts(
                     provenance.remove("git_sha_short");
                     provenance.remove("git_dirty");
                     provenance.insert(
-                        "beta_release_id".to_string(),
-                        Value::String(beta_release_id.to_string()),
+                        "release_id".to_string(),
+                        Value::String(release_id.to_string()),
                     );
                 }
                 root.insert(
-                    "beta_release_id".to_string(),
-                    Value::String(beta_release_id.to_string()),
+                    "release_id".to_string(),
+                    Value::String(release_id.to_string()),
                 );
             }
 
@@ -3004,8 +3012,8 @@ mod tests {
 
     #[test]
     fn public_standard_plan_has_expected_scope() {
-        let windows = public_beta_plan(PublicBetaProfile::Standard, HostOsClass::Windows);
-        let linux = public_beta_plan(PublicBetaProfile::Standard, HostOsClass::Linux);
+        let windows = public_capture_plan(PublicCaptureProfile::Standard, HostOsClass::Windows);
+        let linux = public_capture_plan(PublicCaptureProfile::Standard, HostOsClass::Linux);
 
         assert_eq!(windows.matrix_specs.len(), 6);
         assert_eq!(linux.matrix_specs.len(), 6);
@@ -3082,7 +3090,7 @@ mod tests {
 
         let (header, fields, json_value) = sanitize_perf_artifacts(
             CaptureSurface::Public {
-                beta_release_id: "beta-2026-03",
+                release_id: "capture-2026-03",
             },
             &header,
             &fields,
@@ -3091,8 +3099,8 @@ mod tests {
 
         assert!(!header.iter().any(|value| value == "git_sha"));
         assert_eq!(
-            fields.get("beta_release_id").map(String::as_str),
-            Some("beta-2026-03")
+            fields.get("release_id").map(String::as_str),
+            Some("capture-2026-03")
         );
         assert!(json_value
             .get("provenance")

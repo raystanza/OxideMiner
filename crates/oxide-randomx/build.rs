@@ -9,8 +9,8 @@ fn main() {
     let git_sha = git_rev_parse();
     let git_dirty = git_is_dirty();
     let rustc_version = rustc_version();
-    let beta_release_id =
-        env::var("OXIDE_RANDOMX_BETA_RELEASE_ID").unwrap_or_else(|_| "local-dev".to_string());
+    let release_id =
+        env::var("OXIDE_RANDOMX_CAPTURE_RELEASE_ID").unwrap_or_else(|_| "local-dev".to_string());
 
     println!("cargo:rustc-env=OXIDE_RANDOMX_GIT_SHA={}", git_sha);
     println!(
@@ -23,8 +23,8 @@ fn main() {
         rustc_version
     );
     println!(
-        "cargo:rustc-env=OXIDE_RANDOMX_BETA_RELEASE_ID={}",
-        beta_release_id
+        "cargo:rustc-env=OXIDE_RANDOMX_CAPTURE_RELEASE_ID={}",
+        release_id
     );
 }
 

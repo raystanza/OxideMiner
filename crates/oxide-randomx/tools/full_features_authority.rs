@@ -1,3 +1,4 @@
+use oxide_randomx::full_features_capture::short_hash32;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -6,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 const DEFAULT_INDEX_PATH: &str =
-    "crates/oxide-randomx/perf_results/full_features_authority_index_v10.json";
+    "crates/oxide-randomx/perf_results/full_features_authority_index.json";
 const PROVENANCE_ARTIFACT: &str = "meta/provenance.txt";
 const PAIR_SUMMARY_ARTIFACT: &str = "meta/pair_summary.csv";
 const MATRIX_INDEX_ARTIFACT: &str = "meta/matrix_index.csv";
@@ -226,9 +227,13 @@ impl CaptureProvenance {
             other => sanitize_id_component(other),
         };
         let os_class = infer_os_class(&self.os_name, self.os_build_or_kernel.as_deref())?;
+        let logical_threads = self.logical_threads.or(self.threads).unwrap_or(0);
+        let fingerprint = short_hash32(&format!(
+            "{}:{}:{}:{}",
+            self.vendor, self.family, self.model, self.cpu_model_string
+        ));
         Ok(format!(
-            "{vendor_prefix}_fam{}_mod{}_{}",
-            self.family, self.model, os_class
+            "{vendor_prefix}_{os_class}_{logical_threads}t_{fingerprint:08x}"
         ))
     }
 }
@@ -534,7 +539,7 @@ fn print_usage() {
          Examples:\n\
            cargo run --release --bin full_features_authority -- validate-index\n\
            cargo run --release --bin full_features_authority -- compare \\\n\
-             --capture crates/oxide-randomx/perf_results/AMD/ff_amd_fam23_mod113_windows_20260318_210634"
+             --capture crates/oxide-randomx/perf_results/local/ff_example_capture"
     );
 }
 
@@ -1890,11 +1895,12 @@ mod tests {
         include_authority_metadata: bool,
     ) -> String {
         let mut body = format!(
-            "timestamp=2026-03-20T12:00:00-04:00\nhost_tag=amd_fam23_mod113\nvendor=AuthenticAMD\nfamily=23\nmodel=113\nstepping=0\ncpu_model_string=AMD test CPU\nos_name={os_name}\nos_version=2009\nos_build_or_kernel={os_build_or_kernel}\nlogical_threads=12\nthreads=12\nperf_iters=50\nperf_warmup=5\npage_profiles=pages_off,large_pages_on\nabba_page_profile=large_pages_on\ngit_sha={git_sha}\ngit_sha_short={}\ngit_dirty=false\nrustc={rustc}\ncompiled_features=jit jit-fastregs bench-instrument threaded-interp simd-blockio simd-xor-paths superscalar-accel-proto\n",
+            "timestamp=2026-03-20T12:00:00-04:00\nhost_tag=amd_windows_12t_1234abcd\nvendor=AuthenticAMD\nfamily=10\nmodel=20\nstepping=0\ncpu_model_string=AMD test CPU\nos_name={os_name}\nos_version=2009\nos_build_or_kernel={os_build_or_kernel}\nlogical_threads=12\nthreads=12\nperf_iters=50\nperf_warmup=5\npage_profiles=pages_off,large_pages_on\nabba_page_profile=large_pages_on\ngit_sha={git_sha}\ngit_sha_short={}\ngit_dirty=false\nrustc={rustc}\ncompiled_features=jit jit-fastregs bench-instrument threaded-interp simd-blockio simd-xor-paths superscalar-accel-proto\n",
             &git_sha[..7]
         );
+        body.push_str("host_class_id=amd_windows_12t_1234abcd\n");
         if include_authority_metadata {
-            body.push_str("host_class_id=amd_fam23_mod113_windows\ncapture_evidence_tier=supporting\nrerun_group_id=amd_fam23_mod113_windows_17ef718_rustc193\nrerun_expectation=repeated_same_sha_required\n");
+            body.push_str("capture_evidence_tier=supporting\nrerun_group_id=amd_windows_12t_1234abcd_17ef718_rustc193\nrerun_expectation=repeated_same_sha_required\n");
         }
         body
     }
@@ -1903,12 +1909,12 @@ mod tests {
         format!(
             r#"{{
   "schema_version": 1,
-  "workflow_version": "v10",
+  "workflow_version": "public-v1",
   "artifact_kind": "full_features_authority_index",
-  "analysis_memo": "dev/full_features_benchmark_ff_analysis_2026-03-19.md",
+  "analysis_memo": "docs/full-features-benchmark-workflow.md",
   "entries": [
     {{
-      "host_class_id": "amd_fam23_mod113_windows",
+      "host_class_id": "amd_windows_12t_1234abcd",
       "label": "AMD test",
       "authority_classification": "supporting",
       "authority_capture_path": "{authority_capture}",
@@ -1921,8 +1927,8 @@ mod tests {
       ],
       "provenance": {{
         "vendor": "AuthenticAMD",
-        "family": 23,
-        "model": 113,
+        "family": 10,
+        "model": 20,
         "stepping": 0,
         "cpu_model_string": "AMD test CPU",
         "os_name": "Microsoft Windows 11 Pro",
@@ -1974,7 +1980,7 @@ mod tests {
             &index_path,
             r#"{
   "schema_version": 1,
-  "workflow_version": "v10",
+  "workflow_version": "public-v1",
   "artifact_kind": "full_features_authority_index",
   "analysis_memo": "memo",
   "entries": [
@@ -1986,8 +1992,8 @@ mod tests {
       "related_captures": [],
       "provenance": {
         "vendor": "AuthenticAMD",
-        "family": 23,
-        "model": 113,
+        "family": 10,
+        "model": 20,
         "stepping": 0,
         "cpu_model_string": "cpu",
         "os_name": "Windows",
@@ -2017,8 +2023,8 @@ mod tests {
       "related_captures": [],
       "provenance": {
         "vendor": "AuthenticAMD",
-        "family": 23,
-        "model": 8,
+        "family": 11,
+        "model": 21,
         "stepping": 0,
         "cpu_model_string": "cpu",
         "os_name": "Windows",
@@ -2052,32 +2058,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_provenance_infers_host_class_from_pre_v9_capture() {
-        let temp_dir = temp_root("pre_v9_provenance");
-        let provenance_path = temp_dir.join("provenance.txt");
-        fs::write(
-            &provenance_path,
-            test_provenance(
-                "Microsoft Windows 11 Pro",
-                "26200",
-                "17ef71850b9cfada075e52f4791f362f6f4e3e99",
-                "rustc 1.93.0",
-                false,
-            ),
-        )
-        .expect("write provenance");
-
-        let provenance = parse_provenance(&provenance_path).expect("parse provenance");
-        assert_eq!(
-            provenance.inferred_host_class_id().expect("host class"),
-            "amd_fam23_mod113_windows"
-        );
-        assert!(provenance.host_class_id.is_none());
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
     fn parse_matrix_page_backing_reports_mixed_status() {
         let temp_dir = temp_root("mixed_page_backing");
         let matrix_path = temp_dir.join("matrix_index.csv");
@@ -2104,9 +2084,9 @@ mod tests {
         .expect("write cargo");
         fs::create_dir_all(repo_root.join("perf_results")).expect("create perf_results");
 
-        let authority_rel = "perf_results/AMD/ff_authority";
-        let related_rel = "perf_results/AMD/ff_related";
-        let candidate_rel = "perf_results/AMD/ff_candidate";
+        let authority_rel = "perf_results/local/ff_authority";
+        let related_rel = "perf_results/local/ff_related";
+        let candidate_rel = "perf_results/local/ff_candidate";
         let authority_dir = repo_root.join(authority_rel);
         let related_dir = repo_root.join(related_rel);
         let candidate_dir = repo_root.join(candidate_rel);
@@ -2148,7 +2128,7 @@ mod tests {
             &test_matrix_index_csv(&["true", "true"]),
         );
 
-        let index_rel = "crates/oxide-randomx/perf_results/full_features_authority_index_v10.json";
+        let index_rel = "crates/oxide-randomx/perf_results/full_features_authority_index.json";
         let index_path = repo_root.join(index_rel);
         fs::create_dir_all(index_path.parent().expect("index parent")).expect("create index dir");
         fs::write(&index_path, test_index_json(authority_rel, related_rel)).expect("write index");
@@ -2159,7 +2139,7 @@ mod tests {
 
         let report = compare_capture_to_index(&repo_root, &index_path, &index, &candidate_dir)
             .expect("compare capture");
-        assert_eq!(report.host_class_id, "amd_fam23_mod113_windows");
+        assert_eq!(report.host_class_id, "amd_windows_12t_1234abcd");
         assert_eq!(
             report.rerun_relationship,
             RerunRelationship::SameShaSameSettings

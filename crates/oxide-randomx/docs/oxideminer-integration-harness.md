@@ -84,8 +84,9 @@ separate from:
 
 - `scripts/ci/run_ci_perf_gate.sh`, which keeps the mandatory perf threshold
   set intentionally narrow
-- cross-host lab authority documents such as `docs/perf-results-amd.md` and
-  `docs/perf-results-intel.md`
+- local full-features capture and authority workflows documented under
+  `docs/perf.md`, `docs/public-capture.md`, and
+  `docs/full-features-benchmark-workflow.md`
 - broader OxideMiner parent validation on real hosts
 
 ## Validation Commands
@@ -140,11 +141,9 @@ Notes:
   but the counters are zeroed because instrumentation was not compiled in.
 - If a `full_features_benchmark` matrix ranks an experimental config above the
   baseline on one host, do not translate that into harness defaults. This
-  harness follows the supported path until policy authority changes. Read
-  `perf_results/P0_6_current_head_cross_host_authority_2026-03-11.md` for the
-  supported default path and
-  `perf_results/P2_4_integrated_full_features_authority_2026-03-30.md` for the
-  current experimental-feature and host-limitation read.
+  harness follows the supported path until project docs intentionally change.
+  Use `docs/oxideminer-integration-profile.md`, `docs/perf.md`, and
+  `docs/full-features-benchmark-workflow.md` when reviewing potential changes.
 
 ## Output
 

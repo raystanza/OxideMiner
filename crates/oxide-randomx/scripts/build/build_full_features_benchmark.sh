@@ -403,7 +403,7 @@ ${WINDOWS_RUN_BLOCK}
    '@ | Set-Content -Encoding ascii -Path (Join-Path \$bundleRoot "${REMOTE_HOST_CONTEXT_FILE}")
 
 7) Return the entire `\$bundleRoot` directory, including every emitted `ff_*` directory and `${REMOTE_HOST_CONTEXT_FILE}`.
-8) Back in the repo, preserve the raw returned bundle first, then import the intact `ff_*` directories under `perf_results/AMD/` or `perf_results/Intel/` and classify them with `docs/full-features-benchmark-v9-workflow.md`.
+8) Back in the repo, preserve the raw returned bundle first, then place the intact `ff_*` directories under your local `perf_results/` tree and classify them with `docs/full-features-benchmark-workflow.md`.
 
 Keep these settings unchanged unless you are deliberately doing exploratory work:
 - `--perf-iters 50`
@@ -475,7 +475,7 @@ ${LINUX_RUN_BLOCK}
    EOF
 
 7) Return the entire `\${bundle_root}` directory, including every emitted `ff_*` directory and `${REMOTE_HOST_CONTEXT_FILE}`.
-8) Back in the repo, preserve the raw returned bundle first, then import the intact `ff_*` directories under `perf_results/AMD/` or `perf_results/Intel/` and classify them with `docs/full-features-benchmark-v9-workflow.md`.
+8) Back in the repo, preserve the raw returned bundle first, then place the intact `ff_*` directories under your local `perf_results/` tree and classify them with `docs/full-features-benchmark-workflow.md`.
 
 Keep these settings unchanged unless you are deliberately doing exploratory work:
 - `--perf-iters 50`

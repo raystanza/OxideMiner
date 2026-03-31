@@ -2,7 +2,7 @@ param(
     [ValidateSet('windows', 'linux')]
     [string]$TargetHost = $env:TARGET_HOST,
     [string]$Target = $env:TARGET,
-    [string]$BetaReleaseId = $(if ($env:BETA_RELEASE_ID) { $env:BETA_RELEASE_ID } elseif ($env:OXIDE_RANDOMX_BETA_RELEASE_ID) { $env:OXIDE_RANDOMX_BETA_RELEASE_ID } else { 'local-dev' }),
+    [string]$ReleaseId = $(if ($env:RELEASE_ID) { $env:RELEASE_ID } elseif ($env:OXIDE_RANDOMX_CAPTURE_RELEASE_ID) { $env:OXIDE_RANDOMX_CAPTURE_RELEASE_ID } else { 'local-dev' }),
     [string]$Features = $env:FEATURES,
     [string]$DistDir = $env:DIST_DIR,
     [string]$WindowsGnuLinker = $(if ($env:WINDOWS_GNU_LINKER) { $env:WINDOWS_GNU_LINKER } elseif ($env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER) { $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER } else { 'x86_64-w64-mingw32-gcc' }),
@@ -69,26 +69,26 @@ if ($Target -and $TargetHost) {
 
 $Target = if ($Target) { $Target } elseif ($TargetHost) { Resolve-TargetForHost -SelectedHost $TargetHost } else { Get-DefaultTarget }
 $Features = if ($Features) { $Features } else { 'jit jit-fastregs bench-instrument threaded-interp simd-blockio simd-xor-paths superscalar-accel-proto' }
-$BinName = 'oxide-randomx-beta-capture'
+$BinName = 'oxide-randomx-public-capture'
 
 switch -Wildcard ($Target) {
     '*windows*' {
         $PlatformTag = 'windows-x86_64'
-        $OutName = 'oxide-randomx-beta-capture.exe'
-        $InstructionsName = 'RUN_PUBLIC_BETA_ON_WINDOWS_HOST.txt'
-        $ArchiveName = 'oxide-randomx-beta-capture-windows-x86_64.zip'
+        $OutName = 'oxide-randomx-public-capture.exe'
+        $InstructionsName = 'RUN_PUBLIC_CAPTURE_ON_WINDOWS_HOST.txt'
+        $ArchiveName = 'oxide-randomx-public-capture-windows-x86_64.zip'
     }
     '*linux*' {
         $PlatformTag = 'linux-x86_64'
-        $OutName = 'oxide-randomx-beta-capture'
-        $InstructionsName = 'RUN_PUBLIC_BETA_ON_LINUX_HOST.txt'
-        $ArchiveName = 'oxide-randomx-beta-capture-linux-x86_64.tar.gz'
+        $OutName = 'oxide-randomx-public-capture'
+        $InstructionsName = 'RUN_PUBLIC_CAPTURE_ON_LINUX_HOST.txt'
+        $ArchiveName = 'oxide-randomx-public-capture-linux-x86_64.tar.gz'
     }
     default { throw "unsupported TARGET '$Target'" }
 }
 
 if (-not $DistDir) {
-    $DistDir = [System.IO.Path]::GetFullPath((Join-Path $RootDir "../oxide-randomx-dist/public_beta_capture_${PlatformTag}"))
+    $DistDir = [System.IO.Path]::GetFullPath((Join-Path $RootDir "../oxide-randomx-dist/public_capture_${PlatformTag}"))
 }
 
 $RustupBin = Resolve-Tool -Current $RustupBin -Candidates @('rustup', 'rustup.exe')
@@ -102,11 +102,11 @@ if ($Target -notin @($installedTargets | ForEach-Object { $_.Trim() } | Where-Ob
     throw "target '$Target' is not installed"
 }
 
-Write-Host "Building $BinName for $Target with beta release ID: $BetaReleaseId"
-$prevBetaReleaseId = $env:OXIDE_RANDOMX_BETA_RELEASE_ID
+Write-Host "Building $BinName for $Target with release ID: $ReleaseId"
+$prevReleaseId = $env:OXIDE_RANDOMX_CAPTURE_RELEASE_ID
 Push-Location $RootDir
 try {
-    $env:OXIDE_RANDOMX_BETA_RELEASE_ID = $BetaReleaseId
+    $env:OXIDE_RANDOMX_CAPTURE_RELEASE_ID = $ReleaseId
     if ($Target -like '*-windows-gnu') {
         $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = $WindowsGnuLinker
     }
@@ -125,7 +125,7 @@ try {
     )
 }
 finally {
-    if ($null -ne $prevBetaReleaseId) { $env:OXIDE_RANDOMX_BETA_RELEASE_ID = $prevBetaReleaseId } else { Remove-Item Env:OXIDE_RANDOMX_BETA_RELEASE_ID -ErrorAction SilentlyContinue }
+    if ($null -ne $prevReleaseId) { $env:OXIDE_RANDOMX_CAPTURE_RELEASE_ID = $prevReleaseId } else { Remove-Item Env:OXIDE_RANDOMX_CAPTURE_RELEASE_ID -ErrorAction SilentlyContinue }
     Pop-Location
 }
 
@@ -141,21 +141,21 @@ Copy-Item -LiteralPath $SrcBin -Destination $OutPath -Force
 
 if ($Target -like '*windows*') {
     $InstructionsText = @'
-Public beta run instructions for Windows x86_64
+Public capture run instructions for Windows x86_64
 
-1) Copy `oxide-randomx-beta-capture.exe` to the target Windows host.
+1) Copy `oxide-randomx-public-capture.exe` to the target Windows host.
 2) Open PowerShell in that folder.
 3) Run:
 
-   .\oxide-randomx-beta-capture.exe --accept-data-contract
+   .\oxide-randomx-public-capture.exe --accept-data-contract
 
 4) For a deeper rerun, use:
 
-   .\oxide-randomx-beta-capture.exe --profile full --accept-data-contract
+   .\oxide-randomx-public-capture.exe --profile full --accept-data-contract
 
 5) Send back the generated file named like:
 
-   oxide-randomx-beta-results-<bundle_id>.zip
+   oxide-randomx-public-results-<bundle_id>.zip
 
 Notes:
 - No installer is required.
@@ -165,21 +165,21 @@ Notes:
 }
 else {
     $InstructionsText = @'
-Public beta run instructions for Linux x86_64
+Public capture run instructions for Linux x86_64
 
-1) Copy `oxide-randomx-beta-capture` to the target Linux host.
+1) Copy `oxide-randomx-public-capture` to the target Linux host.
 2) Open a shell in that folder.
 3) Run:
 
-   ./oxide-randomx-beta-capture --accept-data-contract
+   ./oxide-randomx-public-capture --accept-data-contract
 
 4) For a deeper rerun, use:
 
-   ./oxide-randomx-beta-capture --profile full --accept-data-contract
+   ./oxide-randomx-public-capture --profile full --accept-data-contract
 
 5) Send back the generated file named like:
 
-   oxide-randomx-beta-results-<bundle_id>.zip
+   oxide-randomx-public-results-<bundle_id>.zip
 
 Notes:
 - No installer is required.

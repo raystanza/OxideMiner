@@ -1,9 +1,9 @@
 use oxide_randomx::full_features_capture::{
     collect_artifacts, detect_host_identity, ensure_compiled_features, execute_capture_plan,
-    now_strings, page_backing_summary_json, page_profile_json, public_beta_plan, run_json_value,
+    now_strings, page_backing_summary_json, page_profile_json, public_capture_plan, run_json_value,
     short_hash32, superscalar_json_value, write_artifact, write_matrix_index, write_pair_index,
     write_pair_summary_csv, CaptureContext, CaptureOptions, CaptureSurface, HostIdentity,
-    HostOsClass, PageBackingSummary, PairSummary, PublicBetaProfile, COMMANDS_ARTIFACT,
+    HostOsClass, PageBackingSummary, PairSummary, PublicCaptureProfile, COMMANDS_ARTIFACT,
     DEFAULT_PERF_ITERS, DEFAULT_PERF_WARMUP, MANIFEST_ARTIFACT, MATRIX_INDEX_ARTIFACT,
     PAIR_INDEX_ARTIFACT, PAIR_SUMMARY_ARTIFACT,
 };
@@ -17,13 +17,13 @@ use std::process;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-const TOOL_ID: &str = "oxide-randomx-beta-capture";
-const PUBLIC_SCHEMA_VERSION: &str = "oxide_randomx_public_beta_v1";
+const TOOL_ID: &str = "oxide-randomx-public-capture";
+const PUBLIC_SCHEMA_VERSION: &str = "oxide_randomx_public_capture_v1";
 const README_FIRST_FILE: &str = "README_FIRST.txt";
 const SUMMARY_FILE: &str = "SUMMARY.txt";
 const SUMMARY_JSON_FILE: &str = "summary.json";
 const SHARE_FILE: &str = "SHARE_THIS_FILE.txt";
-const BETA_RELEASE_ID: &str = env!("OXIDE_RANDOMX_BETA_RELEASE_ID");
+const RELEASE_ID: &str = env!("OXIDE_RANDOMX_CAPTURE_RELEASE_ID");
 const RUSTC_VERSION: &str = env!("OXIDE_RANDOMX_RUSTC_VERSION");
 
 const COLLECT_DATA: &[&str] = &[
@@ -32,7 +32,7 @@ const COLLECT_DATA: &[&str] = &[
     "OS name, version, and build/kernel",
     "benchmark timings for baseline and selected experimental states",
     "realized page-backing results",
-    "public beta release ID and bundle ID",
+    "capture release ID and bundle ID",
 ];
 
 const DO_NOT_COLLECT_DATA: &[&str] = &[
@@ -46,7 +46,7 @@ const DO_NOT_COLLECT_DATA: &[&str] = &[
 
 #[derive(Debug)]
 struct Options {
-    profile: PublicBetaProfile,
+    profile: PublicCaptureProfile,
     out_dir: Option<PathBuf>,
     accept_data_contract: bool,
     validate_only: bool,
@@ -54,7 +54,7 @@ struct Options {
 
 #[derive(Debug)]
 struct BundleMeta {
-    beta_release_id: String,
+    release_id: String,
     bundle_id: String,
     result_dir_name: String,
     archive_name: String,
@@ -64,7 +64,7 @@ struct PublicSummaryContext<'a> {
     bundle_meta: &'a BundleMeta,
     host: &'a HostIdentity,
     now: &'a oxide_randomx::full_features_capture::NowStrings,
-    profile: PublicBetaProfile,
+    profile: PublicCaptureProfile,
     plan: &'a oxide_randomx::full_features_capture::CapturePlan,
     artifacts: &'a [String],
     output: &'a oxide_randomx::full_features_capture::CaptureOutput,
@@ -112,7 +112,7 @@ fn main() {
             host.os_name
         );
         println!("profile={}", options.profile.as_str());
-        println!("beta_release_id={}", bundle_meta.beta_release_id);
+        println!("release_id={}", bundle_meta.release_id);
         println!(
             "required_features={}",
             oxide_randomx::full_features_capture::REQUIRED_FEATURES
@@ -128,7 +128,7 @@ fn main() {
         process::exit(1);
     }
 
-    let plan = public_beta_plan(options.profile, host.os_class());
+    let plan = public_capture_plan(options.profile, host.os_class());
     print_startup_contract(&bundle_meta, options.profile, &plan, &host, &out_dir);
     if !options.accept_data_contract {
         if let Err(err) = prompt_for_contract_acceptance() {
@@ -155,7 +155,7 @@ fn main() {
         out_dir: out_dir.clone(),
         commands_path,
         surface: CaptureSurface::Public {
-            beta_release_id: &bundle_meta.beta_release_id,
+            release_id: &bundle_meta.release_id,
         },
     };
 
@@ -260,7 +260,7 @@ fn main() {
         process::exit(1);
     }
 
-    println!("public beta capture complete");
+    println!("public capture complete");
     println!("bundle_id={}", bundle_meta.bundle_id);
     println!("result_dir={}", out_dir.display());
     println!("share_archive={}", archive_path.display());
@@ -273,7 +273,7 @@ fn main() {
 }
 
 fn parse_args() -> Result<Options, String> {
-    let mut profile = PublicBetaProfile::Standard;
+    let mut profile = PublicCaptureProfile::Standard;
     let mut out_dir = None::<PathBuf>;
     let mut accept_data_contract = false;
     let mut validate_only = false;
@@ -285,7 +285,7 @@ fn parse_args() -> Result<Options, String> {
                 let value = args
                     .next()
                     .ok_or_else(|| "missing value for --profile".to_string())?;
-                profile = PublicBetaProfile::parse(&value)?;
+                profile = PublicCaptureProfile::parse(&value)?;
             }
             "--out-dir" => {
                 let value = args
@@ -339,11 +339,11 @@ fn ensure_public_host_scope(host: &HostIdentity) {
 fn build_bundle_meta(
     host: &HostIdentity,
     now: &oxide_randomx::full_features_capture::NowStrings,
-    profile: PublicBetaProfile,
+    profile: PublicCaptureProfile,
 ) -> BundleMeta {
     let seed = format!(
         "{}:{}:{}:{}",
-        BETA_RELEASE_ID,
+        RELEASE_ID,
         host.host_tag(),
         profile.as_str(),
         now.compact
@@ -355,29 +355,31 @@ fn build_bundle_meta(
         short_hash32(&seed)
     );
     BundleMeta {
-        beta_release_id: BETA_RELEASE_ID.to_string(),
-        archive_name: format!("oxide-randomx-beta-results-{bundle_id}.zip"),
-        result_dir_name: format!("oxide-randomx-beta-results-{bundle_id}"),
+        release_id: RELEASE_ID.to_string(),
+        archive_name: format!("oxide-randomx-public-results-{bundle_id}.zip"),
+        result_dir_name: format!("oxide-randomx-public-results-{bundle_id}"),
         bundle_id,
     }
 }
 
-fn runtime_class_text(profile: PublicBetaProfile) -> &'static str {
+fn runtime_class_text(profile: PublicCaptureProfile) -> &'static str {
     match profile {
-        PublicBetaProfile::Standard => "moderate: roughly 45 to 75 minutes on many desktop hosts",
-        PublicBetaProfile::Full => "long: often around 2 hours or more on the same host",
+        PublicCaptureProfile::Standard => {
+            "moderate: roughly 45 to 75 minutes on many desktop hosts"
+        }
+        PublicCaptureProfile::Full => "long: often around 2 hours or more on the same host",
     }
 }
 
 fn print_startup_contract(
     bundle_meta: &BundleMeta,
-    profile: PublicBetaProfile,
+    profile: PublicCaptureProfile,
     plan: &oxide_randomx::full_features_capture::CapturePlan,
     host: &HostIdentity,
     out_dir: &Path,
 ) {
     println!("{TOOL_ID} starting");
-    println!("beta_release_id={}", bundle_meta.beta_release_id);
+    println!("release_id={}", bundle_meta.release_id);
     println!("bundle_id={}", bundle_meta.bundle_id);
     println!(
         "profile={} ({})",
@@ -399,7 +401,7 @@ fn print_startup_contract(
 }
 
 fn prompt_for_contract_acceptance() -> Result<(), String> {
-    println!("Type ACCEPT to continue with the public beta data contract.");
+    println!("Type ACCEPT to continue with the public capture data contract.");
     let mut line = String::new();
     io::stdin()
         .read_line(&mut line)
@@ -414,11 +416,11 @@ fn prompt_for_contract_acceptance() -> Result<(), String> {
 fn write_public_commands_header(
     path: &Path,
     bundle_meta: &BundleMeta,
-    profile: PublicBetaProfile,
+    profile: PublicCaptureProfile,
 ) -> Result<(), String> {
     let body = format!(
-        "# {TOOL_ID}\nschema_version={PUBLIC_SCHEMA_VERSION}\nbeta_release_id={}\nbundle_id={}\nprofile={}\nrunner_binary={TOOL_ID}\nnetwork=no automatic upload; no background network traffic; local capture only\nrustc={RUSTC_VERSION}\n",
-        bundle_meta.beta_release_id,
+        "# {TOOL_ID}\nschema_version={PUBLIC_SCHEMA_VERSION}\nrelease_id={}\nbundle_id={}\nprofile={}\nrunner_binary={TOOL_ID}\nnetwork=no automatic upload; no background network traffic; local capture only\nrustc={RUSTC_VERSION}\n",
+        bundle_meta.release_id,
         bundle_meta.bundle_id,
         profile.as_str(),
     );
@@ -429,7 +431,7 @@ fn write_public_manifest(
     path: &Path,
     bundle_meta: &BundleMeta,
     host: &HostIdentity,
-    profile: PublicBetaProfile,
+    profile: PublicCaptureProfile,
     plan: &oxide_randomx::full_features_capture::CapturePlan,
     artifacts: &[String],
 ) -> Result<(), String> {
@@ -441,8 +443,7 @@ fn write_public_manifest(
         .unwrap_or("n/a");
     let mut body = String::new();
     writeln!(&mut body, "schema_version={PUBLIC_SCHEMA_VERSION}").map_err(|e| e.to_string())?;
-    writeln!(&mut body, "beta_release_id={}", bundle_meta.beta_release_id)
-        .map_err(|e| e.to_string())?;
+    writeln!(&mut body, "release_id={}", bundle_meta.release_id).map_err(|e| e.to_string())?;
     writeln!(&mut body, "bundle_id={}", bundle_meta.bundle_id).map_err(|e| e.to_string())?;
     writeln!(&mut body, "profile={}", profile.as_str()).map_err(|e| e.to_string())?;
     writeln!(&mut body, "runtime_class={}", runtime_class_text(profile))
@@ -483,7 +484,7 @@ fn write_public_summary_json(path: &Path, ctx: &PublicSummaryContext<'_>) -> Res
     let summary = json!({
         "schema_version": PUBLIC_SCHEMA_VERSION,
         "tool": TOOL_ID,
-        "beta_release_id": ctx.bundle_meta.beta_release_id,
+        "release_id": ctx.bundle_meta.release_id,
         "bundle_id": ctx.bundle_meta.bundle_id,
         "created_at": {
             "timestamp": ctx.now.compact,
@@ -545,14 +546,13 @@ fn write_summary_txt(
     path: &Path,
     bundle_meta: &BundleMeta,
     host: &HostIdentity,
-    profile: PublicBetaProfile,
+    profile: PublicCaptureProfile,
     pair_summaries: &[PairSummary],
     page_backing_summaries: &[PageBackingSummary],
 ) -> Result<(), String> {
     let mut body = String::new();
     writeln!(&mut body, "{TOOL_ID} summary").map_err(|e| e.to_string())?;
-    writeln!(&mut body, "beta_release_id={}", bundle_meta.beta_release_id)
-        .map_err(|e| e.to_string())?;
+    writeln!(&mut body, "release_id={}", bundle_meta.release_id).map_err(|e| e.to_string())?;
     writeln!(&mut body, "bundle_id={}", bundle_meta.bundle_id).map_err(|e| e.to_string())?;
     writeln!(
         &mut body,
@@ -618,15 +618,15 @@ fn write_summary_txt(
 fn write_readme_first(
     path: &Path,
     bundle_meta: &BundleMeta,
-    profile: PublicBetaProfile,
+    profile: PublicCaptureProfile,
     host: &HostIdentity,
 ) -> Result<(), String> {
     let mut body = String::new();
-    writeln!(&mut body, "{TOOL_ID} public beta results").map_err(|e| e.to_string())?;
+    writeln!(&mut body, "{TOOL_ID} public capture results").map_err(|e| e.to_string())?;
     writeln!(&mut body).map_err(|e| e.to_string())?;
     writeln!(
         &mut body,
-        "This folder was created by the public beta capture runner."
+        "This folder was created by the public capture runner."
     )
     .map_err(|e| e.to_string())?;
     writeln!(
@@ -647,12 +647,7 @@ fn write_readme_first(
         host.cpu_model_string, host.vendor, host.family, host.model
     )
     .map_err(|e| e.to_string())?;
-    writeln!(
-        &mut body,
-        "Beta release ID: {}",
-        bundle_meta.beta_release_id
-    )
-    .map_err(|e| e.to_string())?;
+    writeln!(&mut body, "Release ID: {}", bundle_meta.release_id).map_err(|e| e.to_string())?;
     writeln!(&mut body, "Bundle ID: {}", bundle_meta.bundle_id).map_err(|e| e.to_string())?;
     writeln!(&mut body).map_err(|e| e.to_string())?;
     writeln!(
@@ -707,7 +702,7 @@ fn create_share_archive(
     let root_name = Path::new(&bundle_meta.result_dir_name)
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("oxide-randomx-beta-results");
+        .unwrap_or("oxide-randomx-public-results");
 
     let files = collect_files_sorted(out_dir)?;
     for file_path in files {
@@ -781,8 +776,8 @@ mod tests {
             iso: "2026-03-21T15:00:00-04:00".to_string(),
         };
 
-        let a = build_bundle_meta(&host, &now, PublicBetaProfile::Standard);
-        let b = build_bundle_meta(&host, &now, PublicBetaProfile::Standard);
+        let a = build_bundle_meta(&host, &now, PublicCaptureProfile::Standard);
+        let b = build_bundle_meta(&host, &now, PublicCaptureProfile::Standard);
 
         assert_eq!(a.bundle_id, b.bundle_id);
         assert!(a.archive_name.ends_with(".zip"));
@@ -791,12 +786,12 @@ mod tests {
     #[test]
     fn summary_text_uses_archive_name_not_path() {
         let bundle = BundleMeta {
-            beta_release_id: "beta-2026-03".to_string(),
+            release_id: "capture-2026-03".to_string(),
             bundle_id: "intel-test".to_string(),
-            result_dir_name: "oxide-randomx-beta-results-intel-test".to_string(),
-            archive_name: "oxide-randomx-beta-results-intel-test.zip".to_string(),
+            result_dir_name: "oxide-randomx-public-results-intel-test".to_string(),
+            archive_name: "oxide-randomx-public-results-intel-test.zip".to_string(),
         };
-        let temp_dir = std::env::temp_dir().join("oxide_randomx_beta_summary_text");
+        let temp_dir = std::env::temp_dir().join("oxide_randomx_public_summary_text");
         let _ = fs::remove_dir_all(&temp_dir);
         fs::create_dir_all(&temp_dir).unwrap();
         write_share_file(&temp_dir.join(SHARE_FILE), &bundle).unwrap();
@@ -810,20 +805,20 @@ mod tests {
     fn summary_json_uses_public_release_metadata() {
         let host = test_host();
         let bundle = BundleMeta {
-            beta_release_id: "beta-2026-03".to_string(),
+            release_id: "capture-2026-03".to_string(),
             bundle_id: "intel-test".to_string(),
-            result_dir_name: "oxide-randomx-beta-results-intel-test".to_string(),
-            archive_name: "oxide-randomx-beta-results-intel-test.zip".to_string(),
+            result_dir_name: "oxide-randomx-public-results-intel-test".to_string(),
+            archive_name: "oxide-randomx-public-results-intel-test.zip".to_string(),
         };
         let now = oxide_randomx::full_features_capture::NowStrings {
             compact: "20260321_150000".to_string(),
             date: "2026-03-21".to_string(),
             iso: "2026-03-21T15:00:00-04:00".to_string(),
         };
-        let temp_dir = std::env::temp_dir().join("oxide_randomx_beta_summary_json");
+        let temp_dir = std::env::temp_dir().join("oxide_randomx_public_summary_json");
         let _ = fs::remove_dir_all(&temp_dir);
         fs::create_dir_all(&temp_dir).unwrap();
-        let plan = public_beta_plan(PublicBetaProfile::Standard, HostOsClass::Linux);
+        let plan = public_capture_plan(PublicCaptureProfile::Standard, HostOsClass::Linux);
         let output = oxide_randomx::full_features_capture::CaptureOutput {
             matrix_runs: Vec::new(),
             pair_runs: Vec::new(),
@@ -836,15 +831,14 @@ mod tests {
             bundle_meta: &bundle,
             host: &host,
             now: &now,
-            profile: PublicBetaProfile::Standard,
+            profile: PublicCaptureProfile::Standard,
             plan: &plan,
             artifacts: &artifacts,
             output: &output,
         };
-        write_public_summary_json(&temp_dir.join(SUMMARY_JSON_FILE), &summary_context)
-        .unwrap();
+        write_public_summary_json(&temp_dir.join(SUMMARY_JSON_FILE), &summary_context).unwrap();
         let body = fs::read_to_string(temp_dir.join(SUMMARY_JSON_FILE)).unwrap();
-        assert!(body.contains("\"beta_release_id\": \"beta-2026-03\""));
+        assert!(body.contains("\"release_id\": \"capture-2026-03\""));
         assert!(!body.contains("\"git_sha\""));
         let _ = fs::remove_dir_all(&temp_dir);
     }

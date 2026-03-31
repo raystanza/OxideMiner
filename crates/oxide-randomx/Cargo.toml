@@ -52,20 +52,12 @@ name = "perf_compare"
 path = "tools/perf_compare.rs"
 
 [[bin]]
-name = "v7_10_amd_windows_capture"
-path = "tools/v7_10_amd_windows_capture.rs"
-
-[[bin]]
-name = "v8_01_amd_capture"
-path = "tools/v8_01_amd_capture.rs"
-
-[[bin]]
 name = "full_features_benchmark"
 path = "tools/full_features_benchmark.rs"
 
 [[bin]]
-name = "oxide-randomx-beta-capture"
-path = "tools/oxide_randomx_beta_capture.rs"
+name = "oxide-randomx-public-capture"
+path = "tools/oxide_randomx_public_capture.rs"
 
 [[bin]]
 name = "full_features_authority"

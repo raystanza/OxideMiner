@@ -5,7 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HOST_UNAME=$(uname -s 2>/dev/null || echo unknown)
 TARGET="${TARGET:-}"
 TARGET_HOST="${TARGET_HOST:-}"
-BETA_RELEASE_ID="${BETA_RELEASE_ID:-local-dev}"
+RELEASE_ID="${RELEASE_ID:-${OXIDE_RANDOMX_CAPTURE_RELEASE_ID:-local-dev}}"
 FEATURES="${FEATURES:-jit jit-fastregs bench-instrument threaded-interp simd-blockio simd-xor-paths superscalar-accel-proto}"
 DIST_DIR="${DIST_DIR:-}"
 WINDOWS_GNU_LINKER="${WINDOWS_GNU_LINKER:-${CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER:-x86_64-w64-mingw32-gcc}}"
@@ -15,14 +15,14 @@ CARGO_BIN="${CARGO_BIN:-}"
 
 usage() {
     cat <<'EOT'
-Usage: package_oxide_randomx_beta_capture.sh [--target-host windows|linux] [--target <triple>] [--beta-release-id <id>]
+Usage: package_oxide_randomx_public_capture.sh [--target-host windows|linux] [--target <triple>] [--release-id <id>]
 
-Builds and packages the public beta capture bundle for the selected target host.
+Builds and packages the public capture bundle for the selected target host.
 
 Options:
   --target-host <host>          Target host class to package for: windows or linux
   --target <triple>             Explicit Rust target triple (overrides host inference)
-  --beta-release-id <id>        Public beta release ID embedded into the binary
+  --release-id <id>             Capture release ID embedded into the binary
   --features <features>         Cargo feature string
   --dist-dir <path>             Output directory
   --windows-gnu-linker <path>   Windows GNU linker command/path
@@ -88,7 +88,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --target-host) TARGET_HOST="$2"; shift 2 ;;
         --target) TARGET="$2"; shift 2 ;;
-        --beta-release-id) BETA_RELEASE_ID="$2"; shift 2 ;;
+        --release-id) RELEASE_ID="$2"; shift 2 ;;
         --features) FEATURES="$2"; shift 2 ;;
         --dist-dir) DIST_DIR="$2"; shift 2 ;;
         --windows-gnu-linker) WINDOWS_GNU_LINKER="$2"; shift 2 ;;
@@ -114,19 +114,19 @@ elif [[ -z "${TARGET}" ]]; then
     TARGET=$(resolve_default_target)
 fi
 
-BIN_NAME="oxide-randomx-beta-capture"
+BIN_NAME="oxide-randomx-public-capture"
 case "${TARGET}" in
     *windows*)
         PLATFORM_TAG="windows-x86_64"
-        OUT_NAME="oxide-randomx-beta-capture.exe"
-        INSTRUCTIONS_NAME="RUN_PUBLIC_BETA_ON_WINDOWS_HOST.txt"
-        ARCHIVE_NAME="oxide-randomx-beta-capture-windows-x86_64.zip"
+        OUT_NAME="oxide-randomx-public-capture.exe"
+        INSTRUCTIONS_NAME="RUN_PUBLIC_CAPTURE_ON_WINDOWS_HOST.txt"
+        ARCHIVE_NAME="oxide-randomx-public-capture-windows-x86_64.zip"
         ;;
     *linux*)
         PLATFORM_TAG="linux-x86_64"
-        OUT_NAME="oxide-randomx-beta-capture"
-        INSTRUCTIONS_NAME="RUN_PUBLIC_BETA_ON_LINUX_HOST.txt"
-        ARCHIVE_NAME="oxide-randomx-beta-capture-linux-x86_64.tar.gz"
+        OUT_NAME="oxide-randomx-public-capture"
+        INSTRUCTIONS_NAME="RUN_PUBLIC_CAPTURE_ON_LINUX_HOST.txt"
+        ARCHIVE_NAME="oxide-randomx-public-capture-linux-x86_64.tar.gz"
         ;;
     *)
         echo "error: unsupported target '${TARGET}'" >&2
@@ -134,7 +134,7 @@ case "${TARGET}" in
         ;;
 esac
 
-DIST_DIR="${DIST_DIR:-${ROOT_DIR}/../oxide-randomx-dist/public_beta_capture_${PLATFORM_TAG}}"
+DIST_DIR="${DIST_DIR:-${ROOT_DIR}/../oxide-randomx-dist/public_capture_${PLATFORM_TAG}}"
 
 RUSTUP_BIN=$(resolve_tool "${RUSTUP_BIN}" rustup rustup.exe) || {
     echo "error: rustup is required" >&2
@@ -162,10 +162,10 @@ if host_is_windows && [[ "${TARGET}" == "x86_64-unknown-linux-gnu" ]]; then
     fi
 fi
 
-echo "Building ${BIN_NAME} for ${TARGET} with beta release ID: ${BETA_RELEASE_ID}"
+echo "Building ${BIN_NAME} for ${TARGET} with release ID: ${RELEASE_ID}"
 (
     cd "${ROOT_DIR}"
-    export OXIDE_RANDOMX_BETA_RELEASE_ID="${BETA_RELEASE_ID}"
+    export OXIDE_RANDOMX_CAPTURE_RELEASE_ID="${RELEASE_ID}"
     if [[ "${TARGET}" == *"-windows-gnu" ]]; then
         export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="${WINDOWS_GNU_LINKER}"
     fi
@@ -188,22 +188,22 @@ fi
 
 if [[ "${TARGET}" == *windows* ]]; then
     cat > "${DIST_DIR}/${INSTRUCTIONS_NAME}" <<'EOT'
-Public beta run instructions for Windows x86_64
+Public capture run instructions for Windows x86_64
 
-1) Copy `oxide-randomx-beta-capture.exe` to the target Windows host.
+1) Copy `oxide-randomx-public-capture.exe` to the target Windows host.
 2) Open PowerShell in that folder.
 3) Run:
 
-   .\oxide-randomx-beta-capture.exe --accept-data-contract
+   .\oxide-randomx-public-capture.exe --accept-data-contract
 
 4) The default public profile is `standard`. For a deeper rerun, use:
 
-   .\oxide-randomx-beta-capture.exe --profile full --accept-data-contract
+   .\oxide-randomx-public-capture.exe --profile full --accept-data-contract
 
 5) Wait for completion.
 6) Send back the generated file named like:
 
-   oxide-randomx-beta-results-<bundle_id>.zip
+   oxide-randomx-public-results-<bundle_id>.zip
 
 Notes:
 - No installer is required.
@@ -212,22 +212,22 @@ Notes:
 EOT
 else
     cat > "${DIST_DIR}/${INSTRUCTIONS_NAME}" <<'EOT'
-Public beta run instructions for Linux x86_64
+Public capture run instructions for Linux x86_64
 
-1) Copy `oxide-randomx-beta-capture` to the target Linux host.
+1) Copy `oxide-randomx-public-capture` to the target Linux host.
 2) Open a shell in that folder.
 3) Run:
 
-   ./oxide-randomx-beta-capture --accept-data-contract
+   ./oxide-randomx-public-capture --accept-data-contract
 
 4) The default public profile is `standard`. For a deeper rerun, use:
 
-   ./oxide-randomx-beta-capture --profile full --accept-data-contract
+   ./oxide-randomx-public-capture --profile full --accept-data-contract
 
 5) Wait for completion.
 6) Send back the generated file named like:
 
-   oxide-randomx-beta-results-<bundle_id>.zip
+   oxide-randomx-public-results-<bundle_id>.zip
 
 Notes:
 - No installer is required.
