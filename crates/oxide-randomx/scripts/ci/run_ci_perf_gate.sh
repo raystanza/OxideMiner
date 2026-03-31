@@ -19,6 +19,64 @@ resolve_binary() {
     printf '%s\n' "${base_path}"
 }
 
+is_absolute_path() {
+    local path="$1"
+    case "${path}" in
+        /* | [A-Za-z]:/* | [A-Za-z]:\\*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+resolve_cargo_target_dir() {
+    local candidate
+    local -a candidates=()
+    if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+        candidates+=("${CARGO_TARGET_DIR}")
+    fi
+    candidates+=("ox-build/target" "target")
+
+    for candidate in "${candidates[@]}"; do
+        if [[ -d "${candidate}" ]]; then
+            printf '%s\n' "${candidate%/}"
+            return 0
+        fi
+    done
+
+    printf '%s\n' "${candidates[0]%/}"
+}
+
+resolve_built_binary() {
+    local target_dir="$1"
+    local relative_path="$2"
+    local candidate_path
+    if is_absolute_path "${target_dir}"; then
+        candidate_path="${target_dir%/}/${relative_path}"
+    else
+        candidate_path="./${target_dir%/}/${relative_path}"
+    fi
+
+    candidate_path=$(resolve_binary "${candidate_path}")
+    if [[ -x "${candidate_path}" ]]; then
+        printf '%s\n' "${candidate_path}"
+        return 0
+    fi
+
+    echo "missing built artifact: ${candidate_path}" >&2
+    local release_dir="${target_dir%/}/release"
+    local examples_dir="${release_dir}/examples"
+    if [[ -d "${release_dir}" ]]; then
+        ls -la "${release_dir}" >&2 || true
+    fi
+    if [[ -d "${examples_dir}" ]]; then
+        ls -la "${examples_dir}" >&2 || true
+    fi
+    return 1
+}
+
 resolve_workspace_or_crate_path() {
     local path="$1"
     if [[ -e "${path}" ]]; then
@@ -50,12 +108,6 @@ if [[ ! -f "${manifest_path}" ]]; then
     exit 2
 fi
 
-if [[ -d "ox-build/target" ]]; then
-    cargo_target_dir="ox-build/target"
-else
-    cargo_target_dir="target"
-fi
-
 mkdir -p "${candidate_dir}" "${baseline_dir}" "${compare_dir}"
 cp "${manifest_path}" "${artifact_dir}/manifest.txt"
 
@@ -72,8 +124,11 @@ export OXIDE_RANDOMX_RUSTC_VERSION=${OXIDE_RANDOMX_RUSTC_VERSION:-$(rustc --vers
 
 cargo build --release -p oxide-randomx --bin perf_compare --example perf_harness --features "${build_features}"
 
-harness=$(resolve_binary "./${cargo_target_dir}/release/examples/perf_harness")
-compare=$(resolve_binary "./${cargo_target_dir}/release/perf_compare")
+cargo_target_dir=$(resolve_cargo_target_dir)
+echo "Resolved cargo target dir: ${cargo_target_dir}"
+
+harness=$(resolve_built_binary "${cargo_target_dir}" "release/examples/perf_harness")
+compare=$(resolve_built_binary "${cargo_target_dir}" "release/perf_compare")
 
 regressions=()
 tool_failures=()

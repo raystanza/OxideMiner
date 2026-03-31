@@ -45,7 +45,7 @@ jobs:
             binary-extension: ''
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         shell: bash
@@ -331,7 +331,7 @@ jobs:
           }
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: oxide-miner-${{ matrix.os }}-${{ matrix.target }}
           path: dist/*
@@ -345,12 +345,12 @@ jobs:
       # Needed for tag-based changelog generation;
       # "fetch-depth: 0" ensures tags/history are available.
       - name: Checkout repository for changelog
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: release-assets
 
