@@ -220,9 +220,9 @@ fn simd_blockio_runtime_enabled() -> bool {
         use std::arch::x86_64::__cpuid;
 
         // CPUID(0): vendor string in EBX, EDX, ECX order.
-        // SAFETY: This path is compiled only on x86_64. CPUID leaves 0 and 1
-        // are architectural userspace probes and only read CPU identity data.
-        let (cpuid0, cpuid1) = unsafe { (__cpuid(0), __cpuid(1)) };
+        // This path is compiled only on x86_64. CPUID leaves 0 and 1 are
+        // architectural userspace probes and only read CPU identity data.
+        let (cpuid0, cpuid1) = (__cpuid(0), __cpuid(1));
         let mut vendor = [0u8; 12];
         vendor[..4].copy_from_slice(&cpuid0.ebx.to_le_bytes());
         vendor[4..8].copy_from_slice(&cpuid0.edx.to_le_bytes());

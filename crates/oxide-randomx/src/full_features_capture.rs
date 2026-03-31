@@ -1036,9 +1036,9 @@ pub fn detect_host_identity() -> Result<HostIdentity, String> {
     {
         use std::arch::x86_64::__cpuid;
 
-        // SAFETY: This probe is gated to x86_64, where CPUID is a stable
-        // userspace instruction. Leaves 0 and 1 only expose CPU identity data.
-        let (cpuid0, cpuid1) = unsafe { (__cpuid(0), __cpuid(1)) };
+        // This probe is gated to x86_64, where CPUID is a stable userspace
+        // instruction. Leaves 0 and 1 only expose CPU identity data.
+        let (cpuid0, cpuid1) = (__cpuid(0), __cpuid(1));
         let mut vendor = [0u8; 12];
         vendor[..4].copy_from_slice(&cpuid0.ebx.to_le_bytes());
         vendor[4..8].copy_from_slice(&cpuid0.edx.to_le_bytes());
