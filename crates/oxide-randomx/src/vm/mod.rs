@@ -178,7 +178,6 @@ const THREADED_INTERP_ENV: &str = "OXIDE_RANDOMX_THREADED_INTERP";
 
 #[cfg(any(
     feature = "threaded-interp",
-    all(feature = "simd-blockio", target_arch = "x86_64"),
     all(feature = "simd-xor-paths", target_arch = "x86_64")
 ))]
 fn env_var_truthy(name: &str) -> bool {
@@ -221,14 +220,15 @@ fn simd_blockio_runtime_enabled() -> bool {
         use std::arch::x86_64::__cpuid;
 
         // CPUID(0): vendor string in EBX, EDX, ECX order.
-        let cpuid0 = __cpuid(0);
+        // SAFETY: This path is compiled only on x86_64. CPUID leaves 0 and 1
+        // are architectural userspace probes and only read CPU identity data.
+        let (cpuid0, cpuid1) = unsafe { (__cpuid(0), __cpuid(1)) };
         let mut vendor = [0u8; 12];
         vendor[..4].copy_from_slice(&cpuid0.ebx.to_le_bytes());
         vendor[4..8].copy_from_slice(&cpuid0.edx.to_le_bytes());
         vendor[8..12].copy_from_slice(&cpuid0.ecx.to_le_bytes());
 
         // CPUID(1): decode family/model.
-        let cpuid1 = __cpuid(1);
         let eax = cpuid1.eax;
         let base_family = (eax >> 8) & 0xF;
         let ext_family = (eax >> 20) & 0xFF;

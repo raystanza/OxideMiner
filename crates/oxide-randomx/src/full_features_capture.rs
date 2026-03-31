@@ -1028,13 +1028,14 @@ pub fn detect_host_identity() -> Result<HostIdentity, String> {
     {
         use std::arch::x86_64::__cpuid;
 
-        let cpuid0 = __cpuid(0);
+        // SAFETY: This probe is gated to x86_64, where CPUID is a stable
+        // userspace instruction. Leaves 0 and 1 only expose CPU identity data.
+        let (cpuid0, cpuid1) = unsafe { (__cpuid(0), __cpuid(1)) };
         let mut vendor = [0u8; 12];
         vendor[..4].copy_from_slice(&cpuid0.ebx.to_le_bytes());
         vendor[4..8].copy_from_slice(&cpuid0.edx.to_le_bytes());
         vendor[8..12].copy_from_slice(&cpuid0.ecx.to_le_bytes());
 
-        let cpuid1 = __cpuid(1);
         let eax = cpuid1.eax;
         let base_family = (eax >> 8) & 0xF;
         let ext_family = (eax >> 20) & 0xFF;

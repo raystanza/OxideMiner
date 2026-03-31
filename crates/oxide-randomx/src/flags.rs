@@ -201,8 +201,9 @@ pub mod cpu_detect {
         // Note: We use __cpuid intrinsic which handles RBX preservation
         use std::arch::x86_64::__cpuid;
 
-        // Leaf 0: Vendor ID
-        let cpuid0 = __cpuid(0);
+        // SAFETY: This code only compiles on x86_64, where CPUID is a stable
+        // userspace instruction. Leaves 0 and 1 only read processor identity.
+        let (cpuid0, cpuid1) = unsafe { (__cpuid(0), __cpuid(1)) };
 
         // Vendor string: EBX, EDX, ECX (in that order)
         let mut vendor_bytes = [0u8; 12];
@@ -211,8 +212,6 @@ pub mod cpu_detect {
         vendor_bytes[8..12].copy_from_slice(&cpuid0.ecx.to_le_bytes());
         let vendor = String::from_utf8_lossy(&vendor_bytes).into_owned();
 
-        // Leaf 1: Family/Model/Stepping
-        let cpuid1 = __cpuid(1);
         let eax = cpuid1.eax;
 
         // Family = BaseFamily + ExtFamily (if BaseFamily == 15)

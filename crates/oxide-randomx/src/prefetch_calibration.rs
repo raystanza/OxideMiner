@@ -474,13 +474,14 @@ fn detect_cpu_identity() -> PrefetchCpuIdentity {
     #[cfg(not(miri))]
     {
         use std::arch::x86_64::__cpuid;
-        let cpuid0 = __cpuid(0);
+        // SAFETY: This runs only on x86_64, where CPUID is a stable userspace
+        // instruction. Leaves 0 and 1 only read CPU identification registers.
+        let (cpuid0, cpuid1) = unsafe { (__cpuid(0), __cpuid(1)) };
         let mut vendor_bytes = [0u8; 12];
         vendor_bytes[..4].copy_from_slice(&cpuid0.ebx.to_le_bytes());
         vendor_bytes[4..8].copy_from_slice(&cpuid0.edx.to_le_bytes());
         vendor_bytes[8..12].copy_from_slice(&cpuid0.ecx.to_le_bytes());
         let vendor = String::from_utf8_lossy(&vendor_bytes).into_owned();
-        let cpuid1 = __cpuid(1);
         let eax = cpuid1.eax;
         let base_family = (eax >> 8) & 0xF;
         let ext_family = (eax >> 20) & 0xFF;
